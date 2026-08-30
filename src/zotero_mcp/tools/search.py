@@ -6,11 +6,12 @@ import re
 import threading as _threading
 import time as _time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from zotero_mcp import client as _client
 from zotero_mcp import search_semantics as _semantics
 from zotero_mcp import utils as _utils
+from zotero_mcp import exact_resolver as _exact_resolver  # [exact resolver patch]
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
@@ -549,6 +550,150 @@ def search_items(
         ctx.error(f"Error searching Zotero: {str(e)}")
         return f"Error searching Zotero: {str(e)}"
 
+# [source filters patch] Enforce the documented tag DSL independently of
+# Zotero API quirks. API parameters are only a narrowing hint; returned items
+# are checked locally so `` OR ``, negative tags, and ``-itemType`` cannot leak
+# false positives.
+_TAG_FILTER_OR = re.compile(r"\s+OR\s+|\|\|")
+
+
+def _item_matches_tag_filter(item: dict, conditions: list[str]) -> bool:
+    data = item.get("data", item) if isinstance(item, dict) else {}
+    names = {
+        str(entry.get("tag", "") if isinstance(entry, dict) else entry).casefold()
+        for entry in (data.get("tags") or [])
+        if str(entry.get("tag", "") if isinstance(entry, dict) else entry).strip()
+    }
+    for condition in conditions:
+        matched_terms: list[bool] = []
+        for raw_term in _TAG_FILTER_OR.split(condition):
+            term = raw_term.strip()
+            if not term:
+                continue
+            negated = term.startswith("-")
+            value = (term[1:] if negated else term).strip().casefold()
+            if not value:
+                continue
+            present = value in names
+            matched_terms.append(not present if negated else present)
+        if matched_terms and not any(matched_terms):
+            return False
+    return True
+
+
+def _item_matches_type_filter(item: dict, item_type: str) -> bool:
+    if not item_type:
+        return True
+    data = item.get("data", item) if isinstance(item, dict) else {}
+    actual = str(data.get("itemType", ""))
+    if item_type.startswith("-") and item_type.count("-") == 1:
+        return actual != item_type[1:]
+    return actual == item_type
+
+
+def _api_tag_narrowing(conditions: list[str]) -> list[str]:
+    """Return only positive conditions, translated to Zotero's ``||`` DSL."""
+    narrowed: list[str] = []
+    for condition in conditions:
+        terms = [term.strip() for term in _TAG_FILTER_OR.split(condition) if term.strip()]
+        if terms and all(not term.startswith("-") for term in terms):
+            narrowed.append(" || ".join(terms))
+    return narrowed
+
+
+def _fetch_tag_filtered_pagewise(
+    method,
+    *args,
+    conditions: list[str],
+    item_type: str,
+    limit: int,
+) -> list[dict]:
+    """Fetch until ``limit`` verified matches are found or the API is exhausted."""
+    results: list[dict] = []
+    start = 0
+    page_size = 100
+    api_tags = _api_tag_narrowing(conditions)
+    api_item_type = item_type if item_type and not item_type.startswith("-") else None
+    while len(results) < limit:
+        kwargs: dict[str, Any] = {"start": start, "limit": page_size}
+        if api_tags:
+            kwargs["tag"] = api_tags
+        if api_item_type:
+            kwargs["itemType"] = api_item_type
+        batch = method(*args, **kwargs)
+        if not batch:
+            break
+        for item in batch:
+            if (
+                _item_matches_tag_filter(item, conditions)
+                and _item_matches_type_filter(item, item_type)
+            ):
+                results.append(item)
+                if len(results) >= limit:
+                    break
+        if len(batch) < page_size:
+            break
+        start += page_size
+    return results
+
+
+
+@mcp.tool(
+    name="zotero_resolve_exact_source",
+    description=(
+        "Resolve a named Zotero source by exact metadata without semantic "
+        "fallback. Returns a JSON object with identity_status: exact, "
+        "ambiguous, or absent; exact_matches; ambiguous_matches; "
+        "related_matches; conflicts; match_basis; and collection_scope. "
+        "Each match summary includes in_requested_scope and scope_basis "
+        "when interpreting requested collection membership. "
+        "Use this before substantive retrieval when the user names a "
+        "specific title, DOI, citation key, author/year, or Zotero item key. "
+        "The source argument is the original identifier or request; pass "
+        "title, author, year, doi, citation_key, or item_key explicitly when "
+        "available. Related records are never exact matches. This tool does "
+        "not perform semantic search, full-text retrieval, or the ordinary "
+        "search_items fallback cascade. collection_key optionally restricts "
+        "membership, and include_subcollections defaults to True, matching "
+        "semantic collection-scope behavior. "
+        "search_all_libraries requires local SQLite and cannot be combined "
+        "with collection_key or item_key."
+    )
+)
+@with_zotero_api_lock
+def resolve_exact_source(
+    source: str,
+    identifier_type: Literal["auto", "title", "doi", "citation_key", "item_key"] = "auto",
+    title: str | None = None,
+    author: str | None = None,
+    year: str | None = None,
+    doi: str | None = None,
+    citation_key: str | None = None,
+    item_key: str | None = None,
+    collection_key: str | None = None,
+    include_subcollections: bool = True,
+    search_all_libraries: bool = False,
+    limit: int | str | None = 20,
+    *,
+    ctx: Context,
+) -> str:
+    """Resolve a named source's identity using metadata only."""
+    return _exact_resolver.resolve_exact_source(
+        source=source,
+        identifier_type=identifier_type,
+        title=title,
+        author=author,
+        year=year,
+        doi=doi,
+        citation_key=citation_key,
+        item_key=item_key,
+        collection_key=collection_key,
+        include_subcollections=include_subcollections,
+        search_all_libraries=search_all_libraries,
+        limit=limit,
+        ctx=ctx,
+    )
+
 @mcp.tool(
     name="zotero_search_by_tag",
     description=(
@@ -615,7 +760,8 @@ def search_by_tag(
 
         limit = _helpers._normalize_limit(limit, default=10)
 
-        # Search library-wide or scoped to a collection
+        # Search library-wide or scoped to a collection. Zotero's API is used
+        # only to narrow positive predicates; verify the complete DSL locally.
         if collection_key:
             try:
                 _col = zot.collection(collection_key)
@@ -629,9 +775,15 @@ def search_by_tag(
             results = []
             _seen: set[str] = set()
             for _scope_key in scope_keys:
-                for _item in _helpers._paginate(
-                    zot.collection_items, _scope_key,
-                    tag=tag, itemType=item_type, max_items=limit,
+                remaining = limit - len(results)
+                if remaining <= 0:
+                    break
+                for _item in _fetch_tag_filtered_pagewise(
+                    zot.collection_items,
+                    _scope_key,
+                    conditions=tag,
+                    item_type=item_type,
+                    limit=remaining,
                 ):
                     _key = _item.get("key")
                     if _key and _key in _seen:
@@ -639,10 +791,13 @@ def search_by_tag(
                     if _key:
                         _seen.add(_key)
                     results.append(_item)
-            results = results[:limit]
         else:
-            zot.add_parameters(q="", tag=tag, itemType=item_type, limit=limit)
-            results = zot.items()
+            results = _fetch_tag_filtered_pagewise(
+                zot.items,
+                conditions=tag,
+                item_type=item_type,
+                limit=limit,
+            )
 
         if not results:
             if collection_key:
@@ -975,7 +1130,9 @@ def advanced_search(
 
             if field_lower == "year":
                 date_value = str(data.get("date", "")).strip()
-                return [date_value[:4]] if len(date_value) >= 4 else []
+                # [date patch] date[:4] turns "05/2020" into "05/2".
+                parsed = _semantics.parse_date(date_value)
+                return [str(parsed[0])] if parsed else []
 
             source_field = _semantics.FIELD_ALIASES.get(field_lower, field)
             raw_value = data.get(source_field, "")
@@ -1000,7 +1157,13 @@ def advanced_search(
             # Everything else: the comparison lives in search_semantics so the
             # SQLite backend evaluates the identical rules — see that module's
             # docstring for what went wrong when they were stated twice.
-            return _semantics.matches(values, target, operation)
+            return _semantics.matches(
+                values,
+                target,
+                operation,
+                date_field=condition["field"].lower()
+                in {"date", "year", "dateadded", "datemodified", "accessdate"},
+            )
 
         # #167: try the SQLite metadata backend first — it replaces the
         # client-side paging loop below entirely when it can serve the
@@ -1201,10 +1364,16 @@ def advanced_search(
         "limit: max results (default 10). "
         "filters: optional metadata filters as a dict (e.g. "
         "{'itemType': 'journalArticle', 'year': '2023'}); also accepts a "
-        "JSON string. "
+        "JSON string. It also accepts source_group/source_groups, "
+        "item_type/item_types, item_key/item_keys (exact parent-item "
+        "identity scope, e.g. from zotero_resolve_exact_source), and "
+        "tag/tags/required_tags; these filters "
+        "are optional and combine with AND. A tag-only filter is valid. "
         "library_id: optional — scope to one library other than the active "
         "one: 0 or 'user' for personal, else a groupID (see "
-        "zotero_list_libraries). search_all_libraries: search every indexed "
+        "zotero_list_libraries). collection: optional — scope to a Zotero collection "
+        "key (preferred) or exact name, including all subcollections; find keys "
+        "with zotero_search_collections. search_all_libraries: search every indexed "
         "library at once, labelling each result with its library; needs "
         "ZOTERO_SEARCH_BACKEND=sqlite, excludes library_id. "
         "Requires the semantic search database to be POPULATED — run "
@@ -1221,8 +1390,9 @@ def advanced_search(
 def semantic_search(
     query: str,
     limit: int = 10,
-    filters: dict[str, str] | str | None = None,
+    filters: dict[str, Any] | str | None = None,
     library_id: int | str | None = None,
+    collection: str | None = None,
     search_all_libraries: bool = False,
     *,
     ctx: Context
@@ -1233,9 +1403,12 @@ def semantic_search(
     Args:
         query: Search query text - can be concepts, topics, or natural language descriptions
         limit: Maximum number of results to return (default: 10)
-        filters: Optional metadata filters as dict or JSON string. Example: {"item_type": "note"}
+        filters: Optional metadata filters as dict or JSON string. Supports native item_type/item_types, derived source_group/source_groups, exact item_key/item_keys parent-item scope, and tag/tags/required_tags. These are independent optional filters and may be used alone or together.
         library_id: Optional library scope — 0/"user" for the personal library
             or a groupID for a group library. Defaults to the active library.
+        collection: Optional collection key (preferred) or exact name. The
+            collection and all subcollections are searched using live SQLite
+            membership; no re-embedding is required after item moves.
         search_all_libraries: Search every indexed library at once (#163).
             Requires the SQLite backend; results are labelled with their
             source library. Mutually exclusive with library_id.
@@ -1317,7 +1490,10 @@ def semantic_search(
         _maybe_fire_presearch_sync(search)
 
         # Perform search
-        results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
+        results = search.search(
+            query=query, limit=limit, filters=filters, group_id=group_id,
+            collection_key=collection,  # [scoped patch]
+        )
 
         if results.get("error"):
             return f"Semantic search error: {results['error']}"
@@ -1331,6 +1507,9 @@ def semantic_search(
         output = [f"# Semantic Search Results for '{query}'", ""]
         if search_all_libraries:
             output.append("*Scope: all indexed libraries.*")
+            output.append("")
+        if collection:
+            output.append(f"*Collection scope: `{collection}` (subcollections included).*")
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")
@@ -1357,20 +1536,41 @@ def semantic_search(
 
             if zotero_item:
                 extra = {"Relevance": f"{similarity_score:.3f}"}
+                if (rerank_score := result.get("rerank_score")) is not None:
+                    extra["Rerank"] = f"{rerank_score:+.2f}"
+                if result.get("is_reference"):
+                    extra["REF"] = (
+                        "bibliography entry — use zotero_search_references; "
+                        "do not cite as substantive evidence"
+                    )
+                if result.get("source_group"):
+                    extra["Source Group"] = result["source_group"]
                 if loc_bits:
                     extra["Location"] = ", ".join(loc_bits)
                 if snippet:
                     extra["Matched Passage"] = snippet
-                # Override key from result since it may differ from item["key"]
                 zotero_item.setdefault("key", result.get("item_key", ""))
-                output.extend(_utils.format_item_result(
-                    zotero_item, index=i, extra_fields=extra,
-                    show_library=search_all_libraries,
-                ))
+                output.extend(
+                    _utils.format_item_result(
+                        zotero_item,
+                        index=i,
+                        extra_fields=extra,
+                        show_library=search_all_libraries,
+                    )
+                )
             else:
-                # Fallback if full Zotero item not available
+                # Fallback if full Zotero item metadata is unavailable.
                 output.append(f"## {i}. Item {result.get('item_key', 'Unknown')}")
                 output.append(f"**Relevance:** {similarity_score:.3f}")
+                if (rerank_score := result.get("rerank_score")) is not None:
+                    output.append(f"**Rerank:** {rerank_score:+.2f}")
+                if result.get("is_reference"):
+                    output.append(
+                        "**REF:** bibliography entry — use zotero_search_references; "
+                        "do not cite as substantive evidence"
+                    )
+                if result.get("source_group"):
+                    output.append(f"**Source Group:** {result['source_group']}")
                 if loc_bits:
                     output.append(f"**Location:** {', '.join(loc_bits)}")
                 if snippet:
@@ -1429,6 +1629,34 @@ def update_search_database(
     try:
         ctx.info("Starting semantic search database update...")
 
+        # [mineru patch] pre-check the embedding backend so a dead embedder
+        # produces an actionable message instead of a pile of upsert errors
+        embedder_warning = ""
+        try:
+            import json as _json
+            import urllib.request as _ur
+            _cfg = _json.loads((Path.home() / ".config" / "zotero-mcp" / "config.json").read_text(encoding="utf-8"))
+            _ss = _cfg.get("semantic_search", {}) or {}
+            _ec = _ss.get("embedding_config", {}) or {}
+            _url = (_ec.get("base_url") or "").rstrip("/")
+            if _ss.get("embedding_model") == "openai" and _url:
+                try:
+                    with _ur.urlopen(_url + "/models", timeout=2):
+                        pass
+                except Exception:
+                    embedder_warning = (
+                        "\n\n⚠️ The embedding backend at %s is unreachable.\n"
+                        "MinerU parses still ran and sidecars are saved (nothing lost), but the "
+                        "embedding/upsert phase FAILED. Start it with `serve-embedder`, then "
+                        "re-run this update to finish indexing." % _url
+                    )
+                    ctx.info(
+                        "Embedder at %s is down; parses will run but embedding will fail. "
+                        "Start it with `serve-embedder` and re-run." % _url
+                    )
+        except Exception:
+            pass
+
         # Import semantic search module
         try:
             from zotero_mcp.semantic_search import create_semantic_search
@@ -1452,6 +1680,30 @@ def update_search_database(
             extract_fulltext=_utils.is_local_mode()
         )
 
+        # [graph patch] rebuild citation graph after search update
+        try:
+            from zotero_mcp.citation_graph import CitationGraph
+            cg_stats = CitationGraph().build()
+            _search_logger.info(
+                "Citation graph built: %d nodes, %d directed citations",
+                cg_stats.get("nodes", 0),
+                cg_stats.get("directed_citations", 0),
+            )
+        except Exception as e:
+            _search_logger.warning("Failed to build citation graph: %s", e)
+
+        # [reference patch] rebuild reference index after search update
+        try:
+            from zotero_mcp.reference_index import build_reference_index
+            _reference_stats = build_reference_index()
+            _search_logger.info(
+                "Reference index built: %d entries, %d source items",
+                _reference_stats.get("entries", 0),
+                _reference_stats.get("source_items", 0),
+            )
+        except Exception as e:
+            _search_logger.warning("Failed to build reference index: %s", e)
+
         # Format results
         output = ["# Database Update Results", ""]
 
@@ -1470,6 +1722,9 @@ def update_search_database(
                 output.append(f"**Started:** {stats['start_time']}")
             if stats.get('end_time'):
                 output.append(f"**Completed:** {stats['end_time']}")
+
+        if embedder_warning:
+            output.append(embedder_warning)
 
         return "\n".join(output)
 

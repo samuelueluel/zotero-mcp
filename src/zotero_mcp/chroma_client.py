@@ -219,7 +219,7 @@ class ChromaClient:
             # (~5461). With passage-chunking enabled a batch of 25 books
             # easily exceeds that, so split instead of failing.
             try:
-                max_batch = int(self.client.get_max_batch_size())
+                max_batch = min(int(self.client.get_max_batch_size()), 512)  # [batch size patch] cap write sub-batch at 512 (large writes wedge)
             except Exception:
                 max_batch = 5000
             for i in range(0, len(ids), max_batch):
@@ -391,6 +391,35 @@ class ChromaClient:
             return len(result['ids']) > 0
         except Exception:
             return False
+
+    def iter_documents(self, batch_size: int = 500) -> Iterator[tuple[list[str], list[str], list[dict[str, Any]]]]:
+        """[sparse patch] Stream ``(ids, documents, metadatas)`` over the collection.
+
+        Same snapshot-and-page discipline as :meth:`iter_metadatas` (no unbounded
+        ids list; no limit/offset pagination), but includes the document text —
+        the hybrid sparse index is built from exactly these documents so its
+        chunk boundaries match the dense leg by construction.
+        """
+        batch_size = min(int(batch_size), 5000)
+        all_ids = sorted(self.collection.get(include=[]).get("ids") or [])
+        for start in range(0, len(all_ids), batch_size):
+            chunk = all_ids[start:start + batch_size]
+            result = self.collection.get(ids=chunk, include=["documents", "metadatas"])
+            ids = result.get("ids") or []
+            if not ids:
+                continue
+            yield ids, result.get("documents") or [], result.get("metadatas") or []
+
+    def get_documents(self, ids: list[str]) -> dict[str, Any]:
+        """[sparse patch] Fetch documents + metadata by ids (hybrid candidate fetch)."""
+        if not ids:
+            return {"ids": [], "documents": [], "metadatas": []}
+        res = self.collection.get(ids=ids, include=["documents", "metadatas"])
+        return {
+            "ids": res.get("ids") or [],
+            "documents": res.get("documents") or [],
+            "metadatas": res.get("metadatas") or [],
+        }
 
     def get_document_metadata(self, doc_id: str) -> dict[str, Any] | None:
         """

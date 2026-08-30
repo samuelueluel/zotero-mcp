@@ -10,6 +10,7 @@ from typing import Literal
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
+from zotero_mcp import mineru as _mineru  # [mineru patch] sidecar preference for fulltext reads
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
@@ -187,7 +188,7 @@ def get_item_fulltext(
         try:
             from zotero_mcp.local_db import LocalZoteroReader
 
-            if _utils.is_local_mode():
+            if True:  # [local patch] also run local-disk extraction in hybrid mode (linked file:// support); download path remains the fallback
                 config = load_config()
                 zotero_db_path = config.resolve_zotero_db_path()
 
@@ -198,6 +199,14 @@ def get_item_fulltext(
                 ) as reader:
                     local_item = reader.get_item_by_key(item_key)
                     if local_item:
+                        # [mineru patch] prefer the MinerU sidecar (clean equations/tables) when present
+                        _mineru_text = _mineru.read_sidecar(_mineru.load_mineru_config(), item_key)
+                        if _mineru_text:
+                            ctx.info("Retrieved full text from MinerU sidecar")
+                            return _helpers._prepend_size_warning(
+                                f"{metadata}\n\n---\n\n## Full Text\n\n{_mineru_text}",
+                                "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                            )
                         extracted = reader.extract_fulltext_for_item(local_item.item_id)
                         if extracted and extracted[0]:
                             source = extracted[1] if len(extracted) > 1 else "file"

@@ -30,6 +30,7 @@ is a fix, not a divergence, and belongs to each backend.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Iterable, Sequence
 
@@ -171,13 +172,67 @@ def _as_float(text: str) -> float | None:
         return None
 
 
-def compare(candidate: str, expected: str, operation: str) -> bool:
+_MONTHS = {name: i + 1 for i, name in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+)}
+_MONTHS.update({full: i + 1 for i, full in enumerate(
+    ["january", "february", "march", "april", "may", "june", "july",
+     "august", "september", "october", "november", "december"]
+)})
+
+
+def parse_date(text: str | None) -> tuple[int, int, int] | None:
+    """[date patch] Parse Zotero display/ISO dates into (year, month, day)."""
+    if text is None:
+        return None
+    value = str(text).strip().lower()
+    if not value or value in {"no date", "n.d.", "n/a", "na"}:
+        return None
+
+    # ISO date or Zotero's raw multipart prefix. Month/day may be 00.
+    match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})(?:[t ].*)?$", value)
+    if match:
+        return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+    # ISO year-month, accepted for manually entered dates.
+    match = re.match(r"^(\d{4})-(\d{1,2})$", value)
+    if match:
+        return int(match.group(1)), int(match.group(2)), 0
+
+    # Zotero's common month-first display.
+    match = re.match(r"^(\d{1,2})/(\d{4})$", value)
+    if match:
+        return int(match.group(2)), int(match.group(1)), 0
+
+    # Year-only display.
+    match = re.match(r"^(\d{4})$", value)
+    if match:
+        return int(match.group(1)), 0, 0
+
+    # Month names: October 1, 2016; Oct. 1, 2016; October 2016.
+    match = re.match(r"^([a-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})$", value)
+    if match and match.group(1) in _MONTHS:
+        return int(match.group(3)), _MONTHS[match.group(1)], int(match.group(2))
+    match = re.match(r"^([a-z]{3,9})\.?\s+(\d{4})$", value)
+    if match and match.group(1) in _MONTHS:
+        return int(match.group(2)), _MONTHS[match.group(1)], 0
+    return None
+
+
+def _date_extreme(value: tuple[int, int, int], *, upper: bool) -> tuple[int, int, int]:
+    """Resolve unknown month/day to the inclusive range-comparison edge."""
+    year, month, day = value
+    return year, month or (12 if upper else 1), day or (31 if upper else 1)
+
+
+def compare(
+    candidate: str, expected: str, operation: str, date_field: bool = False
+) -> bool:
     """Evaluate one operator against one candidate value.
 
-    Both sides are normalized first. Ordering operators compare numerically
-    when both sides parse as numbers and lexically otherwise, so ``year
-    isGreaterThan 2010`` orders by magnitude while a string field still
-    orders sensibly.
+    Both sides are normalized first. Date fields use parsed chronological
+    comparison for range operators; all other fields retain the prior numeric
+    then lexical behavior.
     """
     left = normalize(candidate)
     right = normalize(expected)
@@ -195,6 +250,18 @@ def compare(candidate: str, expected: str, operation: str) -> bool:
     if operation == "endsWith":
         return left.endswith(right)
 
+    if operation in RANGE_OPS and date_field:
+        # [date patch] API display dates are not lexically sortable. Missing
+        # values must not satisfy a date range, and an invalid bound is a
+        # caller error rather than a reason to compare arbitrary strings.
+        left_date = parse_date(left)
+        right_date = parse_date(right)
+        if left_date is None or right_date is None:
+            return False
+        if operation in {"isGreaterThan", "isAfter"}:
+            return _date_extreme(left_date, upper=True) > _date_extreme(right_date, upper=True)
+        return _date_extreme(left_date, upper=False) < _date_extreme(right_date, upper=False)
+
     left_num = _as_float(left)
     right_num = _as_float(right)
     if operation in RANGE_OPS and left_num is not None and right_num is not None:
@@ -207,7 +274,12 @@ def compare(candidate: str, expected: str, operation: str) -> bool:
     return left < right
 
 
-def matches(values: Sequence[str] | Iterable[str], expected: str, operation: str) -> bool:
+def matches(
+    values: Sequence[str] | Iterable[str],
+    expected: str,
+    operation: str,
+    date_field: bool = False,
+) -> bool:
     """Evaluate an operator against a field that may hold several values.
 
     An item with no value for the field satisfies *nothing* — not even a
@@ -219,7 +291,10 @@ def matches(values: Sequence[str] | Iterable[str], expected: str, operation: str
     if not values:
         return False
 
-    comparisons = [compare(value, expected, operation) for value in values]
+    comparisons = [
+        compare(value, expected, operation, date_field=date_field)
+        for value in values
+    ]
     if operation in NEGATED:
         return all(comparisons)
     return any(comparisons)

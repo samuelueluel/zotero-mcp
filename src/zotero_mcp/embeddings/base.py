@@ -418,8 +418,21 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
         return text
 
     def _prepare_query(self, text: str) -> str:
-        """Transform a query before sending it (identity by default)."""
-        return text
+        """Prepare a query, adding Qwen3's task instruction when required."""
+        # [instruct patch] Qwen3-Embedding is instruction-aware: query inputs
+        # get an Instruct/Query prefix; document inputs remain raw through
+        # _prepare_document().
+        model_name = str(getattr(self, "model_name", "")).lower()
+        if "qwen3" not in model_name:
+            return text
+        query = str(text).strip()
+        if query.startswith("Instruct:"):
+            return query
+        return (
+            "Instruct: Given a research question, retrieve relevant academic "
+            "passages from an economics literature library that answer it.\n"
+            "Query: " + query
+        )
 
     def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:
         """Decide whether ``exc`` is worth retrying.

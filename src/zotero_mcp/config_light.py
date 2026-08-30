@@ -92,6 +92,9 @@ _DEFAULT_RERANKER_CONFIG: dict[str, Any] = {
     "enabled": False,
     "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
     "candidate_multiplier": 3,
+    "url": "",  # [http reranker patch] local /v1/rerank endpoint
+    "timeout": 60.0,
+    "batch_size": 12,
 }
 
 

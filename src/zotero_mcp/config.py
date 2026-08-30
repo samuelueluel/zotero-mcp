@@ -54,6 +54,18 @@ class RerankerConfig:
     enabled: bool = False
     model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     candidate_multiplier: int = 3
+    url: str = ""  # [http reranker patch] llama.cpp /v1/rerank endpoint; when set, rerank over HTTP
+    timeout: float = 60.0
+    batch_size: int = 12  # [http reranker patch] docs per /v1/rerank call (ctx-window guard)
+
+
+@dataclass
+class HybridConfig:  # [sparse patch] hybrid search (BM25 + RRF)
+    enabled: bool = False
+    bm25_k1: float = 1.5
+    bm25_b: float = 0.75
+    rrf_k: int = 60
+    index_path: str = ""
 
 
 @dataclass
@@ -74,6 +86,7 @@ class SemanticSearchConfig:
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     include_fulltext: bool = True
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
+    hybrid: HybridConfig = field(default_factory=HybridConfig)  # [sparse patch]
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     # Per-library incremental-sync watermarks, keyed by group_id as a string
     # ("0" = personal library). Every Zotero library has its own independent

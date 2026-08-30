@@ -30,10 +30,14 @@ except Exception:
 
 from . import batch_common, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import ChromaClient, create_chroma_client
+from . import source_filters as _source_filters  # [source filters patch]
+from . import ast_chunker as _ast_chunker  # [ast chunker patch]
+from . import sparse_index as _sparse  # [sparse patch] hybrid BM25+RRF
 from .client import get_active_group_id, get_zotero_client
 from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
+from . import mineru as _mineru  # [mineru patch] auto-MinerU before embedding (see zotero-mcp-mineru-patch.py)
 
 # Re-exported so callers keep importing them from here, while the
 # ChromaDB-free definitions stay importable without this module (#485).
@@ -46,6 +50,34 @@ from .config_light import (  # noqa: F401
     should_update,
 )
 from .utils import _paginate, format_creators, is_local_mode, suppress_stdout
+
+
+_DEFAULT_HYBRID_CONFIG: dict[str, Any] = {
+    "enabled": False,
+    "bm25_k1": 1.5,
+    "bm25_b": 0.75,
+    "rrf_k": 60,
+    "index_path": "",
+    # [hybrid filter patch] bibliography retrieval is a separate index/tool.
+    "exclude_reference_chunks": True,
+    "suppress_reference_chunks_dense": True,
+    "annotate_reference_chunks": True,
+    "figure_boost": 0.0,
+    "rerank_floor": None,
+}
+
+
+def load_hybrid_config(config_path: str | None) -> dict[str, Any]:
+    """[sparse patch] Read the semantic-search ``hybrid`` block from disk."""
+    config = dict(_DEFAULT_HYBRID_CONFIG)
+    if config_path and os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                file_config = json.load(f)
+            config.update(file_config.get("semantic_search", {}).get("hybrid", {}))
+        except Exception as e:
+            logger.warning(f"Error loading hybrid config: {e}")
+    return config
 
 logger = logging.getLogger(__name__)
 
@@ -229,18 +261,40 @@ _MASS_DELETION_MIN_FRACTION = 0.25
 def _extract_fulltext_batch(reader, items):
     """Yield ``(item_id, (text, source) | None)`` for every item in ``items``.
 
-    Prefers the reader's batch API, which parallelises across a process pool
-    when configured. Falls back to one call per item for readers that do not
-    provide it — the minimal doubles used in tests implement only
-    ``extract_fulltext_for_item(item_id)``, and they should not have to grow
-    a new method just because the real reader gained a faster path.
+    [mineru patch] Use cached MinerU sidecars when present and, when enabled,
+    parse PDFs before falling back to the normal text-layer extractor. The
+    unmodified batch path is retained when MinerU is disabled and no sidecar
+    exists, preserving the reader's process-pool extraction behavior.
     """
-    batch = getattr(reader, "extract_fulltext_for_items", None)
-    if batch is not None:
-        yield from batch(items)
+    items = list(items)
+    mineru_config = _mineru.load_mineru_config()
+    sidecars = [
+        (item_id, item_key, _mineru.read_sidecar(mineru_config, item_key))
+        for item_id, item_key in items
+    ]
+
+    # Keep the upstream batch extractor on the ordinary path. A cached sidecar
+    # or enabled auto-MinerU intentionally opts into the per-item path below.
+    if not mineru_config.get("enabled") and not any(
+        text is not None for _item_id, _item_key, text in sidecars
+    ):
+        batch = getattr(reader, "extract_fulltext_for_items", None)
+        if batch is not None:
+            yield from batch(items)
+            return
+        for item_id, _item_key in items:
+            yield item_id, reader.extract_fulltext_for_item(item_id)
         return
-    for item_id, _item_key in items:
-        yield item_id, reader.extract_fulltext_for_item(item_id)
+
+    for item_id, item_key, sidecar in sidecars:
+        if sidecar is not None:
+            yield item_id, (sidecar, "mineru-sidecar")
+            continue
+        mineru_fulltext = _mineru.try_auto_parse(item_key, reader)
+        if mineru_fulltext:
+            yield item_id, mineru_fulltext
+        else:
+            yield item_id, reader.extract_fulltext_for_item(item_id)
 
 
 #: End-of-stream marker for the streaming index pipeline's queues. A unique
@@ -297,6 +351,76 @@ def _split_prepared_into_requests(prepared: dict[str, Any], request_batch_size: 
         yield buffer_docs, buffer_metas, buffer_ids, buffer_keys
 
 
+# [hybrid filter patch] Retrieval-hygiene helpers.
+_DCR_SECTION_RE = re.compile(r"\|\s*Section:\s*([^\]]+)\]", re.IGNORECASE)
+_BIB_SECTION_RE = re.compile(
+    r"^(?:references?|bibliography|bibliographic references|works cited|literature cited)$",
+    re.IGNORECASE,
+)
+_MARKDOWN_BIB_HEADING_RE = re.compile(
+    r"^\s*#{1,6}\s+(?:references?|bibliography|bibliographic references|works cited|literature cited)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_BIB_IDENTIFIER_RE = re.compile(
+    r"(?:https?://(?:dx\.)?doi\.org/|\bdoi\s*:\s*10\.|"
+    r"\barxiv\s*:\s*\d{4}|https?://arxiv\.org/)",
+    re.IGNORECASE,
+)
+_AUTHOR_YEAR_RE = re.compile(
+    r"\([A-Z][^()]{0,90}?(?:et al\.?)?[, ]+\d{4}[a-z]?\)"
+    r"|[A-Z][A-Za-z.'-]+(?:\s+(?:and|&)\s+[A-Z][A-Za-z.'-]+)?[,.]\s*(?:19|20)\d{2}"
+)
+_FIGURE_QUERY_RE = re.compile(
+    r"\b(fig(?:ure|ures)?|graph(?:s)?|plot(?:s)?|chart(?:s)?|panel(?:s)?|"
+    r"visual(?:s)?|depict(?:s|ed|ing)?|illustrat(?:e|es|ed|ing|ion)?|"
+    r"schematic(?:s)?|scatter(?:plot|plots)?|histogram(?:s)?|heat\s?map(?:s)?|curve(?:s)?)\b",
+    re.IGNORECASE,
+)
+
+
+def is_bibliography_chunk(text: str) -> bool:
+    """Return True only for a bibliography-section chunk.
+
+    DCR prefixes are parsed at the ``Section:`` field and only the final
+    breadcrumb component is tested. This deliberately does not scan the paper
+    title, so a title such as ``Reference Manual`` cannot suppress every chunk
+    in that book. Legacy chunks fall back to an exact Markdown heading anywhere
+    in the chunk, then a strict author-year plus DOI/arXiv multi-signal check.
+    """
+    if not text:
+        return False
+    first_line = text.split("\n", 1)[0]
+    match = _DCR_SECTION_RE.search(first_line)
+    if match:
+        leaf = match.group(1).split(">")[-1].strip()
+        if _BIB_SECTION_RE.fullmatch(leaf):
+            return True
+    # Older chunks can contain a References heading after a short prose tail,
+    # while their stored DCR breadcrumb still names the preceding section.
+    if _MARKDOWN_BIB_HEADING_RE.search(text):
+        return True
+    # One audited legacy chunk begins mid-bibliography with no heading. Require
+    # both high author-year density and several DOI/arXiv identifiers; this is
+    # deliberately much stricter than density alone, which catches lit reviews.
+    return (
+        len(_AUTHOR_YEAR_RE.findall(text)) >= 6
+        and len(_BIB_IDENTIFIER_RE.findall(text)) >= 3
+    )
+
+
+def is_reference_chunk(text: str) -> bool:
+    """Legacy diagnostic classifier: bibliography breadcrumb OR high density."""
+    if is_bibliography_chunk(text):
+        return True
+    matches = len(_AUTHOR_YEAR_RE.findall(text or ""))
+    return matches >= 3 and matches >= len(text or "") / 200.0
+
+
+def is_figure_query(query: str) -> bool:
+    """Return whether a query asks about a figure, graph, plot, or chart."""
+    return bool(_FIGURE_QUERY_RE.search(query))
+
+
 def warmup_reranker(config_path: str | None = None) -> bool:
     """Preload the configured reranker into the process-wide cache.
 
@@ -308,13 +432,11 @@ def warmup_reranker(config_path: str | None = None) -> bool:
     cfg = load_reranker_config(config_path)
     if not cfg.get("enabled", False):
         return False
-    model = cfg.get("model", _DEFAULT_RERANKER_CONFIG["model"])
-    try:
-        get_cached_reranker(model)
-        return True
-    except Exception as e:
-        logger.warning(f"Reranker warmup failed for '{model}': {e}")
+    url = str(cfg.get("url") or "").strip()
+    if not url:
+        logger.error("[local-only reranker patch] reranker is enabled but no local endpoint is configured")
         return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -330,49 +452,21 @@ _PAGE_SEPARATOR = PAGE_SEPARATOR
 
 def split_into_passages(
     text: str,
-    chunk_size: int = 1500,
+    chunk_size: int = 2400,
     overlap: int = 200,
-    max_chunks: int = 20,
+    max_chunks: int = 3000,
 ) -> list[tuple[str, int, int]]:
-    """Split *text* into overlapping passages on natural boundaries.
+    """[ast chunker patch] Bounded AST-Aware Markdown passage splitter.
 
-    Pure function (no I/O, no model load) so it is unit-testable in isolation.
-    Returns a list of ``(passage_text, char_start, char_end)`` tuples with
-    character offsets into the original string. Each window targets
-    ``chunk_size`` characters but is snapped back to the nearest paragraph or
-    sentence boundary in its second half so passages read as coherent quotes.
-    Consecutive windows overlap by ``overlap`` characters so a relevant span
-    straddling a boundary is still captured whole in one of them. At most
-    ``max_chunks`` passages are produced (a guard against pathologically long
-    documents inflating the index).
+    Preserves atomic tables, display LaTeX math, and figure schemas while enforcing
+    heading fences, node packing floors (>=600 chars), and prose sentence ceilings.
     """
-    text = (text or "").strip()
-    if not text:
-        return []
-    if overlap >= chunk_size:
-        overlap = chunk_size // 4
-
-    passages: list[tuple[str, int, int]] = []
-    start = 0
-    n = len(text)
-    while start < n and len(passages) < max_chunks:
-        end = min(n, start + chunk_size)
-        if end < n:
-            window = text[start:end]
-            for sep in ("\n\n", ". ", ".\n", "\n", " "):
-                idx = window.rfind(sep)
-                if idx != -1 and idx >= int(chunk_size * 0.5):
-                    end = start + idx + len(sep)
-                    break
-        chunk = text[start:end].strip()
-        if chunk:
-            passages.append((chunk, start, min(end, n)))
-        if end >= n:
-            break
-        new_start = end - overlap
-        # Guarantee forward progress even when overlap is large.
-        start = new_start if new_start > start else end
-    return passages
+    return _ast_chunker.bounded_ast_split_passages(
+        text=text,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        max_chunks=max_chunks,
+    )
 
 
 def _attachment_priority_changed(existing_metadata: dict, current_tag: str) -> bool:
@@ -440,9 +534,12 @@ class CrossEncoderReranker:
     """Optional cross-encoder re-ranker for semantic search results."""
 
     def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
-        from sentence_transformers import CrossEncoder
-
-        self.model = CrossEncoder(model_name)
+        # [local-only reranker patch] The in-process CrossEncoder path is
+        # intentionally disabled; all reranking must use the local HTTP model.
+        raise RuntimeError(
+            "In-process reranking is disabled; configure the local "
+            "semantic_search.reranker.url endpoint"
+        )
 
     def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
         """Re-rank documents by relevance to query.
@@ -462,6 +559,66 @@ class CrossEncoderReranker:
         scores = self.model.predict(pairs)
         ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
         return [(i, float(scores[i])) for i in ranked[:top_k]]
+
+
+class HttpCrossEncoderReranker:
+    """[http reranker patch] Cross-encoder reranker over a local llama.cpp /v1/rerank endpoint.
+
+    The endpoint is served by the local bge-reranker-v2-m3 GGUF model.  It has
+    the same public methods as :class:`CrossEncoderReranker`, so the retrieval
+    path does not need to know whether scoring is local HTTP or in-process.
+    Requests are batched to stay below the model context window.
+    """
+
+    def __init__(self, url: str, timeout: float = 60.0, batch_size: int = 12):
+        import requests
+
+        self.endpoint = url.rstrip("/")
+        self.timeout = timeout
+        self.batch_size = max(1, int(batch_size))
+        self._requests = requests
+
+    def rerank(self, query: str, documents: list[str], top_k: int) -> list[int]:
+        return [idx for idx, _ in self.rerank_with_scores(query, documents, top_k)]
+
+    def rerank_with_scores(self, query: str, documents: list[str], top_k: int) -> list[tuple[int, float]]:
+        """Score documents in bounded batches and return descending scores.
+
+        Local-only policy: if the endpoint fails, raise a clear error rather
+        than silently substituting unreranked or remote/model-hub retrieval.
+        """
+        if not documents:
+            return []
+        n = len(documents)
+        scores: dict[int, float] = {}
+        for start in range(0, n, self.batch_size):
+            batch = documents[start : start + self.batch_size]
+            try:
+                response = self._requests.post(
+                    self.endpoint,
+                    json={"query": query, "documents": batch},
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                rows = response.json().get("results", [])
+                for row in rows:
+                    index = int(row["index"])
+                    if 0 <= index < len(batch):
+                        scores[start + index] = float(row.get("relevance_score", 0.0))
+                if len(scores) < start + len(batch):
+                    raise ValueError("reranker response omitted one or more documents")
+            except Exception as exc:
+                # [local-only reranker patch] Do not silently substitute
+                # unreranked or remote/model-hub retrieval.
+                logger.error(
+                    f"Local HTTP reranker error ({self.endpoint}, batch {start // self.batch_size}): {exc}"
+                )
+                raise RuntimeError(
+                    f"Local reranker endpoint failed at {self.endpoint} "
+                    f"(batch {start // self.batch_size}): {exc}"
+                ) from exc
+        ranked = sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
+        return ranked[:top_k]
 
 
 # Process-wide reranker cache (issue #283).
@@ -489,6 +646,28 @@ def get_cached_reranker(model_name: str) -> CrossEncoderReranker:
             cached = CrossEncoderReranker(model_name=model_name)
             _RERANKER_CACHE[model_name] = cached
         return cached
+
+
+# [sparse patch] process-wide BM25 index cache (mirrors the reranker cache: the
+# search path builds a fresh ZoteroSemanticSearch per request, so the index must
+# be loaded once per process, not once per query).
+_SPARSE_CACHE: dict[str, "BM25Index"] = {}
+_SPARSE_CACHE_LOCK = threading.Lock()
+
+
+def get_cached_sparse_index(index_path: str, k1: float = 1.5, b: float = 0.75):
+    """Return the process-cached BM25Index for ``index_path``, or None if missing."""
+    cached = _SPARSE_CACHE.get(index_path)
+    if cached is not None:
+        return cached
+    with _SPARSE_CACHE_LOCK:
+        cached = _SPARSE_CACHE.get(index_path)
+        if cached is None:
+            idx = _sparse.BM25Index(index_path, k1=k1, b=b)
+            if not idx.load():
+                return None
+            _SPARSE_CACHE[index_path] = idx
+        return _SPARSE_CACHE[index_path]
 
 
 class ZoteroSemanticSearch:
@@ -541,10 +720,12 @@ class ZoteroSemanticSearch:
         # Reranker (lazy-initialized on first search)
         self._reranker: CrossEncoderReranker | None = None
         self._reranker_config = self._load_reranker_config()
+        self._hybrid_config = self._load_hybrid_config()  # [sparse patch]
 
         # Passage-level chunking (opt-in; default off preserves item-level
         # indexing and existing collections byte-for-byte).
         self._chunking_config = self._load_chunking_config()
+        self._contextual_config = self._load_contextual_config()  # [contextual patch] DCR
 
     def _load_chunking_config(self) -> dict[str, Any]:
         """Load passage-chunking configuration from file or use defaults.
@@ -568,6 +749,137 @@ class ZoteroSemanticSearch:
             except Exception as e:
                 logger.warning(f"Error loading chunking config: {e}")
         return config
+
+    # [contextual patch] Deterministic Contextual Retrieval (DCR): a lean
+    # structural prefix ([Paper: <title> (<author> <year>) | Section: <breadcrumb>])
+    # is prepended to every chunk IN MEMORY before storing/embedding, so empirical
+    # models and proofs keep their paper/section identity in both the dense and
+    # the BM25 index. Sidecar .md files on disk stay untouched. See New-RAG-Setup.md.
+    _HEADING_RE = re.compile(r"(?m)^(#{1,4})[ \t]+(.*?)[ \t]*$")
+
+    def _load_contextual_config(self) -> dict[str, Any]:
+        """[contextual patch] Load DCR configuration from file or use defaults."""
+        config: dict[str, Any] = {
+            "enabled": False,
+            "max_title_chars": 48,
+            "max_breadcrumb_chars": 120,
+            "max_depth": 3,
+        }
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path) as f:
+                    file_config = json.load(f)
+                    config.update(file_config.get("semantic_search", {}).get("contextual", {}))
+            except Exception as e:
+                logger.warning(f"Error loading contextual config: {e}")
+        return config
+
+    @staticmethod
+    def _format_citation(item: dict[str, Any]) -> str:
+        """[contextual patch] Extract a compact '<Author> <Year>' citation string."""
+        data = item.get("data", {}) if isinstance(item, dict) else {}
+        creators = data.get("creators", [])
+        author_names = []
+        if isinstance(creators, list):
+            for c in creators:
+                if not isinstance(c, dict):
+                    continue
+                last = (c.get("lastName") or c.get("name") or c.get("firstName") or "").strip()
+                if last:
+                    author_names.append(last)
+        author_str = ""
+        if len(author_names) == 1:
+            author_str = author_names[0]
+        elif len(author_names) == 2:
+            author_str = f"{author_names[0]} & {author_names[1]}"
+        elif len(author_names) >= 3:
+            author_str = f"{author_names[0]} et al."
+
+        raw_date = str(data.get("date") or "").strip()
+        year_match = re.search(r"\b(19\d\d|20\d\d)\b", raw_date)
+        year = year_match.group(1) if year_match else ""
+
+        if author_str and year:
+            return f"{author_str} {year}"
+        if author_str:
+            return author_str
+        if year:
+            return year
+        return ""
+
+    @staticmethod
+    def _clean_heading(text: str) -> str:
+        """[contextual patch] Strip markdown decorations from a heading."""
+        s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)  # [t](url) -> t
+        s = s.replace("`", "").replace("**", "").replace("__", "")
+        s = re.sub(r"[*$]", "", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    def _heading_breadcrumbs(self, doc_text: str) -> tuple[list[int], list[str]]:
+        """[contextual patch] (char offsets, breadcrumbs) of every heading in *doc_text*.
+
+        A breadcrumb is the active heading hierarchy at that offset, e.g.
+        "IV. Empirical Model > B. Instrumental Variables". Runs once per item,
+        not per chunk (monograph-size docs scan once).
+        """
+        positions: list[int] = []
+        crumbs: list[str] = []
+        stack: list[str] = []
+        for m in self._HEADING_RE.finditer(doc_text):
+            level = len(m.group(1))
+            text = self._clean_heading(m.group(2))
+            if not text:
+                continue
+            while stack and len(stack) >= level:
+                stack.pop()
+            stack.append(text)
+            positions.append(m.start())
+            crumbs.append(" > ".join(stack))
+        return positions, crumbs
+
+    def _contextualize_chunk(self, item, doc_text, chunk_text, offset,
+                             positions, crumbs) -> str:
+        """[contextual patch] Return *chunk_text* with the DCR prefix prepended.
+
+        Prefix shape: ``[Paper: <title> (<author> <year>) | Section: <breadcrumb>]\n``
+        (title-only when no section applies). Kept lean (~15-20 tokens): strictly
+        structural — no abstract or content injection.
+        """
+        if not self._contextual_config.get("enabled", False):
+            return chunk_text
+        title = (item.get("data", {}).get("title") or "").strip()
+        citation = self._format_citation(item)
+
+        breadcrumb = ""
+        if positions:
+            import bisect
+            idx = bisect.bisect_right(positions, offset) - 1
+            if idx >= 0:
+                parts = crumbs[idx].split(" > ")
+                max_depth = int(self._contextual_config.get("max_depth", 3) or 3)
+                if len(parts) > max_depth:
+                    parts = parts[-max_depth:]
+                breadcrumb = " > ".join(parts)
+        max_bc = int(self._contextual_config.get("max_breadcrumb_chars", 120) or 120)
+        if len(breadcrumb) > max_bc:
+            breadcrumb = breadcrumb[: max_bc - 3].rstrip() + "..."
+        max_t = int(self._contextual_config.get("max_title_chars", 48) or 48)
+        if len(title) > max_t:
+            title = title[: max_t - 3].rstrip() + "..."
+
+        paper_label = title
+        if title and citation:
+            paper_label = f"{title} ({citation})"
+        elif citation:
+            paper_label = citation
+
+        if paper_label and breadcrumb:
+            return f"[Paper: {paper_label} | Section: {breadcrumb}]\n" + chunk_text
+        if paper_label:
+            return f"[Paper: {paper_label}]\n" + chunk_text
+        if breadcrumb:
+            return f"[Section: {breadcrumb}]\n" + chunk_text
+        return chunk_text
 
     @property
     def _chunking_enabled(self) -> bool:
@@ -603,6 +915,10 @@ class ZoteroSemanticSearch:
         """Load reranker configuration from file or use defaults."""
         return load_reranker_config(self.config_path)
 
+    def _load_hybrid_config(self) -> dict[str, Any]:
+        """[sparse patch] Load hybrid-search configuration from file or use defaults."""
+        return load_hybrid_config(self.config_path)
+
     def _get_reranker(self) -> CrossEncoderReranker | None:
         """Get the reranker, reusing the process-wide cache if enabled.
 
@@ -612,9 +928,20 @@ class ZoteroSemanticSearch:
         """
         if not self._reranker_config.get("enabled", False):
             return None
-        if self._reranker is None:
-            model = self._reranker_config.get("model", _DEFAULT_RERANKER_CONFIG["model"])
-            self._reranker = get_cached_reranker(model)
+        # [local-only reranker patch] The local HTTP endpoint is mandatory;
+        # never fall back to sentence-transformers/Hugging Face.
+        url = str(self._reranker_config.get("url") or "").strip()
+        if not url:
+            raise RuntimeError(
+                "Local reranker is enabled but semantic_search.reranker.url is empty; "
+                "no in-process or Hugging Face fallback is permitted"
+            )
+        if self._reranker is None or getattr(self._reranker, "endpoint", None) != url.rstrip("/"):
+            self._reranker = HttpCrossEncoderReranker(
+                url,
+                timeout=float(self._reranker_config.get("timeout", 60) or 60),
+                batch_size=int(self._reranker_config.get("batch_size", 12) or 12),
+            )
         return self._reranker
 
     def _load_update_config(self) -> dict[str, Any]:
@@ -2621,7 +2948,7 @@ class ZoteroSemanticSearch:
             # Request size is therefore bounded one layer down, by each
             # embedding function's own request_batch_size, which is where the
             # provider's real per-request limit belongs.
-            batch_size = 25
+            batch_size = 2  # [batch size patch] 2026-08-17: batch-25 upserts (~14K chunks) wedge ChromaDB mid-write; small batches commit safely
             seen_items = 0
             _failed_docs = []  # Collect failures for end-of-run retry
 
@@ -2738,6 +3065,31 @@ class ZoteroSemanticSearch:
             except Exception:
                 pass
 
+            # [sparse patch] rebuild the BM25 sparse index after successful
+            # realtime indexing so newly added/changed chunks are searchable.
+            if self._hybrid_config.get("enabled", False):
+                try:
+                    _sparse_stats = self._build_sparse_index()
+                    logger.info(
+                        f"Rebuilt sparse index: {_sparse_stats['docs']} docs, "
+                        f"{_sparse_stats['terms']} terms, {_sparse_stats['ms']} ms"
+                    )
+                except Exception as _e:
+                    logger.warning(f"sparse index build failed: {_e}")
+
+            # [sparse patch] rebuild BM25 after successful indexing.
+            if self._hybrid_config.get("enabled", False):
+                try:
+                    sparse_stats = self._build_sparse_index()
+                    logger.info(
+                        "Rebuilt sparse index: %s docs, %s terms, %s ms",
+                        sparse_stats.get("docs"),
+                        sparse_stats.get("terms"),
+                        sparse_stats.get("ms"),
+                    )
+                except Exception as exc:
+                    logger.warning("sparse index build failed: %s", exc)
+
             # Update last update time, and promote last_sync_version on success.
             # A run whose deletion pass was SKIPPED must not promote: the next
             # run would take the unchanged-version early return and never
@@ -2844,6 +3196,12 @@ class ZoteroSemanticSearch:
                         stats["skipped"] += 1
                         continue
                     n_chunks = len(passages)
+                    # [contextual patch] DCR: precompute the heading breadcrumbs
+                    # once per item (one scan of the markdown, reused per chunk).
+                    _ctx_pos: list[int] = []
+                    _ctx_crumbs: list[str] = []
+                    if self._contextual_config.get("enabled", False):
+                        _ctx_pos, _ctx_crumbs = self._heading_breadcrumbs(doc_text)
                     for ci, (chunk_text, c0, c1) in enumerate(passages):
                         cmeta = dict(metadata)
                         cmeta["parent_item_key"] = item_key
@@ -2854,7 +3212,9 @@ class ZoteroSemanticSearch:
                         page = _page_for_offset(doc_text, c0)
                         if page is not None:
                             cmeta["page"] = page
-                        documents.append(self.chroma_client.truncate_text(chunk_text))
+                        documents.append(self.chroma_client.truncate_text(
+                            self._contextualize_chunk(item, doc_text, chunk_text, c0,
+                                                      _ctx_pos, _ctx_crumbs)))
                         metadatas.append(cmeta)
                         ids.append(f"{item_key}#{ci}")
                 else:
@@ -3518,11 +3878,317 @@ class ZoteroSemanticSearch:
         return aggregate
 
 
+    def _resolve_semantic_filter_item_keys(
+        self,
+        item_types: list[str],
+        tags: list[str],
+        group_id: int | None,
+    ) -> set[str] | None:
+        """[source filters patch] Resolve live tag/type membership.
+
+        Native type filters can fall back to Chroma-only filtering outside
+        local mode. Tags require local SQLite because indexed tag metadata is
+        historical and is stored as one display string rather than a live tag
+        relation.
+        """
+        reader = self._open_local_reader()
+        if reader is None:
+            if tags:
+                raise RuntimeError(
+                    "Live tag-filtered semantic search requires local Zotero "
+                    "mode and a readable zotero.sqlite database"
+                )
+            return None
+        try:
+            resolved = reader.resolve_semantic_filter_item_keys(
+                item_types=item_types or None,
+                tags=tags or None,
+                group_id=group_id,
+            )
+        finally:
+            reader.close()
+        if resolved is None:
+            raise ValueError(
+                "Semantic tag filters containing '*' or '%' are not supported "
+                "by live local filtering"
+            )
+        return set(resolved)
+
+    def _resolve_collection_item_keys(self, collection_identifier: str) -> list[str]:
+        """[scoped patch] Resolve all item keys in collection live from local SQLite."""
+        try:
+            db_path = self.db_path
+            if not db_path and self.config_path and os.path.exists(self.config_path):
+                with open(self.config_path) as _f:
+                    db_path = json.load(_f).get("semantic_search", {}).get("zotero_db_path")
+            with LocalZoteroReader(db_path=db_path) as reader:
+                return reader.resolve_collection_item_keys(collection_identifier)
+        except Exception as e:
+            logger.warning(f"collection item_keys resolution failed for '{collection_identifier}': {e}")
+            return []
+
+    @staticmethod
+    def _where_matches(meta: dict[str, Any], where: dict[str, Any] | None) -> bool:
+        """[sparse patch] Evaluate a ChromaDB ``where`` clause against one metadata dict.
+
+        Implements the operators this pipeline generates (equality on scalars,
+        $and/$or, $contains/$not_contains on list fields) plus the common
+        comparison operators, so the sparse leg respects the same group_id /
+        collection / user-filter scoping as the dense leg. Applied as a
+        post-filter over the sparse candidate set only — final order is
+        rank-fused and reranked.
+        """
+        if where is None:
+            return True
+        for key, cond in where.items():
+            if key == "$and":
+                if not all(ZoteroSemanticSearch._where_matches(meta, c) for c in cond):
+                    return False
+                continue
+            if key == "$or":
+                if not any(ZoteroSemanticSearch._where_matches(meta, c) for c in cond):
+                    return False
+                continue
+            val = meta.get(key)
+            if isinstance(cond, dict):
+                for op, operand in cond.items():
+                    if op == "$contains":
+                        if not (isinstance(val, list) and operand in val):
+                            return False
+                    elif op == "$not_contains":
+                        if isinstance(val, list) and operand in val:
+                            return False
+                    elif op == "$in":
+                        if val not in operand:
+                            return False
+                    elif op == "$nin":
+                        if val in operand:
+                            return False
+                    elif op == "$eq":
+                        if val != operand:
+                            return False
+                    elif op == "$ne":
+                        if val == operand:
+                            return False
+                    elif op == "$gt":
+                        if not (val is not None and val > operand):
+                            return False
+                    elif op == "$gte":
+                        if not (val is not None and val >= operand):
+                            return False
+                    elif op == "$lt":
+                        if not (val is not None and val < operand):
+                            return False
+                    elif op == "$lte":
+                        if not (val is not None and val <= operand):
+                            return False
+            else:
+                if val != cond:
+                    return False
+        return True
+
+    def _get_sparse_index(self):
+        """[sparse patch] Return the process-cached BM25 index, or None."""
+        cfg = self._hybrid_config
+        if not cfg.get("enabled", False):
+            return None
+        index_path = cfg.get("index_path") or str(
+            Path.home() / ".config" / "zotero-mcp" / "bm25_index.json"
+        )
+        return get_cached_sparse_index(
+            index_path,
+            k1=float(cfg.get("bm25_k1", 1.5) or 1.5),
+            b=float(cfg.get("bm25_b", 0.75) or 0.75),
+        )
+
+    def _build_sparse_index(self) -> dict[str, int | str]:
+        """[hybrid filter patch] Build BM25 from non-bibliography chunks."""
+        import time as _time
+
+        t0 = _time.monotonic()
+        index_path = self._hybrid_config.get("index_path") or str(
+            Path.home() / ".config" / "zotero-mcp" / "bm25_index.json"
+        )
+        idx = _sparse.BM25Index(index_path)
+        docs: list[tuple[str, str]] = []
+        excluded = 0
+        exclude_references = bool(
+            self._hybrid_config.get("exclude_reference_chunks", True)
+        )
+        for ids, documents, _metas in self.chroma_client.iter_documents():
+            for doc_id, text in zip(ids, documents):
+                if not text:
+                    continue
+                if exclude_references and is_bibliography_chunk(text):
+                    excluded += 1
+                    continue
+                docs.append((doc_id, text))
+        idx.build(docs)
+        idx.save()
+        stats = idx.stats()
+        stats["ms"] = int((_time.monotonic() - t0) * 1000)
+        stats["excluded_reference_chunks"] = excluded
+        _SPARSE_CACHE.pop(index_path, None)
+        return stats
+
+    def _hybrid_search(
+        self,
+        query: str,
+        fetch_limit: int,
+        where,
+        sparse_idx,
+        allowed_item_keys: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """[hybrid filter patch] Dense + BM25 -> RRF candidate set."""
+        dense = self.chroma_client.search(
+            query_texts=[query], n_results=fetch_limit, where=where
+        )
+
+        # Ordinary semantic RAG never uses bibliography-section chunks. Exact
+        # DOI/title/citation lookups belong in zotero_search_references.
+        if bool(self._hybrid_config.get("suppress_reference_chunks_dense", True)):
+            dense_ids_all = (dense.get("ids") or [[]])[0]
+            if dense_ids_all:
+                keep = [
+                    index
+                    for index, document in enumerate((dense.get("documents") or [[]])[0])
+                    if not is_bibliography_chunk(document)
+                ]
+                for key in ("ids", "documents", "metadatas", "distances"):
+                    if dense.get(key) and dense[key][0]:
+                        dense[key][0] = [dense[key][0][index] for index in keep]
+
+        dense_ids = (dense.get("ids") or [[]])[0]
+        sparse_hits = sparse_idx.search(
+            query,
+            top_n=max(fetch_limit * 2, 20),
+            allowed_item_keys=allowed_item_keys,
+        )
+        if not sparse_hits:
+            return dense
+
+        # Post-filter stale sparse indexes too, so hygiene and collection scope
+        # are correct immediately even before the next fast BM25 rebuild.
+        sparse_payload = self.chroma_client.get_documents([doc_id for doc_id, _ in sparse_hits])
+        sparse_docs = dict(zip(sparse_payload["ids"], sparse_payload["documents"]))
+        sparse_metas = dict(zip(sparse_payload["ids"], sparse_payload["metadatas"]))
+        exclude_sparse_refs = bool(
+            self._hybrid_config.get("exclude_reference_chunks", True)
+        )
+        sparse_hits = [
+            (doc_id, score)
+            for doc_id, score in sparse_hits
+            if (not exclude_sparse_refs or not is_bibliography_chunk(sparse_docs.get(doc_id, "")))
+            and self._where_matches(sparse_metas.get(doc_id, {}), where)
+        ]
+
+        rank_lists = [dense_ids, [doc_id for doc_id, _ in sparse_hits]]
+        if (
+            float(self._hybrid_config.get("figure_boost", 0.0) or 0.0) > 0
+            and is_figure_query(query)
+        ):
+            schema_ids = [
+                doc_id
+                for doc_id, _ in sparse_idx.search(
+                    "Figure Schema",
+                    top_n=30,
+                    allowed_item_keys=allowed_item_keys,
+                )
+            ]
+            if schema_ids:
+                schema_payload = self.chroma_client.get_documents(schema_ids)
+                schema_ids = [
+                    doc_id
+                    for doc_id, document, metadata in zip(
+                        schema_payload["ids"],
+                        schema_payload["documents"],
+                        schema_payload["metadatas"],
+                    )
+                    if "[Figure Schema]" in (document or "")
+                    and self._where_matches(metadata or {}, where)
+                ]
+                already_ranked = {doc_id for ranks in rank_lists for doc_id in ranks}
+                schema_ids = [doc_id for doc_id in schema_ids if doc_id not in already_ranked]
+                if schema_ids:
+                    rank_lists.append(schema_ids)
+
+        fused = _sparse.rrf_merge(
+            rank_lists,
+            k=int(self._hybrid_config.get("rrf_k", 60) or 60),
+        )
+        fused_ids = [doc_id for doc_id, _ in fused[:fetch_limit]]
+        if not fused_ids:
+            return dense
+
+        docs_by_id: dict[str, str] = {}
+        metas_by_id: dict[str, Any] = {}
+        dists_by_id: dict[str, float] = {}
+        for index, doc_id in enumerate(dense_ids):
+            docs_by_id[doc_id] = dense["documents"][0][index]
+            metas_by_id[doc_id] = dense["metadatas"][0][index]
+            dists_by_id[doc_id] = dense["distances"][0][index]
+
+        missing = [doc_id for doc_id in fused_ids if doc_id not in docs_by_id]
+        if missing:
+            fetched = self.chroma_client.get_documents(missing)
+            query_embedding = None
+            embedding_function = getattr(self.chroma_client, "embedding_function", None)
+            if embedding_function is not None and hasattr(embedding_function, "embed_query"):
+                try:
+                    query_embedding = embedding_function.embed_query(query)
+                except Exception:
+                    query_embedding = None
+
+            embeddings: dict[str, list[float]] = {}
+            if query_embedding is not None:
+                try:
+                    response = self.chroma_client.collection.get(
+                        ids=missing, include=["embeddings"]
+                    )
+                    values = response.get("embeddings")
+                    if values is not None and len(values):
+                        embeddings = dict(zip(response["ids"], values))
+                except Exception:
+                    embeddings = {}
+
+            import math as _math
+
+            for doc_id, document, metadata in zip(
+                fetched["ids"], fetched["documents"], fetched["metadatas"]
+            ):
+                docs_by_id[doc_id] = document
+                metas_by_id[doc_id] = metadata
+                embedding = embeddings.get(doc_id)
+                if (
+                    query_embedding is not None
+                    and embedding is not None
+                    and len(query_embedding) == len(embedding)
+                ):
+                    denominator = _math.sqrt(sum(x * x for x in query_embedding)) * _math.sqrt(
+                        sum(x * x for x in embedding)
+                    )
+                    cosine = (
+                        sum(x * y for x, y in zip(query_embedding, embedding)) / denominator
+                        if denominator
+                        else 0.0
+                    )
+                    dists_by_id[doc_id] = 1.0 - cosine
+                else:
+                    dists_by_id[doc_id] = 1.0
+
+        return {
+            "ids": [fused_ids],
+            "documents": [[docs_by_id[doc_id] for doc_id in fused_ids]],
+            "metadatas": [[metas_by_id[doc_id] for doc_id in fused_ids]],
+            "distances": [[dists_by_id[doc_id] for doc_id in fused_ids]],
+        }
+
     def search(self,
                query: str,
                limit: int = 10,
                filters: dict[str, Any] | None = None,
-               group_id: int | None = None) -> dict[str, Any]:
+               group_id: int | None = None,
+               collection_key: str | None = None) -> dict[str, Any]:
         """
         Perform semantic search over the Zotero library.
 
@@ -3551,24 +4217,129 @@ class ZoteroSemanticSearch:
                 multiplier = self._reranker_config.get("candidate_multiplier", 3)
                 fetch_limit = max(fetch_limit, limit * multiplier)
 
-            where = filters
+            parsed_filters = _source_filters.parse_semantic_filters(filters)
+            where = parsed_filters["where"] or None
+            item_types = parsed_filters["item_types"]
+            tag_conditions = parsed_filters["tags"]
+            requested_item_keys = parsed_filters["item_keys"]
+            allowed_item_keys: set[str] | None = None
+
+            # Keep the paper-RAG default narrow even when older index records
+            # contain excluded item types. This is a metadata predicate, not
+            # an embedding change.
+            excluded_clause = {
+                "item_type": {
+                    "$nin": sorted(_source_filters.DEFAULT_EXCLUDED_ITEM_TYPES)
+                }
+            }
+            where = {"$and": [excluded_clause, where]} if where else excluded_clause
+
+            # Resolve type/tag predicates to current parent item keys whenever
+            # local SQLite is available. This makes both dense and sparse legs
+            # obey the same live scope and avoids sparse top-N post-filter loss.
+            if item_types or tag_conditions:
+                resolved = self._resolve_semantic_filter_item_keys(
+                    item_types=item_types,
+                    tags=tag_conditions,
+                    group_id=group_id,
+                )
+                if resolved is not None:
+                    allowed_item_keys = set(resolved)
+
+            # Explicit parent item keys (e.g. from the exact-source resolver)
+            # are the resolved scope themselves. Intersect with any type/tag
+            # scope and fail closed when nothing remains.
+            if requested_item_keys:
+                allowed_item_keys = (
+                    set(requested_item_keys)
+                    if allowed_item_keys is None
+                    else allowed_item_keys.intersection(requested_item_keys)
+                )
+
+            if allowed_item_keys is not None:
+                key_clause = (
+                    {"item_key": "__EMPTY_OR_NONEXISTENT_SOURCE_FILTER__"}
+                    if not allowed_item_keys
+                    else {
+                        "item_key": (
+                            next(iter(allowed_item_keys))
+                            if len(allowed_item_keys) == 1
+                            else {"$in": sorted(allowed_item_keys)}
+                        )
+                    }
+                )
+                where = {"$and": [where, key_clause]} if where else key_clause
+
             if group_id is not None:
                 group_clause = {"group_id": int(group_id)}
-                where = {"$and": [filters, group_clause]} if filters else group_clause
+                where = {"$and": [where, group_clause]} if where else group_clause
+            # [scoped patch] live collection scope via item_key from local DB
+            if collection_key is not None:
+                target_keys = set(
+                    self._resolve_collection_item_keys(str(collection_key))
+                )
+                allowed_item_keys = (
+                    target_keys
+                    if allowed_item_keys is None
+                    else allowed_item_keys.intersection(target_keys)
+                )
+                coll_clause = (
+                    {"item_key": "__EMPTY_OR_NONEXISTENT_COLLECTION__"}
+                    if not allowed_item_keys
+                    else {
+                        "item_key": (
+                            next(iter(allowed_item_keys))
+                            if len(allowed_item_keys) == 1
+                            else {"$in": sorted(allowed_item_keys)}
+                        )
+                    }
+                )
+                where = {"$and": [where, coll_clause]} if where else coll_clause
 
-            # Perform semantic search
-            results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=where)
+            # [sparse patch] hybrid search: dense + BM25 -> RRF -> candidates.
+            sparse_idx = self._get_sparse_index()
+            if sparse_idx is not None:
+                results = self._hybrid_search(
+                    query,
+                    fetch_limit,
+                    where,
+                    sparse_idx,
+                    allowed_item_keys=allowed_item_keys,
+                )
+            else:
+                results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=where)
 
-            # Re-rank results with cross-encoder if enabled. With chunking we
-            # rerank ALL candidates (grouping to `limit` items happens in
-            # enrichment); without chunking we keep the historical top-k=limit.
+            # [hybrid filter patch] Preserve raw local cross-encoder scores.
+            # Figure boosts affect ordering/floor admission only; displayed
+            # confidence remains the unboosted score used by citation-integrity.
             if reranker and results.get("documents") and results["documents"][0]:
                 documents = results["documents"][0]
                 top_k = len(documents) if self._chunking_enabled else limit
-                ranked_indices = reranker.rerank(query, documents, top_k=top_k)
-                for key in ["ids", "distances", "documents", "metadatas"]:
+                scored = reranker.rerank_with_scores(query, documents, top_k=top_k)
+                figure_boost = float(
+                    self._hybrid_config.get("figure_boost", 0.0) or 0.0
+                )
+                floor = self._hybrid_config.get("rerank_floor")
+                figure_query = figure_boost > 0 and is_figure_query(query)
+                kept: list[tuple[int, float, float]] = []
+                for result_index, raw_score in scored:
+                    adjusted_score = raw_score + (
+                        figure_boost
+                        if figure_query and "[Figure Schema]" in documents[result_index]
+                        else 0.0
+                    )
+                    if floor is not None and adjusted_score < float(floor):
+                        continue
+                    kept.append((result_index, raw_score, adjusted_score))
+                kept.sort(key=lambda row: row[2], reverse=True)
+                ranked_indices = [row[0] for row in kept]
+                for key in ("ids", "distances", "documents", "metadatas"):
                     if results.get(key) and results[key][0]:
-                        results[key][0] = [results[key][0][i] for i in ranked_indices]
+                        results[key][0] = [
+                            results[key][0][result_index]
+                            for result_index in ranked_indices
+                        ]
+                results["rerank_scores"] = [[row[1] for row in kept]]
 
             # Enrich results with full Zotero item data, grouping passages back
             # to their parent items and capping at `limit` distinct papers.
@@ -3617,6 +4388,7 @@ class ZoteroSemanticSearch:
         distances = chroma_results.get("distances", [[]])[0]
         documents = chroma_results.get("documents", [[]])[0]
         metadatas = chroma_results.get("metadatas", [[]])[0]
+        rerank_scores = chroma_results.get("rerank_scores", [[]])[0]
 
         seen_items: set[str] = set()
         for i, raw_id in enumerate(ids):
@@ -3639,6 +4411,12 @@ class ZoteroSemanticSearch:
                 "metadata": meta if isinstance(meta, dict) else {},
                 "query": query,
             }
+            enriched_result["rerank_score"] = (
+                rerank_scores[i] if i < len(rerank_scores) else None
+            )
+            # A defensive annotation remains useful if suppression is disabled
+            # in config or a legacy candidate slips through.
+            enriched_result["is_reference"] = is_bibliography_chunk(document)
             # Passage provenance — present only on a chunk-indexed collection.
             if isinstance(meta, dict):
                 for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page"):
@@ -3652,6 +4430,17 @@ class ZoteroSemanticSearch:
                 break
 
         self._attach_zotero_items(enriched)
+        for result in enriched:
+            item = result.get("zotero_item") or {}
+            item_data = item.get("data", {}) if isinstance(item, dict) else {}
+            item_type = item_data.get("itemType") or (
+                (result.get("metadata") or {}).get("item_type")
+                if isinstance(result.get("metadata"), dict)
+                else None
+            )
+            result["source_group"] = _source_filters.source_group_for_item_type(
+                item_type
+            )
         return enriched
 
     def _attach_zotero_items(self, enriched: list[dict[str, Any]]) -> None:

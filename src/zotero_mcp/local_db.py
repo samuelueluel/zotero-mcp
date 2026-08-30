@@ -1050,6 +1050,64 @@ class LocalZoteroReader:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    # [scoped patch] collection-scoped semantic search helpers
+    def resolve_collection_keys(self, collection_key: str) -> list[str]:
+        """Return the given collection key plus all descendant keys (recursive)."""
+        conn = self._get_connection()
+        out: list[str] = []
+        frontier = [collection_key]
+        while frontier:
+            key = frontier.pop()
+            row = conn.execute(
+                "SELECT collectionID FROM collections WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                continue
+            out.append(key)
+            for sub in conn.execute(
+                "SELECT key FROM collections WHERE parentCollectionID = ?", (row[0],)
+            ).fetchall():
+                frontier.append(sub[0])
+        return out
+
+    def resolve_collection_item_keys(self, collection_identifier: str) -> list[str]:
+        """Return all item keys belonging to collection_identifier (key or name) and subcollections."""
+        conn = self._get_connection()
+        target_key = collection_identifier
+        row = conn.execute(
+            "SELECT key FROM collections WHERE key = ?", (collection_identifier,)
+        ).fetchone()
+        if not row:
+            name_row = conn.execute(
+                "SELECT key FROM collections WHERE collectionName = ? COLLATE NOCASE", (collection_identifier,)
+            ).fetchone()
+            if name_row:
+                target_key = name_row[0]
+            else:
+                return []
+
+        coll_keys = self.resolve_collection_keys(target_key)
+        if not coll_keys:
+            return []
+
+        placeholders = ",".join("?" * len(coll_keys))
+        _row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('collectionItems', 'itemCollections') ORDER BY name DESC LIMIT 1"
+        ).fetchone()
+        _join = _row[0] if _row else "collectionItems"
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT i.key
+            FROM {_join} ic
+            JOIN items i ON i.itemID = ic.itemID
+            JOIN collections c ON c.collectionID = ic.collectionID
+            WHERE c.key IN ({placeholders})
+            """,
+            coll_keys
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def get_libraries(self) -> list[dict[str, Any]]:
         """Get all libraries (user, group, feed) from the database."""
         conn = self._get_connection()
@@ -1856,6 +1914,54 @@ class LocalZoteroReader:
         if resolved in _SIMPLE_FIELD_SQL:
             return _scalar_condition(_SIMPLE_FIELD_SQL[resolved], operation, value)
         return None
+
+    def resolve_semantic_filter_item_keys(
+        self,
+        item_types: list[str] | None = None,
+        tags: list[str] | None = None,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> list[str] | None:
+        """[source filters patch] Resolve live semantic filter membership.
+
+        Returns matching parent item keys. ``None`` means the tag DSL could
+        not be represented by this SQL backend (currently wildcard tags).
+        The method intentionally reads current SQLite metadata rather than
+        copying tags into embeddings, so tag and itemType changes take effect
+        without re-embedding.
+        """
+        conn = self._get_connection()
+        library_ids = self._resolve_scope_library_ids(group_id)
+        if not library_ids:
+            return []
+
+        library_placeholders = ",".join("?" for _ in library_ids)
+        clauses = [
+            f"i.libraryID IN ({library_placeholders})",
+            "i.itemID NOT IN (SELECT itemID FROM deletedItems)",
+            "it.typeName NOT IN ('attachment', 'note', 'annotation')",
+        ]
+        params: list[Any] = list(library_ids)
+
+        if item_types:
+            type_placeholders = ",".join("?" for _ in item_types)
+            clauses.append(f"it.typeName IN ({type_placeholders})")
+            params.extend(item_types)
+
+        if tags:
+            built = _tag_dsl_condition(tags)
+            if built is None:
+                return None
+            tag_sql, tag_params = built
+            clauses.append(tag_sql)
+            params.extend(tag_params)
+
+        rows = conn.execute(
+            "SELECT DISTINCT i.key FROM items i "
+            "JOIN itemTypes it ON i.itemTypeID = it.itemTypeID "
+            f"WHERE {' AND '.join(clauses)}",
+            params,
+        ).fetchall()
+        return [row[0] for row in rows]
 
     def _fetch_creators(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, list[dict]]:
         if not item_ids:
