@@ -9,7 +9,7 @@ import zotero_mcp.client as zotero_client
 from zotero_mcp.tools import synthesis
 
 # ---------------------------------------------------------------------------
-# synthesize_annotations
+# compile_annotation_digest
 # ---------------------------------------------------------------------------
 
 
@@ -75,7 +75,7 @@ def test_synthesize_annotations_groups_by_paper(monkeypatch):
     fake = _DigestZotero()
     monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
 
-    out = synthesis.synthesize_annotations(ctx=DummyContext())
+    out = synthesis.compile_annotation_digest(ctx=DummyContext())
 
     # Grouped under resolved paper titles, not raw keys.
     assert "## Attention Is All You Need" in out
@@ -99,7 +99,7 @@ def test_synthesize_annotations_markdown_disambiguates_same_title(monkeypatch):
     fake._title_map["PAPER002"] = "Attention Is All You Need"
     monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
 
-    out = synthesis.synthesize_annotations(ctx=DummyContext())
+    out = synthesis.compile_annotation_digest(ctx=DummyContext())
 
     assert "## Attention Is All You Need (PAPER001)" in out
     assert "## Attention Is All You Need (PAPER002)" in out
@@ -114,7 +114,7 @@ def test_synthesize_annotations_json_groups_structured_records_by_paper(monkeypa
     monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
 
     payload = json.loads(
-        synthesis.synthesize_annotations(format="json", ctx=DummyContext())
+        synthesis.compile_annotation_digest(format="json", ctx=DummyContext())
     )
 
     assert payload["summary"] == {
@@ -157,7 +157,7 @@ def test_synthesize_annotations_empty(monkeypatch):
     fake = FakeZotero()  # items() returns [] for every itemType
     monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
 
-    out = synthesis.synthesize_annotations(ctx=DummyContext())
+    out = synthesis.compile_annotation_digest(ctx=DummyContext())
     assert "No annotations or notes found" in out
 
 
@@ -166,7 +166,7 @@ def test_synthesize_annotations_json_empty_result_is_structured(monkeypatch):
     monkeypatch.setattr(zotero_client, "get_zotero_client", lambda: fake)
 
     payload = json.loads(
-        synthesis.synthesize_annotations(format="json", ctx=DummyContext())
+        synthesis.compile_annotation_digest(format="json", ctx=DummyContext())
     )
 
     assert payload == {

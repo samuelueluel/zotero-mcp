@@ -127,14 +127,14 @@ def _render_related(papers: list[dict], heading: str) -> list[str]:
 
 
 @mcp.tool(
-    name="zotero_find_related_papers",
+    name="discover_citing_and_referenced_works",
     description=(
         "Discover papers related to a known work by following its citation "
         "graph via OpenAlex (a free scholarly index). Use this to expand a "
         "literature review: find what a paper CITES (its references) and what "
         "CITES it (newer follow-up work). Each related paper is flagged as "
         "already in your Zotero library or not, so you can quickly spot gaps "
-        "to fetch (e.g. via zotero_add_item). "
+        "to fetch (e.g. via add_item). "
         "identifier: either an 8-char Zotero item key (its DOI is looked up) "
         "or a DOI / DOI-URL directly (e.g. '10.1038/nature12373' or "
         "'https://doi.org/10.1038/nature12373'). "
@@ -144,12 +144,12 @@ def _render_related(papers: list[dict], heading: str) -> list[str]:
         "Citations are sorted by citation count (most-cited first); references "
         "keep their original order. Requires the work to have a resolvable "
         "DOI present in OpenAlex. "
-        "Example: zotero_find_related_papers(identifier='10.1038/nature12373', "
+        "Example: discover_citing_and_referenced_works(identifier='10.1038/nature12373', "
         "direction='citations', limit=10)."
     ),
 )
 @with_zotero_api_lock
-def find_related_papers(
+def discover_citing_and_referenced_works(
     identifier: str,
     direction: Literal["references", "citations", "both"] = "both",
     limit: int | str | None = 20,
@@ -265,13 +265,13 @@ def _item_has_pdf(zot, item: dict) -> bool:
 
 
 @mcp.tool(
-    name="zotero_library_coverage",
+    name="audit_pdf_coverage",
     description=(
         "Audit PDF coverage across your Zotero library (or one collection): "
         "which items have a downloaded PDF attachment and which are missing "
         "one. Use this to find papers you can still fetch full text for — the "
         "missing list includes each item's DOI so you can pass it to "
-        "zotero_add_item's open-access download cascade. "
+        "add_item's open-access download cascade. "
         "collection_key: optional 8-char key to scope the audit to one "
         "collection; omit to scan the whole library. "
         "limit: max top-level items to scan (default 200). "
@@ -280,12 +280,12 @@ def _item_has_pdf(zot, item: dict) -> bool:
         "Reports total scanned, covered count, missing count, coverage "
         "percentage, and a capped list (first 50) of missing items with "
         "title, year, key, and DOI. "
-        "Example: zotero_library_coverage(collection_key='ABCD1234', "
+        "Example: audit_pdf_coverage(collection_key='ABCD1234', "
         "limit=100)."
     ),
 )
 @with_zotero_api_lock
-def library_coverage(
+def audit_pdf_coverage(
     collection_key: str | None = None,
     limit: int | str | None = 200,
     *,
@@ -406,7 +406,7 @@ def _scope_label(scope: str, collection_key: str = "") -> str:
 
 
 @mcp.tool()
-def zotero_rebuild_citation_graph(ctx: Context = None) -> str:
+def rebuild_citation_graph(ctx: Context = None) -> str:
     """Rebuild the local citation graph from Zotero metadata and MinerU sidecars.
 
     This is graph-only and does not re-embed ChromaDB or rebuild the semantic
@@ -447,24 +447,25 @@ def zotero_rebuild_citation_graph(ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def zotero_get_collection_hubs(
+def rank_works_by_inbound_citations(
     collection_key: str = "",
     top_n: int = 5,
     scope: str = "library",
     ctx: Context = None,
 ) -> str:
-    """Find hub nodes under an explicit collection/library graph scope.
+    """Rank works by resolved inbound citation edges within an explicit scope.
 
-    Scopes are ``collection``, ``library`` (legacy default),
-    ``collection-expanded``, and ``library-expanded``. Expanded scopes may
-    return external-reference nodes recovered from sidecar bibliographies.
+    This is a simple citation-subgraph in-degree ranking, not a network hub,
+    HITS, or centrality measure. Scopes are ``collection``, ``library``
+    (legacy default), ``collection-expanded``, and ``library-expanded``.
+    Expanded scopes may return external-reference nodes recovered from
+    sidecar bibliographies.
 
     ``inward_citations`` counts RESOLVED inbound edges only: bibliography
     entries that never resolved to a graph node (``unresolved`` — often the
     majority in economics sidecars) are invisible to it, so it is a lower
-    bound and cannot rank external works at all. The output carries a
-    per-scope resolution-coverage line; use ``zotero_zotero_search_references``
-    to count true citation occurrences.
+    bound. The output carries a per-scope resolution-coverage line; use
+    ``search_bibliography_entries`` to count true citation occurrences.
 
     Args:
         collection_key: Collection key; required for collection scopes.
@@ -473,12 +474,12 @@ def zotero_get_collection_hubs(
     """
     try:
         g = _get_graph()
-        hubs = g.get_collection_hubs(collection_key, top_n=top_n, scope=scope)
-        if not hubs:
-            return f"No hub nodes found for {_scope_label(scope, collection_key)}."
+        ranked = g.rank_works_by_inbound_citations(collection_key, top_n=top_n, scope=scope)
+        if not ranked:
+            return f"No cited works found for {_scope_label(scope, collection_key)}."
 
-        lines = [f"# Citation Hub Nodes ({_scope_label(scope, collection_key)})\n"]
-        cov = hubs[0].get("resolution_coverage") if hubs else None
+        lines = [f"# Works Ranked by Inbound Citations ({_scope_label(scope, collection_key)})\n"]
+        cov = ranked[0].get("resolution_coverage") if ranked else None
         if cov:
             entries = sum(cov.values())
             lines.append(
@@ -487,24 +488,24 @@ def zotero_get_collection_hubs(
             )
             lines.append(
                 "*Counts are graph inbound edges only; unresolved/ambiguous entries are not "
-                "counted. `ext:meta` counts are approximate — use `zotero_zotero_search_references` "
+                "counted. `ext:meta` counts are approximate — use `search_bibliography_entries` "
                 "for exact totals.\n"
             )
-        for i, hub in enumerate(hubs, 1):
-            yr = f" ({hub['year']})" if hub['year'] else ""
-            au = f" — *{hub['creators']}*" if hub['creators'] else ""
-            marker = _node_marker(hub)
-            lines.append(f"{i}. **{hub['title']}**{yr}{au}{marker}")
+        for i, work in enumerate(ranked, 1):
+            yr = f" ({work['year']})" if work['year'] else ""
+            au = f" — *{work['creators']}*" if work['creators'] else ""
+            marker = _node_marker(work)
+            lines.append(f"{i}. **{work['title']}**{yr}{au}{marker}")
             lines.append(
-                f"   - Key: `{hub['item_key']}` | Inward citations: **{hub['inward_citations']}** (graph edges only)"
+                f"   - Key: `{work['item_key']}` | Inward citations: **{work['inward_citations']}** (graph edges only)"
             )
         return "\n".join(lines)
     except Exception as e:
-        return f"Error retrieving citation hubs: {e}"
+        return f"Error ranking works by inbound citations: {e}"
 
 
 @mcp.tool()
-def zotero_get_paper_lineage(
+def get_citation_neighbors(
     item_key: str,
     depth: int = 1,
     scope: str = "library",
@@ -524,7 +525,7 @@ def zotero_get_paper_lineage(
     """
     try:
         g = _get_graph()
-        data = g.get_paper_lineage(
+        data = g.get_citation_neighbors(
             item_key,
             depth=depth,
             scope=scope,
@@ -570,7 +571,7 @@ def zotero_get_paper_lineage(
 
 
 @mcp.tool()
-def zotero_find_connected_papers(
+def find_bibliographically_coupled_papers(
     item_key: str,
     top_n: int = 5,
     scope: str = "library",
@@ -590,7 +591,7 @@ def zotero_find_connected_papers(
     """
     try:
         g = _get_graph()
-        connected = g.find_connected_papers(
+        connected = g.find_bibliographically_coupled_papers(
             item_key,
             top_n=top_n,
             scope=scope,
@@ -639,7 +640,7 @@ def _reference_marker(result: dict) -> str:
 
 
 @mcp.tool()
-def zotero_rebuild_reference_index(ctx: Context = None) -> str:
+def rebuild_reference_index(ctx: Context = None) -> str:
     """Build the separate BM25 index over individual local bibliography entries.
 
     This parses MinerU sidecars and joins the graph's per-entry audit data. It
@@ -675,7 +676,7 @@ def zotero_rebuild_reference_index(ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def zotero_audit_references(ctx: Context = None) -> str:
+def get_reference_index_status(ctx: Context = None) -> str:
     """Report parsed bibliography coverage and resolution status."""
     try:
         stats = audit_reference_index()
@@ -705,7 +706,7 @@ def zotero_audit_references(ctx: Context = None) -> str:
 
 
 @mcp.tool()
-def zotero_search_references(
+def search_bibliography_entries(
     query: str,
     limit: int = 10,
     collection_key: str = "",

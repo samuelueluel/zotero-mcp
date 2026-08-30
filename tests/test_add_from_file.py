@@ -1,4 +1,4 @@
-"""Tests for the local-file source of zotero_add_item (write.add_from_file)."""
+"""Tests for the local-file source of add_item (write.add_from_file)."""
 
 import sys
 import types

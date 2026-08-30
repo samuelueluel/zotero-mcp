@@ -1,4 +1,4 @@
-"""Tests for the search_by_citation_key tool and helper functions."""
+"""Tests for the find_item_by_citation_key tool and helper functions."""
 
 from unittest.mock import patch
 
@@ -9,7 +9,7 @@ from conftest import DummyContext, FakeZotero
 import zotero_mcp.tools.search as _search_mod
 from zotero_mcp.server import (
     _extra_has_citekey,
-    search_by_citation_key,
+    find_item_by_citation_key,
 )
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ class _CitekeyFakeZotero(FakeZotero):
 
 
 # ---------------------------------------------------------------------------
-# search_by_citation_key – web/API mode (Strategy B)
+# find_item_by_citation_key – web/API mode (Strategy B)
 # ---------------------------------------------------------------------------
 
 class TestSearchByCitationKeyWebMode:
@@ -86,7 +86,7 @@ class TestSearchByCitationKeyWebMode:
         monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
         monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
-        result = search_by_citation_key("Smith2024", ctx=DummyContext())
+        result = find_item_by_citation_key("Smith2024", ctx=DummyContext())
 
         assert "Citation Key: Smith2024" in result
         assert "Deep Learning" in result
@@ -104,7 +104,7 @@ class TestSearchByCitationKeyWebMode:
         monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
         monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
-        result = search_by_citation_key("Smith2024", ctx=DummyContext())
+        result = find_item_by_citation_key("Smith2024", ctx=DummyContext())
 
         assert "Citation Key: Smith2024" in result
         assert "Deep Learning" in result
@@ -118,13 +118,13 @@ class TestSearchByCitationKeyWebMode:
         monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
         monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
-        result = search_by_citation_key("Smith2024", ctx=DummyContext())
+        result = find_item_by_citation_key("Smith2024", ctx=DummyContext())
 
         assert "No item found with citation key: 'Smith2024'" in result
 
 
 # ---------------------------------------------------------------------------
-# search_by_citation_key – local mode
+# find_item_by_citation_key – local mode
 # ---------------------------------------------------------------------------
 
 class TestSearchByCitationKeyLocalMode:
@@ -148,9 +148,9 @@ class TestSearchByCitationKeyLocalMode:
         with patch(
             "zotero_mcp.better_bibtex_client.ZoteroBetterBibTexAPI",
         ) as MockBBT:
-            result = search_by_citation_key("Smith2024", ctx=DummyContext())
+            result = find_item_by_citation_key("Smith2024", ctx=DummyContext())
             assert MockBBT.call_count == 0, (
-                "search_by_citation_key must not call BBT — item.search is "
+                "find_item_by_citation_key must not call BBT — item.search is "
                 "broken in all reported BBT versions (#293)."
             )
 
@@ -165,7 +165,7 @@ class TestSearchByCitationKeyLocalMode:
 
 class TestSearchByCitationKeyEdgeCases:
     def test_empty_citekey(self):
-        result = search_by_citation_key("  ", ctx=DummyContext())
+        result = find_item_by_citation_key("  ", ctx=DummyContext())
         assert "Error: Citation key cannot be empty" in result
 
     def test_whitespace_stripped(self, monkeypatch):
@@ -176,7 +176,7 @@ class TestSearchByCitationKeyEdgeCases:
         monkeypatch.setattr(_search_mod._utils, "is_local_mode", lambda: False)
         monkeypatch.setattr(_search_mod._client, "get_zotero_client", lambda: fake)
 
-        result = search_by_citation_key("  Smith2024  ", ctx=DummyContext())
+        result = find_item_by_citation_key("  Smith2024  ", ctx=DummyContext())
 
         assert "Citation Key: Smith2024" in result
         assert "Stripped Key" in result

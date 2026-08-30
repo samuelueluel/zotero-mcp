@@ -1,4 +1,4 @@
-"""Integration tests for the CSL-JSON source of the zotero_add_item MCP tool."""
+"""Integration tests for the CSL-JSON source of the add_item MCP tool."""
 
 import json
 

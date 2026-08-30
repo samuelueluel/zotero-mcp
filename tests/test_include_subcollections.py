@@ -201,7 +201,7 @@ def test_get_collection_items_reports_an_empty_subtree_as_such(zot):
 
 
 # ---------------------------------------------------------------------------
-# search_items / search_by_tag
+# search_items / search_items_by_tag
 # ---------------------------------------------------------------------------
 
 def test_search_items_scope_defaults_to_direct(zot):
@@ -223,7 +223,7 @@ def test_search_items_scope_can_include_subcollections(zot):
 
 
 def test_search_by_tag_scope_defaults_to_direct(zot):
-    out = server.search_by_tag(
+    out = server.search_items_by_tag(
         tag=["shared"], collection_key=ROOT, limit=50, ctx=DummyContext()
     )
     assert zot.collection_items_calls == [ROOT]
@@ -231,7 +231,7 @@ def test_search_by_tag_scope_defaults_to_direct(zot):
 
 
 def test_search_by_tag_scope_can_include_subcollections(zot):
-    out = server.search_by_tag(
+    out = server.search_items_by_tag(
         tag=["shared"], collection_key=ROOT, include_subcollections=True,
         limit=50, ctx=DummyContext(),
     )
@@ -250,11 +250,11 @@ def test_subcollection_scope_is_ignored_without_a_collection_key(zot):
 
 
 # ---------------------------------------------------------------------------
-# advanced_search — membership rather than string comparison
+# search_items_advanced — membership rather than string comparison
 # ---------------------------------------------------------------------------
 
 def _adv(collection_key, operation="is", **kwargs):
-    return server.advanced_search(
+    return server.search_items_advanced(
         conditions=[{"field": "collection", "operation": operation, "value": collection_key}],
         limit=100, ctx=DummyContext(), **kwargs,
     )
@@ -287,7 +287,7 @@ def test_advanced_search_isnot_without_the_flag_is_unchanged(zot):
 def test_advanced_search_scopes_only_the_collection_field(zot):
     """A non-collection condition whose value happens to be a collection key
     must not pick up subtree treatment."""
-    out = server.advanced_search(
+    out = server.search_items_advanced(
         conditions=[{"field": "title", "operation": "is", "value": ROOT}],
         include_subcollections=True, limit=100, ctx=DummyContext(),
     )
@@ -295,7 +295,7 @@ def test_advanced_search_scopes_only_the_collection_field(zot):
 
 
 def test_advanced_search_expands_each_distinct_value_once(zot):
-    server.advanced_search(
+    server.search_items_advanced(
         conditions=[
             {"field": "collection", "operation": "is", "value": ROOT},
             {"field": "collection", "operation": "is", "value": ROOT},

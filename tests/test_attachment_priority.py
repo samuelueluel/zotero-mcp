@@ -255,7 +255,7 @@ class TestWebApiPathHonorsPriority:
         assert details.key == "MD000001"
 
     def test_pdf_only_priority_never_returns_a_non_pdf(self):
-        """What zotero_read_pdf_pages passes: it renders page ranges, so a
+        """What read_pdf_pages passes: it renders page ranges, so a
         markdown-first configuration must not hand it a .md file."""
         details = client_module.get_attachment_details(
             self._zot(), _parent(), priority=("pdf",)

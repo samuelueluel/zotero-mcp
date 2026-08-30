@@ -434,7 +434,7 @@ def test_batch_update_tags_validates_json_array(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Merged note surfaces: zotero_get_notes (list|search) and zotero_manage_note
+# Merged note surfaces: get_notes (list|search) and manage_note
 # ---------------------------------------------------------------------------
 
 

@@ -139,7 +139,7 @@ class TestDispatch:
             with pytest.raises(SystemExit) as exc:
                 cli_standalone.cmd_batch(args)
         assert exc.value.code == 1
-        write_mod.batch_update.assert_not_called()
+        write_mod.batch_edit_tags_and_extra.assert_not_called()
 
     def test_batch_json_error_uses_the_envelope(self, capsys):
         import json

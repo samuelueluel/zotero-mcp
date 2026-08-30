@@ -67,7 +67,7 @@ class TestGetItemRelated:
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client",
                             lambda: fake)
 
-        result = server.get_item_related("ITEM0001", ctx=DummyContext())
+        result = server.list_related_items("ITEM0001", ctx=DummyContext())
 
         assert "No related items found" in result
         assert "ITEM0001" in result
@@ -85,7 +85,7 @@ class TestGetItemRelated:
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client",
                             lambda: fake)
 
-        result = server.get_item_related("ITEM0001", ctx=DummyContext())
+        result = server.list_related_items("ITEM0001", ctx=DummyContext())
 
         assert "Second Paper" in result
         assert "ITEM0002" in result
@@ -98,7 +98,7 @@ class TestGetItemRelated:
         monkeypatch.setattr("zotero_mcp.tools.retrieval._client.get_zotero_client",
                             lambda: fake)
 
-        result = server.get_item_related("NOTFOUND", ctx=DummyContext())
+        result = server.list_related_items("NOTFOUND", ctx=DummyContext())
 
         assert "not found" in result.lower()
 

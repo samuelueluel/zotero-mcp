@@ -1,7 +1,7 @@
-"""Tests for the Extra-field half of zotero_batch_update (issue #232).
+"""Tests for the Extra-field half of batch_edit_tags_and_extra (issue #232).
 
 Batch upsert / removal of `Key: value` lines in the Extra field across
-multiple items. The tool surface is the merged zotero_batch_update; the
+multiple items. The tool surface is the merged batch_edit_tags_and_extra; the
 underlying batch_update_extra implementation is still called directly for
 the options the merged tool does not expose (replace).
 """
@@ -157,7 +157,7 @@ def _setup(monkeypatch, items):
 def test_batch_update_extra_updates_multiple_items(monkeypatch):
     fake = _setup(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=["ITEM0001", "ITEM0002"],
         set_keys={"tex.otscore": "2"},
         ctx=DummyContext(),
@@ -176,7 +176,7 @@ def test_batch_update_extra_removes_keys(monkeypatch):
     items[0]["data"]["extra"] = "Citation Key: smith2020\ntex.otscore: 2"
     fake = _setup(monkeypatch, items)
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=["ITEM0001"],
         remove_keys=["tex.otscore"],
         ctx=DummyContext(),
@@ -190,7 +190,7 @@ def test_batch_update_extra_removes_keys(monkeypatch):
 def test_batch_update_extra_skips_attachments(monkeypatch):
     fake = _setup(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=["ITEM0001", "ATTACH01"],
         set_keys={"tex.otscore": "2"},
         ctx=DummyContext(),
@@ -203,7 +203,7 @@ def test_batch_update_extra_skips_attachments(monkeypatch):
 def test_batch_update_extra_accepts_json_string_set_keys(monkeypatch):
     fake = _setup(monkeypatch, _make_items())
 
-    write.batch_update(
+    write.batch_edit_tags_and_extra(
         item_keys='["ITEM0002"]',
         set_keys='{"tex.otscore": "2"}',
         ctx=DummyContext(),
@@ -216,7 +216,7 @@ def test_batch_update_extra_accepts_json_string_set_keys(monkeypatch):
 def test_batch_update_extra_requires_item_keys(monkeypatch):
     _setup(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=[], set_keys={"tex.otscore": "2"}, ctx=DummyContext()
     )
 
@@ -226,7 +226,7 @@ def test_batch_update_extra_requires_item_keys(monkeypatch):
 def test_batch_update_extra_requires_an_action(monkeypatch):
     _setup(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=["ITEM0001"], ctx=DummyContext()
     )
 
@@ -250,7 +250,7 @@ def test_batch_update_extra_replace_incompatible_with_remove_keys(monkeypatch):
 def test_batch_update_extra_continues_after_missing_item(monkeypatch):
     fake = _setup(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=["NOSUCHKEY", "ITEM0002"],
         set_keys={"tex.otscore": "2"},
         ctx=DummyContext(),
@@ -262,7 +262,7 @@ def test_batch_update_extra_continues_after_missing_item(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Merged zotero_batch_update facade: shared selectors, both action families
+# Merged batch_edit_tags_and_extra facade: shared selectors, both action families
 # ---------------------------------------------------------------------------
 
 
@@ -290,7 +290,7 @@ def _setup_batch(monkeypatch, items):
 def test_batch_update_requires_a_selector(monkeypatch):
     _setup_batch(monkeypatch, _make_items())
 
-    result = write.batch_update(add_tags=["x"], ctx=DummyContext())
+    result = write.batch_edit_tags_and_extra(add_tags=["x"], ctx=DummyContext())
 
     assert result.startswith("Error")
     assert "selector" in result
@@ -299,7 +299,7 @@ def test_batch_update_requires_a_selector(monkeypatch):
 def test_batch_update_requires_an_action(monkeypatch):
     _setup_batch(monkeypatch, _make_items())
 
-    result = write.batch_update(item_keys=["ITEM0001"], ctx=DummyContext())
+    result = write.batch_edit_tags_and_extra(item_keys=["ITEM0001"], ctx=DummyContext())
 
     assert result.startswith("Error")
     assert "action" in result
@@ -309,7 +309,7 @@ def test_batch_update_tags_by_explicit_item_keys(monkeypatch):
     """The tag half now accepts the item_keys selector (was query/tag only)."""
     fake = _setup_batch(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=["ITEM0001"], add_tags=["reviewed"], ctx=DummyContext()
     )
 
@@ -324,7 +324,7 @@ def test_batch_update_extra_by_query_selector(monkeypatch):
     """The Extra half now accepts the query/tag selector (was item_keys only)."""
     fake = _setup_batch(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         query="climate", set_keys={"tex.otscore": "2"}, ctx=DummyContext()
     )
 
@@ -337,7 +337,7 @@ def test_batch_update_extra_by_query_selector(monkeypatch):
 def test_batch_update_runs_both_action_families(monkeypatch):
     fake = _setup_batch(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=["ITEM0002"],
         add_tags=["reviewed"],
         set_keys={"tex.otscore": "2"},
@@ -353,7 +353,7 @@ def test_batch_update_runs_both_action_families(monkeypatch):
 def test_batch_update_reports_no_match_for_unknown_keys(monkeypatch):
     _setup_batch(monkeypatch, _make_items())
 
-    result = write.batch_update(
+    result = write.batch_edit_tags_and_extra(
         item_keys=["NOSUCHKEY"], add_tags=["x"], ctx=DummyContext()
     )
 

@@ -1,5 +1,5 @@
-"""Tests for zotero_update_annotation and zotero_delete_annotation,
-and for the `tags` parameter on zotero_create_annotation."""
+"""Tests for update_annotation and delete_annotation,
+and for the `tags` parameter on create_annotation."""
 
 from zotero_mcp import server
 

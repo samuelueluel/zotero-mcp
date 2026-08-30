@@ -1,4 +1,4 @@
-"""Tests for the discovery tools (zotero_find_related_papers, zotero_library_coverage).
+"""Tests for the discovery tools (discover_citing_and_referenced_works, audit_pdf_coverage).
 
 Network calls to OpenAlex are stubbed by monkeypatching
 ``zotero_mcp.tools.discovery.requests.get``. The Zotero client is stubbed by
@@ -75,7 +75,7 @@ def _patch_requests(monkeypatch, handler):
 # DOIs via _helpers._normalize_doi, which (correctly) rejects malformed ones.
 
 
-# --- find_related_papers: references --------------------------------------
+# --- discover_citing_and_referenced_works: references --------------------------------------
 
 
 def test_references_direction(monkeypatch):
@@ -107,7 +107,7 @@ def test_references_direction(monkeypatch):
 
     _patch_requests(monkeypatch, handler)
 
-    out = discovery.find_related_papers("10.1234/x", direction="references", ctx=DummyContext())
+    out = discovery.discover_citing_and_referenced_works("10.1234/x", direction="references", ctx=DummyContext())
     assert "References" in out
     assert "Ref A" in out
     assert "Ref B" in out
@@ -116,7 +116,7 @@ def test_references_direction(monkeypatch):
     assert "Citations" not in out
 
 
-# --- find_related_papers: citations + sorting -----------------------------
+# --- discover_citing_and_referenced_works: citations + sorting -----------------------------
 
 
 def test_citations_direction_sorted_by_citation_count(monkeypatch):
@@ -145,14 +145,14 @@ def test_citations_direction_sorted_by_citation_count(monkeypatch):
 
     _patch_requests(monkeypatch, handler)
 
-    out = discovery.find_related_papers("10.1234/x", direction="citations", ctx=DummyContext())
+    out = discovery.discover_citing_and_referenced_works("10.1234/x", direction="citations", ctx=DummyContext())
     assert "Citations" in out
     assert "References" not in out
     # Higher citation count first
     assert out.index("Citer High") < out.index("Citer Low")
 
 
-# --- find_related_papers: library membership flagging ---------------------
+# --- discover_citing_and_referenced_works: library membership flagging ---------------------
 
 
 def test_library_membership_flagging(monkeypatch):
@@ -182,13 +182,13 @@ def test_library_membership_flagging(monkeypatch):
 
     _patch_requests(monkeypatch, handler)
 
-    out = discovery.find_related_papers("10.1234/x", direction="references", ctx=DummyContext())
+    out = discovery.discover_citing_and_referenced_works("10.1234/x", direction="references", ctx=DummyContext())
     assert "in library ✓" in out
     assert "not in library" in out
     assert "1 already in library" in out
 
 
-# --- find_related_papers: no DOI error path -------------------------------
+# --- discover_citing_and_referenced_works: no DOI error path -------------------------------
 
 
 def test_no_doi_error_path(monkeypatch):
@@ -196,7 +196,7 @@ def test_no_doi_error_path(monkeypatch):
     # requests.get should never be called, but stub it to a clear failure.
     _patch_requests(monkeypatch, lambda url, params: FakeResponse(404, {}))
 
-    out = discovery.find_related_papers("not a doi at all", ctx=DummyContext())
+    out = discovery.discover_citing_and_referenced_works("not a doi at all", ctx=DummyContext())
     assert "Could not resolve a DOI" in out
 
 
@@ -205,7 +205,7 @@ def test_item_key_without_doi(monkeypatch):
     zot._items = [{"key": "ABCD1234", "data": {"itemType": "journalArticle"}}]
     _patch_requests(monkeypatch, lambda url, params: FakeResponse(404, {}))
 
-    out = discovery.find_related_papers("ABCD1234", ctx=DummyContext())
+    out = discovery.discover_citing_and_referenced_works("ABCD1234", ctx=DummyContext())
     assert "Could not resolve a DOI" in out
 
 
@@ -226,11 +226,11 @@ def test_item_key_with_doi_resolves(monkeypatch):
 
     _patch_requests(monkeypatch, handler)
 
-    out = discovery.find_related_papers("ABCD1234", direction="both", ctx=DummyContext())
+    out = discovery.discover_citing_and_referenced_works("ABCD1234", direction="both", ctx=DummyContext())
     assert "Related Papers for: Source Paper" in out
 
 
-# --- library_coverage -----------------------------------------------------
+# --- audit_pdf_coverage -----------------------------------------------------
 
 
 class FakeZoteroCoverage(FakeZoteroDiscovery):
@@ -266,7 +266,7 @@ def test_library_coverage_missing_and_present(monkeypatch):
         "PAP2": [{"key": "NOTE1", "data": {"itemType": "note"}}],
     }
 
-    out = discovery.library_coverage(ctx=DummyContext())
+    out = discovery.audit_pdf_coverage(ctx=DummyContext())
     assert "Items scanned: 2" in out
     assert "With PDF: 1" in out
     assert "Missing PDF: 1" in out
@@ -285,7 +285,7 @@ def test_library_coverage_standalone_pdf_counts(monkeypatch):
             "data": {"itemType": "attachment", "contentType": "application/pdf", "filename": "loose.pdf"},
         },
     ]
-    out = discovery.library_coverage(ctx=DummyContext())
+    out = discovery.audit_pdf_coverage(ctx=DummyContext())
     assert "Items scanned: 1" in out
     assert "With PDF: 1" in out
     assert "Coverage: 100.0%" in out
@@ -300,7 +300,7 @@ def test_library_coverage_scoped_collection(monkeypatch):
         },
     ]
     zot._children = {"PAP2": []}
-    out = discovery.library_coverage(collection_key="ABCD1234", ctx=DummyContext())
+    out = discovery.audit_pdf_coverage(collection_key="ABCD1234", ctx=DummyContext())
     assert "collection ABCD1234" in out
     assert "Missing PDF: 1" in out
 
@@ -315,7 +315,7 @@ def test_library_coverage_children_error_tolerated(monkeypatch):
         raise RuntimeError("network down")
 
     zot.children = boom
-    out = discovery.library_coverage(ctx=DummyContext())
+    out = discovery.audit_pdf_coverage(ctx=DummyContext())
     # Treated as missing, not an error.
     assert "Missing PDF: 1" in out
     assert "Boom" in out

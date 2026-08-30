@@ -1,6 +1,6 @@
-"""Tests for the merged zotero_add_item tool.
+"""Tests for the merged add_item tool.
 
-zotero_add_item replaced the six zotero_add_by_* tools. It owns two
+add_item replaced the six zotero_add_by_* tools. It owns two
 things the per-source implementations never had: source-shape detection
 and the dispatch that hands the shared arguments to the right adder.
 Both are tested here; the per-source behavior stays in the

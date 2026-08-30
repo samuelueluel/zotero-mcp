@@ -1,4 +1,4 @@
-"""Tests for Features 7-8: find_duplicates and merge_duplicates."""
+"""Tests for Features 7-8: find_duplicate_items and merge_duplicate_items."""
 
 import json
 import re
@@ -108,11 +108,11 @@ class FakeZoteroForDuplicates(FakeZotero):
 
 
 # ---------------------------------------------------------------------------
-# Feature 7: find_duplicates
+# Feature 7: find_duplicate_items
 # ---------------------------------------------------------------------------
 
 class TestFindDuplicates:
-    """Tests for zotero_find_duplicates."""
+    """Tests for find_duplicate_items."""
 
     def test_happy_path_title_grouping(self, monkeypatch, dummy_ctx):
         """Items with the same normalized title are grouped together."""
@@ -124,7 +124,7 @@ class TestFindDuplicates:
         ]
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
-        result = server.find_duplicates(method="title", ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="title", ctx=dummy_ctx)
 
         # Should find one duplicate group containing A1 and A2
         assert "Machine Learning Basics" in result
@@ -143,7 +143,7 @@ class TestFindDuplicates:
         ]
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
-        result = server.find_duplicates(method="doi", ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="doi", ctx=dummy_ctx)
 
         assert "B1" in result
         assert "B2" in result
@@ -160,7 +160,7 @@ class TestFindDuplicates:
         ]
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
-        result = server.find_duplicates(method="title", ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="title", ctx=dummy_ctx)
 
         # All three should be in the same group
         assert "C1" in result
@@ -177,7 +177,7 @@ class TestFindDuplicates:
         ]
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
-        result = server.find_duplicates(method="both", ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="both", ctx=dummy_ctx)
 
         assert "no duplicate" in result.lower() or "0" in result
 
@@ -191,7 +191,7 @@ class TestFindDuplicates:
         ]
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
-        result = server.find_duplicates(
+        result = server.find_duplicate_items(
             method="title", collection_key="COL1", ctx=dummy_ctx
         )
 
@@ -207,7 +207,7 @@ class TestFindDuplicates:
         fake._items = [_make_item(f"X{i:04d}", f"Item {i}") for i in range(5001)]
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
-        result = server.find_duplicates(method="both", ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="both", ctx=dummy_ctx)
 
         assert "5,000" in result or "5000" in result or "5001" in result
         assert "collection" in result.lower()
@@ -223,7 +223,7 @@ class TestFindDuplicates:
         ]
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
 
-        result = server.find_duplicates(method="both", ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="both", ctx=dummy_ctx)
 
         # DOI group
         assert "F1" in result
@@ -234,11 +234,11 @@ class TestFindDuplicates:
 
 
 # ---------------------------------------------------------------------------
-# Feature 8: merge_duplicates
+# Feature 8: merge_duplicate_items
 # ---------------------------------------------------------------------------
 
 class TestMergeDuplicatesDryRun:
-    """Tests for merge_duplicates with confirm=False (dry-run)."""
+    """Tests for merge_duplicate_items with confirm=False (dry-run)."""
 
     def test_dry_run_returns_preview(self, monkeypatch, dummy_ctx):
         """Dry-run shows a preview of what would happen without writing."""
@@ -257,7 +257,7 @@ class TestMergeDuplicatesDryRun:
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=False, ctx=dummy_ctx
         )
 
@@ -282,7 +282,7 @@ class TestMergeDuplicatesDryRun:
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
-        server.merge_duplicates(
+        server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=False, ctx=dummy_ctx
         )
 
@@ -291,7 +291,7 @@ class TestMergeDuplicatesDryRun:
 
 
 class TestMergeDuplicatesConfirm:
-    """Tests for merge_duplicates with confirm=True."""
+    """Tests for merge_duplicate_items with confirm=True."""
 
     def _setup_merge(self, monkeypatch):
         """Shared setup: keeper + two duplicates with tags, collections, children."""
@@ -326,7 +326,7 @@ class TestMergeDuplicatesConfirm:
         """All unique tags from duplicates are consolidated into keeper."""
         fake = self._setup_merge(monkeypatch)
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
         )
 
@@ -343,7 +343,7 @@ class TestMergeDuplicatesConfirm:
         """Child items (notes, attachments, annotations) get parentItem set to keeper."""
         fake = self._setup_merge(monkeypatch)
 
-        server.merge_duplicates(
+        server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
         )
 
@@ -365,7 +365,7 @@ class TestMergeDuplicatesConfirm:
         delete_calls = []
         fake.delete_item = lambda *a, **kw: delete_calls.append(a)
 
-        server.merge_duplicates(
+        server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
         )
 
@@ -381,7 +381,7 @@ class TestMergeDuplicatesConfirm:
         """Keeper is added to every collection the duplicates belonged to."""
         fake = self._setup_merge(monkeypatch)
 
-        server.merge_duplicates(
+        server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
         )
 
@@ -403,7 +403,7 @@ class TestMergeDuplicatesConfirm:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         # Pass keeper_key inside duplicate_keys too
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["KEEP", "DUP1"], confirm=True, ctx=dummy_ctx
         )
 
@@ -422,7 +422,7 @@ class TestMergeDuplicatesConfirm:
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=[], confirm=True, ctx=dummy_ctx
         )
 
@@ -437,7 +437,7 @@ class TestMergeDuplicatesConfirm:
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["KEEP"], confirm=True, ctx=dummy_ctx
         )
 
@@ -477,7 +477,7 @@ class TestMergeDuplicatesConfirm:
 
         fake.update_item = failing_update
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
         )
 
@@ -507,7 +507,7 @@ class TestMergeDuplicatesConfirm:
 
         fake.item = tracking_item
 
-        server.merge_duplicates(
+        server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
         )
 
@@ -529,7 +529,7 @@ class TestMergeDuplicatesConfirm:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         # Pass a single string instead of a list
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys="DUP1", confirm=True, ctx=dummy_ctx
         )
 
@@ -562,7 +562,7 @@ def _make_attachment(key, parent, filename, version=1):
 
 
 class TestMergeDuplicatesPagination:
-    """merge_duplicates must see ALL children, not the API's first page of 25."""
+    """merge_duplicate_items must see ALL children, not the API's first page of 25."""
 
     def test_all_duplicate_children_reparented_past_first_api_page(self, monkeypatch, dummy_ctx):
         """A duplicate with >100 children gets every child re-parented (not
@@ -583,7 +583,7 @@ class TestMergeDuplicatesPagination:
         fake._children = {"KEEP": [], "DUP1": children}
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
         )
 
@@ -614,7 +614,7 @@ class TestMergeDuplicatesPagination:
         fake._children = {"KEEP": keeper_children, "DUP1": [dup_att]}
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
         )
 
@@ -648,13 +648,13 @@ def _dup_fake(monkeypatch, items):
 
 
 class TestFindDuplicatesPaging:
-    """zotero_find_duplicates must be able to reach every group it counted."""
+    """find_duplicate_items must be able to reach every group it counted."""
 
     def test_limit_above_100_is_not_clamped(self, monkeypatch, dummy_ctx):
         """The #394 bug: limit>100 was clamped, so groups 101+ were unreachable."""
         _dup_fake(monkeypatch, _doi_groups(120))
 
-        result = server.find_duplicates(method="doi", limit=150, ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="doi", limit=150, ctx=dummy_ctx)
 
         assert result.count("## Group:") == 120
         assert "Found 120 duplicate groups" in result
@@ -667,7 +667,7 @@ class TestFindDuplicatesPaging:
 
         seen = []
         for offset in range(0, 7, 3):
-            page = server.find_duplicates(
+            page = server.find_duplicate_items(
                 method="doi", limit=3, offset=offset, ctx=dummy_ctx
             )
             seen += re.findall(r"## Group: (doi:\S+)", page)
@@ -679,8 +679,8 @@ class TestFindDuplicatesPaging:
         """The same offset returns the same groups, or paging would skip some."""
         _dup_fake(monkeypatch, _doi_groups(9))
 
-        first = server.find_duplicates(method="doi", limit=4, offset=4, ctx=dummy_ctx)
-        second = server.find_duplicates(method="doi", limit=4, offset=4, ctx=dummy_ctx)
+        first = server.find_duplicate_items(method="doi", limit=4, offset=4, ctx=dummy_ctx)
+        second = server.find_duplicate_items(method="doi", limit=4, offset=4, ctx=dummy_ctx)
 
         assert re.findall(r"## Group: (doi:\S+)", first) == \
                re.findall(r"## Group: (doi:\S+)", second)
@@ -689,7 +689,7 @@ class TestFindDuplicatesPaging:
         """A truncated page says which groups it is showing out of how many."""
         _dup_fake(monkeypatch, _doi_groups(10))
 
-        result = server.find_duplicates(method="doi", limit=4, ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="doi", limit=4, ctx=dummy_ctx)
 
         assert "Found 10 duplicate groups" in result
         assert "Showing groups 1-4 of 10" in result
@@ -699,7 +699,7 @@ class TestFindDuplicatesPaging:
         """The footer is actionable: it says how to reach the withheld groups."""
         _dup_fake(monkeypatch, _doi_groups(10))
 
-        result = server.find_duplicates(method="doi", limit=4, ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="doi", limit=4, ctx=dummy_ctx)
 
         assert "6 more group(s) not shown" in result
         assert "offset=4" in result
@@ -708,7 +708,7 @@ class TestFindDuplicatesPaging:
         """An empty page is distinguishable from an empty library."""
         _dup_fake(monkeypatch, _doi_groups(3))
 
-        result = server.find_duplicates(
+        result = server.find_duplicate_items(
             method="doi", limit=5, offset=99, ctx=dummy_ctx
         )
 
@@ -734,7 +734,7 @@ class TestFindDuplicatesPaging:
         ]
         _dup_fake(monkeypatch, items)
 
-        result = server.find_duplicates(method="both", limit=1, ctx=dummy_ctx)
+        result = server.find_duplicate_items(method="both", limit=1, ctx=dummy_ctx)
 
         assert "Found 3 duplicate groups (2 by DOI, 1 by title)" in result
 
@@ -742,7 +742,7 @@ class TestFindDuplicatesPaging:
         """MCP clients hand numbers over as strings."""
         _dup_fake(monkeypatch, _doi_groups(5))
 
-        result = server.find_duplicates(
+        result = server.find_duplicate_items(
             method="doi", limit="2", offset="2", ctx=dummy_ctx
         )
 
@@ -751,7 +751,7 @@ class TestFindDuplicatesPaging:
     def test_negative_offset_clamps_to_zero(self, monkeypatch, dummy_ctx):
         _dup_fake(monkeypatch, _doi_groups(4))
 
-        result = server.find_duplicates(
+        result = server.find_duplicate_items(
             method="doi", limit=2, offset=-5, ctx=dummy_ctx
         )
 
@@ -801,7 +801,7 @@ class TestAutoMergeGating:
     def test_plan_writes_nothing(self, monkeypatch, dummy_ctx):
         fake = self._pair(monkeypatch)
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "Auto-merge plan" in result
         assert "nothing has been changed" in result.lower()
@@ -812,7 +812,7 @@ class TestAutoMergeGating:
     def test_plan_names_keeper_and_what_would_be_trashed(self, monkeypatch, dummy_ctx):
         self._pair(monkeypatch)
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "**KEEP** `K1`" in result
         assert "trash `K2`" in result
@@ -822,7 +822,7 @@ class TestAutoMergeGating:
         """The whole point: confirm=True alone must not be able to trash."""
         fake = self._pair(monkeypatch)
 
-        result = server.merge_duplicates(auto=True, confirm=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, confirm=True, ctx=dummy_ctx)
 
         assert "will not execute on confirm=True alone" in result
         assert fake.update_calls == []
@@ -831,7 +831,7 @@ class TestAutoMergeGating:
     def test_stale_plan_token_is_refused(self, monkeypatch, dummy_ctx):
         fake = self._pair(monkeypatch)
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             auto=True, confirm=True, plan_token="deadbeef1234", ctx=dummy_ctx
         )
 
@@ -842,14 +842,14 @@ class TestAutoMergeGating:
     def test_token_from_a_changed_library_is_refused(self, monkeypatch, dummy_ctx):
         """A plan confirmed after the library moved on must not be applied."""
         fake = self._pair(monkeypatch)
-        token = _token_from_plan(server.merge_duplicates(auto=True, ctx=dummy_ctx))
+        token = _token_from_plan(server.merge_duplicate_items(auto=True, ctx=dummy_ctx))
 
         # A third copy arrives before the confirmation lands.
         fake._items.append(
             _make_item("K3", "Same Paper", doi="10.1/x", date_added="2025-01-01")
         )
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             auto=True, confirm=True, plan_token=token, ctx=dummy_ctx
         )
 
@@ -858,9 +858,9 @@ class TestAutoMergeGating:
 
     def test_plan_then_confirm_executes(self, monkeypatch, dummy_ctx):
         fake = self._pair(monkeypatch)
-        token = _token_from_plan(server.merge_duplicates(auto=True, ctx=dummy_ctx))
+        token = _token_from_plan(server.merge_duplicate_items(auto=True, ctx=dummy_ctx))
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             auto=True, confirm=True, plan_token=token, ctx=dummy_ctx
         )
 
@@ -874,7 +874,7 @@ class TestAutoMergeGating:
     def test_auto_rejects_explicit_keys(self, monkeypatch, dummy_ctx):
         fake = self._pair(monkeypatch)
 
-        result = server.merge_duplicates(
+        result = server.merge_duplicate_items(
             auto=True, keeper_key="K1", duplicate_keys=["K2"], ctx=dummy_ctx
         )
 
@@ -884,7 +884,7 @@ class TestAutoMergeGating:
     def test_manual_path_still_requires_a_keeper(self, monkeypatch, dummy_ctx):
         fake = self._pair(monkeypatch)
 
-        result = server.merge_duplicates(duplicate_keys=["K2"], ctx=dummy_ctx)
+        result = server.merge_duplicate_items(duplicate_keys=["K2"], ctx=dummy_ctx)
 
         assert "keeper_key is required" in result
         assert fake.update_calls == []
@@ -906,7 +906,7 @@ class TestAutoMergeKeeperHeuristic:
             children={"MANY": [_child("N1", "MANY"), _child("N2", "MANY")]},
         )
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "**KEEP** `MANY`" in result
         assert "2 child item(s)" in result
@@ -918,7 +918,7 @@ class TestAutoMergeKeeperHeuristic:
                        date_added="2025-01-01"),
         ])
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "**KEEP** `ABS`" in result
         assert "has abstract" in result
@@ -931,7 +931,7 @@ class TestAutoMergeKeeperHeuristic:
                        date_added="2018-02-03"),
         ])
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "**KEEP** `OLD`" in result
         assert "added 2018-02-03" in result
@@ -943,8 +943,8 @@ class TestAutoMergeKeeperHeuristic:
             _make_item("AAA", "Paper", doi="10.1/d"),
         ])
 
-        first = server.merge_duplicates(auto=True, ctx=dummy_ctx)
-        second = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        first = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
+        second = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "**KEEP** `AAA`" in first
         assert _token_from_plan(first) == _token_from_plan(second)
@@ -960,7 +960,7 @@ class TestAutoMergeSafety:
             _make_item("S2", "Identical Title"),
         ])
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "No duplicates found" in result
         assert fake.client.patch_calls == []
@@ -971,7 +971,7 @@ class TestAutoMergeSafety:
             _make_item("S2", "Identical Title"),
         ])
 
-        result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, method="title", ctx=dummy_ctx)
 
         assert "1 group(s) qualify" in result
 
@@ -982,7 +982,7 @@ class TestAutoMergeSafety:
             _make_item("M2", "Thing", doi="10.1/m", item_type="book"),
         ])
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "0 group(s) qualify" in result
         assert "mixed item types" in result
@@ -996,7 +996,7 @@ class TestAutoMergeSafety:
             _make_item("C2", "List of Contributors", doi="10.1/book-two"),
         ])
 
-        result = server.merge_duplicates(auto=True, method="title", ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, method="title", ctx=dummy_ctx)
 
         assert "0 group(s) qualify" in result
         assert "carry different DOIs" in result
@@ -1012,7 +1012,7 @@ class TestAutoMergeSafety:
             _make_item("O2", "Same Title", doi="10.1/o"),
         ])
 
-        result = server.merge_duplicates(auto=True, method="both", ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, method="both", ctx=dummy_ctx)
 
         assert "1 group(s) qualify" in result
         assert "overlaps a group already merged" in result
@@ -1023,7 +1023,7 @@ class TestAutoMergeSafety:
             _make_item("M2", "Thing", doi="10.1/m", item_type="book"),
         ])
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "nothing to confirm" in result.lower()
         assert "plan_token" not in result
@@ -1043,8 +1043,8 @@ class TestAutoMergeSafety:
         for kid in fake._children["KEEP"]:
             fake._items.append(kid)
 
-        token = _token_from_plan(server.merge_duplicates(auto=True, ctx=dummy_ctx))
-        result = server.merge_duplicates(
+        token = _token_from_plan(server.merge_duplicate_items(auto=True, ctx=dummy_ctx))
+        result = server.merge_duplicate_items(
             auto=True, confirm=True, plan_token=token, ctx=dummy_ctx
         )
 
@@ -1057,7 +1057,7 @@ class TestAutoMergeSafety:
     def test_max_groups_caps_one_call(self, monkeypatch, dummy_ctx):
         _auto_fake(monkeypatch, _doi_groups(5, prefix="Q"))
 
-        result = server.merge_duplicates(auto=True, max_groups=2, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, max_groups=2, ctx=dummy_ctx)
 
         assert "2 group(s) qualify" in result
         assert "beyond this call's 2-group ceiling" in result
@@ -1074,7 +1074,7 @@ class TestAutoMergeSafety:
                                     item_type="book"))
         _auto_fake(monkeypatch, items)
 
-        result = server.merge_duplicates(auto=True, ctx=dummy_ctx)
+        result = server.merge_duplicate_items(auto=True, ctx=dummy_ctx)
 
         assert "30 skipped" in result
         assert result.count("mixed item types") == 20

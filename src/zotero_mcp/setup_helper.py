@@ -915,7 +915,7 @@ def main(cli_args=None):
                 else:
                     print("\nSemantic Search:")
                     print("- To update the database, run: zotero-mcp update-db")
-                    print("- Use zotero_semantic_search tool in Claude for AI-powered search")
+                    print("- Use semantic_search tool in Claude for AI-powered search")
                 if use_local:
                     print("\nNote: Make sure Zotero desktop is running and the local API is enabled in preferences.")
                 else:

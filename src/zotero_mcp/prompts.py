@@ -28,7 +28,7 @@ def literature_review(topic: str, depth: str = "standard") -> str:
         f"Conduct a literature review on: **{topic}**.",
         "",
         "Work through these steps, citing item keys and quoting matched passages:",
-        f"1. Run `zotero_semantic_search(query='{topic}', limit=12)` to find the most "
+        f"1. Run `semantic_search(query='{topic}', limit=12)` to find the most "
         "relevant papers already in the library. Note each paper's key and the "
         "matched passage.",
         "2. Cluster the results into themes. For each theme, name the key papers and "
@@ -37,15 +37,15 @@ def literature_review(topic: str, depth: str = "standard") -> str:
     if depth in ("standard", "deep"):
         steps.append(
             "3. For the 2-3 most central papers, call "
-            "`zotero_find_related_papers(identifier=<item key or DOI>, direction='both')` "
+            "`discover_citing_and_referenced_works(identifier=<item key or DOI>, direction='both')` "
             "to surface seminal references and newer citing work. Flag any strong "
             "related papers that are NOT yet in the library."
         )
     if depth == "deep":
         steps.append(
-            "4. Run `zotero_library_coverage()` (or scoped to the relevant collection) "
+            "4. Run `audit_pdf_coverage()` (or scoped to the relevant collection) "
             "to list on-topic items missing a PDF, and offer to fetch them via "
-            "`zotero_add_item`."
+            "`add_item`."
         )
     steps += [
         "",
@@ -71,7 +71,7 @@ def synthesize_my_notes(scope: str) -> str:
         [
             f"Synthesize my own reading notes and highlights for: **{scope}**.",
             "",
-            "1. Call `zotero_synthesize_annotations` (pass `collection_key` or `tag` if "
+            "1. Call `compile_annotation_digest` (pass `collection_key` or `tag` if "
             f"'{scope}' names one; otherwise gather library-wide and filter to the topic). "
             "This returns a per-paper digest of my highlights and notes.",
             "2. Read the digest and identify cross-cutting THEMES — points multiple "
@@ -95,8 +95,8 @@ def find_contradicting_evidence(claim: str) -> str:
         [
             f"Stress-test this claim against my Zotero library: **{claim}**",
             "",
-            "1. `zotero_semantic_search(query=<the claim>, limit=10)` — find papers directly on this topic.",
-            "2. `zotero_semantic_search` again with an INVERTED / skeptical phrasing of "
+            "1. `semantic_search(query=<the claim>, limit=10)` — find papers directly on this topic.",
+            "2. `semantic_search` again with an INVERTED / skeptical phrasing of "
             "the claim (e.g. limitations, null results, criticisms) to surface "
             "disconfirming work.",
             "3. Sort the results into SUPPORTS / CONTRADICTS / MIXED, quoting the matched "
@@ -123,13 +123,13 @@ def expand_from_paper(identifier: str) -> str:
         [
             f"Expand my reading list outward from this seed paper: **{identifier}**",
             "",
-            f"1. `zotero_find_related_papers(identifier='{identifier}', direction='both', "
+            f"1. `discover_citing_and_referenced_works(identifier='{identifier}', direction='both', "
             "limit=25)` to get its references (foundational work) and citations "
             "(follow-ups).",
             "2. Rank the related papers by relevance to my interests and by citation "
             "count. Highlight the ones already flagged as NOT in my library.",
             "3. For the top not-in-library papers, offer to add them with "
-            "`zotero_add_item` (which also tries to attach an open-access PDF).",
+            "`add_item` (which also tries to attach an open-access PDF).",
             "4. Summarize how the seed paper sits in its citation neighborhood: what it "
             "builds on, and how later work extended or challenged it.",
         ]

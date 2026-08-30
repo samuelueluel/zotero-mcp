@@ -4,7 +4,7 @@ library.
 Every Zotero library (personal + each group) has its own independent,
 monotonically increasing version counter, so a single shared
 ``semantic_search.last_sync_version`` scalar corrupted sync state for both
-libraries as soon as ``zotero_switch_library`` was used: the new library's
+libraries as soon as ``switch_library`` was used: the new library's
 counter was compared against a stale watermark from a different library, and
 then overwrote it.
 
@@ -399,7 +399,7 @@ def test_legacy_scalar_is_not_adopted_by_a_client_scoped_elsewhere(monkeypatch, 
 def test_update_run_scopes_to_the_clients_library_not_the_module_override(monkeypatch, tmp_path):
     """The updater must take its library identity from the Zotero client it
     reads keys and versions from. The module-level active-library override
-    is mutable shared state: a zotero_switch_library tool call can land
+    is mutable shared state: a switch_library tool call can land
     while the server's background update is mid-run, and any identity read
     at call time would attach the wrong library to this run's tagging,
     watermark — and, once deletion is group_id-scoped, deletion authority."""
@@ -422,7 +422,7 @@ def test_update_run_scopes_to_the_clients_library_not_the_module_override(monkey
 
 
 def test_override_flipped_mid_run_does_not_repoint_the_run(monkeypatch, tmp_path):
-    """The actual race, not just static precedence: a zotero_switch_library
+    """The actual race, not just static precedence: a switch_library
     landing while the run is in flight (here: during the item fetch) must
     not affect this run's tagging or watermark key."""
     config_path = _write_config(tmp_path)

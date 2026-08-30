@@ -12,7 +12,7 @@ from zotero_mcp import server
 
 
 # ---------------------------------------------------------------------------
-# Bug 1: manage_collections passed [item_dict] (list) instead of item_dict
+# Bug 1: set_item_collections passed [item_dict] (list) instead of item_dict
 # to addto_collection, causing "list indices must be integers or slices, not str"
 # ---------------------------------------------------------------------------
 
@@ -40,7 +40,7 @@ class TestManageCollectionsPayloadShape:
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
         ctx = DummyContext()
-        server.manage_collections(
+        server.set_item_collections(
             item_keys=["ITEM01"], add_to=["COL00001"], ctx=ctx
         )
 
@@ -53,7 +53,7 @@ class TestManageCollectionsPayloadShape:
 
 
 # ---------------------------------------------------------------------------
-# Bug 2: merge_duplicates used update_item({"deleted": True}) which pyzotero
+# Bug 2: merge_duplicate_items used update_item({"deleted": True}) which pyzotero
 # rejects. Now uses direct PATCH with {"deleted": 1} for safe trashing.
 # ---------------------------------------------------------------------------
 
@@ -113,7 +113,7 @@ class TestMergeTrashMethod:
         fake = self._setup(monkeypatch)
         ctx = DummyContext()
 
-        server.merge_duplicates(
+        server.merge_duplicate_items(
             keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=ctx
         )
 
@@ -132,13 +132,13 @@ class TestMergeTrashMethod:
 
 
 # ---------------------------------------------------------------------------
-# Bug 3: find_duplicates used zot.everything() which caused
+# Bug 3: find_duplicate_items used zot.everything() which caused
 # "cannot pickle '_thread.RLock' object" in MCP contexts.
 # Now uses manual pagination.
 # ---------------------------------------------------------------------------
 
 class TestFindDuplicatesNoPicle:
-    """find_duplicates does NOT call everything()."""
+    """find_duplicate_items does NOT call everything()."""
 
     def test_everything_not_called(self, monkeypatch):
         class FakeZotNoPickle(FakeZotero):
@@ -158,7 +158,7 @@ class TestFindDuplicatesNoPicle:
 
         ctx = DummyContext()
         # Should complete without hitting everything()
-        result = server.find_duplicates(method="both", ctx=ctx)
+        result = server.find_duplicate_items(method="both", ctx=ctx)
         assert "Error" not in result or "No duplicates" in result
 
 

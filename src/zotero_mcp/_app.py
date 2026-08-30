@@ -41,7 +41,7 @@ def _sync_semantic_update() -> None:
 
     # Avoid initializing ChromaDB on every server startup when no semantic
     # auto-update is due. This also avoids racing a foreground
-    # zotero_semantic_search call for the same persisted ChromaDB directory.
+    # semantic_search call for the same persisted ChromaDB directory.
     try:
         with open(config_path) as f:
             cfg = json.load(f)

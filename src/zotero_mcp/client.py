@@ -125,7 +125,7 @@ def with_zotero_api_lock(func):
     return wrapper
 
 
-# Runtime library override state — set by zotero_switch_library tool.
+# Runtime library override state — set by switch_library tool.
 # When non-empty, these values override the corresponding environment variables
 # in get_zotero_client(). Keys: "library_id", "library_type".
 _active_library_override: dict[str, str] = {}
@@ -446,7 +446,7 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     # Collections — list actual keys rather than a bare count. The Zotero
     # web API does NOT cascade collection-delete to items, so the array
     # can contain dangling references to collections that no longer exist.
-    # Showing the keys lets agents verify against zotero_search_collections
+    # Showing the keys lets agents verify against search_collections
     # instead of trusting a potentially stale count.
     if collections := data.get("collections", []):
         lines.append(f"**Collections:** {', '.join(collections)}")
@@ -644,7 +644,7 @@ def get_attachment_details(
         item: A Zotero item dictionary.
         priority: Attachment kinds in preference order. ``None`` uses the
             configured ``attachment_priority``. Callers that need one
-            specific kind should say so — ``zotero_read_pdf_pages`` passes
+            specific kind should say so — ``read_pdf_pages`` passes
             ``("pdf",)`` so a markdown-first configuration cannot hand it a
             file it has no way to read.
 

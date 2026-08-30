@@ -140,10 +140,10 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
 
 
 @mcp.tool(
-    name="zotero_read_pdf_pages",
+    name="read_pdf_pages",
     description="Read specific page range(s) from a PDF attachment of a Zotero item. "
     "Use this when you know which pages to read — for example after getting the PDF "
-    "outline via zotero_get_pdf_outline. Pages are 1-indexed. "
+    "outline via get_pdf_outline. Pages are 1-indexed. "
     "Returns Markdown with the page's heading structure preserved.",
 )
 def read_pdf_pages(
@@ -231,7 +231,7 @@ def read_pdf_pages(
             output.append("")
         return _helpers._prepend_size_warning(
             "\n".join(output),
-            "Consider using zotero_semantic_search to find specific content instead of reading full pages.",
+            "Consider using semantic_search to find specific content instead of reading full pages.",
         )
 
     except Exception as e:

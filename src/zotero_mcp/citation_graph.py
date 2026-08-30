@@ -1076,15 +1076,16 @@ class CitationGraph:
         except sqlite3.Error:
             return None
 
-    def get_collection_hubs(
+    def rank_works_by_inbound_citations(
         self,
         collection_key: str = "",
         top_n: int = 5,
         scope: str = "library",
     ) -> list[dict[str, Any]]:
-        """Find hub nodes under an explicit collection/library graph scope.
+        """Rank candidate works by citation-subgraph in-degree under a scope.
 
-        Legacy behavior is preserved for the default ``library`` scope: when a
+        This computes no network hub or centrality measure. Legacy behavior is
+        preserved for the default ``library`` scope: when a
         collection key is supplied, candidates are collection items but their
         inward citations may originate anywhere among resolved library items.
         ``collection`` restricts both ends to the collection, while
@@ -1133,10 +1134,10 @@ class CitationGraph:
             # Expanded hub discovery should return works actually cited by the
             # selected source set, not unrelated zero-degree library nodes.
             in_degrees = [pair for pair in in_degrees if pair[1] > 0]
-        sorted_hubs = sorted(in_degrees, key=lambda pair: (-pair[1], pair[0]))[:top_n]
+        ranked_works = sorted(in_degrees, key=lambda pair: (-pair[1], pair[0]))[:top_n]
 
         results = []
-        for key, degree in sorted_hubs:
+        for key, degree in ranked_works:
             data = self.graph.nodes[key]
             results.append({
                 **self._format_node(key),
@@ -1147,7 +1148,7 @@ class CitationGraph:
             })
         return results
 
-    def get_paper_lineage(
+    def get_citation_neighbors(
         self,
         item_key: str,
         depth: int = 1,
@@ -1177,7 +1178,7 @@ class CitationGraph:
             "depth": depth,
         }
 
-    def find_connected_papers(
+    def find_bibliographically_coupled_papers(
         self,
         item_key: str,
         top_n: int = 5,

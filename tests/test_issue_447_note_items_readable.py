@@ -3,9 +3,9 @@
 Notes are first-class Zotero items with `itemType: "note"` and their text in
 `data.note`. All three read paths refused to show it:
 
-    zotero_get_item_metadata(TDM59NG2) -> "# Untitled" and nothing else
-    zotero_get_notes(item_key=TDM59NG2) -> "No notes found for item TDM59NG2."
-    zotero_get_item_fulltext(TDM59NG2)  -> "No suitable attachment found"
+    get_item_metadata(TDM59NG2) -> "# Untitled" and nothing else
+    get_notes(item_key=TDM59NG2) -> "No notes found for item TDM59NG2."
+    get_item_fulltext(TDM59NG2)  -> "No suitable attachment found"
 
 Between them there was no way to read a note whose key you already held, even
 though pyzotero returns its full HTML body for the same key.
@@ -88,7 +88,7 @@ class TestNoteTitle:
 
 
 # ---------------------------------------------------------------------------
-# zotero_get_item_metadata
+# get_item_metadata
 # ---------------------------------------------------------------------------
 
 class TestMetadata:
@@ -123,7 +123,7 @@ class TestMetadata:
 
 
 # ---------------------------------------------------------------------------
-# zotero_get_notes
+# get_notes
 # ---------------------------------------------------------------------------
 
 class TestGetNotes:
@@ -187,7 +187,7 @@ class TestGetNotes:
 
 
 # ---------------------------------------------------------------------------
-# zotero_get_item_fulltext
+# get_item_fulltext
 # ---------------------------------------------------------------------------
 
 class TestFulltext:

@@ -8,7 +8,7 @@ This feature adds the ability to create highlight annotations on PDF attachments
 
 | Commit | Description |
 |--------|-------------|
-| `b6e7842` | Initial `zotero_create_annotation` tool |
+| `b6e7842` | Initial `create_annotation` tool |
 | `999ab2a` | Add fuzzy text matching |
 | `8ef202e` | Fix for PDFs with missing word spaces |
 | `9d093ea` | Enhanced fuzzy matching (normalization, thresholds) |
@@ -23,7 +23,7 @@ This feature adds the ability to create highlight annotations on PDF attachments
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    MCP Tool: zotero_create_annotation           │
+│                    MCP Tool: create_annotation           │
 │                         (server.py:1700-1939)                   │
 └─────────────────────────────────────────────────────────────────┘
                                   │
@@ -129,7 +129,7 @@ LIGATURE_REPLACEMENTS = {...}     # fi, fl, ff → expanded
 ### New MCP Tool
 
 ```python
-@mcp.tool(name="zotero_create_annotation")
+@mcp.tool(name="create_annotation")
 def create_annotation(
     attachment_key: str,   # PDF attachment key
     page: int,             # 1-indexed page number
@@ -211,7 +211,7 @@ print('All imports successful')
 
 ```python
 # Via MCP tool
-zotero_create_annotation(
+create_annotation(
     attachment_key="NHZFE5A7",
     page=1,
     text="We challenge two tenets of lifecycle investing",

@@ -17,7 +17,7 @@ PARENT_KEY = "PARENT01"
 
 def test_schema_requires_an_explicit_nullable_parent_key():
     tools = {tool.name: tool for tool in asyncio.run(server.mcp.list_tools())}
-    parameters = tools["zotero_set_item_parent"].parameters
+    parameters = tools["set_item_parent"].parameters
 
     assert "parent_key" in parameters["required"]
     assert {option["type"] for option in parameters["properties"]["parent_key"]["anyOf"]} == {

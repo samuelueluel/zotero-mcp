@@ -425,7 +425,7 @@ def warmup_reranker(config_path: str | None = None) -> bool:
     """Preload the configured reranker into the process-wide cache.
 
     Lets the server pay the cross-encoder load cost once at startup (off the
-    request path) so the first real ``zotero_semantic_search`` is fast too
+    request path) so the first real ``semantic_search`` is fast too
     (issue #283). Returns ``True`` if a model was warmed, ``False`` if the
     reranker is disabled. Never raises — a failed warmup must not crash startup.
     """
@@ -1103,7 +1103,7 @@ class ZoteroSemanticSearch:
         ``library_type``/``library_id``, with ``library_type`` normalized to
         the plural URL form), NOT from the module-level active-library
         override: the override is mutable shared state that a
-        ``zotero_switch_library`` tool call can change while a background
+        ``switch_library`` tool call can change while a background
         update run is in flight, and an identity read at call time would
         attach the wrong library to this run's tagging, watermark and
         deletion scope. (``get_zotero_client()`` constructs a fresh pyzotero
@@ -1161,7 +1161,7 @@ class ZoteroSemanticSearch:
         only be reused where provenance is unambiguous: when no runtime
         library override is active, the client is scoped to the
         env-configured default library, which is the only library a config
-        could have been tracking across restarts (``zotero_switch_library``
+        could have been tracking across restarts (``switch_library``
         overrides live in memory and are never persisted). That covers every
         existing single-library user, who keeps their watermark and avoids a
         needless full re-scan on upgrade.
@@ -1172,7 +1172,7 @@ class ZoteroSemanticSearch:
         silently skips the entire library. Provenance is judged against
         ``library_key`` — the run's pinned identity — rather than a live
         read of the mutable override, which can be cleared or changed
-        mid-run by a concurrent ``zotero_switch_library``.
+        mid-run by a concurrent ``switch_library``.
         """
         if legacy is None:
             return 0
@@ -1206,7 +1206,7 @@ class ZoteroSemanticSearch:
         by group_id ("0" = personal). Every Zotero library has its own
         independent, monotonically increasing version counter, so the single
         shared scalar this replaces corrupted sync state for both libraries
-        after `zotero_switch_library` (#393).
+        after `switch_library` (#393).
         """
         if not self.config_path or not os.path.exists(self.config_path):
             return 0
@@ -2594,7 +2594,7 @@ class ZoteroSemanticSearch:
             # will read items/versions from. Everything scope-sensitive in
             # the run (tagging, watermark key, backfill attribution, the
             # deletion pass) uses this snapshot, so a concurrent
-            # zotero_switch_library cannot re-point half a run at another
+            # switch_library cannot re-point half a run at another
             # library.
             self._run_group_id = self._client_group_id()
 
@@ -4040,7 +4040,7 @@ class ZoteroSemanticSearch:
         )
 
         # Ordinary semantic RAG never uses bibliography-section chunks. Exact
-        # DOI/title/citation lookups belong in zotero_search_references.
+        # DOI/title/citation lookups belong in search_bibliography_entries.
         if bool(hybrid_config.get("suppress_reference_chunks_dense", True)):
             dense_ids_all = (dense.get("ids") or [[]])[0]
             if dense_ids_all:

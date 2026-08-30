@@ -1,4 +1,4 @@
-"""Tests for Feature 6: update_item (zotero_update_item)."""
+"""Tests for Feature 6: update_item (update_item)."""
 
 import pytest
 

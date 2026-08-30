@@ -3,7 +3,7 @@
 Several Zotero item types store the title under a type-specific key instead
 of "title" itself: a statute's is "nameOfAct", a case's is "caseName", an
 email's is "subject" (see zotero_mcp.schema). The write path
-(zotero_update_item) already routes through schema.resolve_field for this
+(update_item) already routes through schema.resolve_field for this
 (commit 94e3c1f, #402); format_item_metadata did a raw data.get("title", ...)
 lookup, so every one of these item types rendered as "# Untitled" even
 though the real title was present under its type-specific key.

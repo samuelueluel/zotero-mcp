@@ -1,4 +1,4 @@
-"""Cross-backend parity for `zotero_advanced_search`, without a live library.
+"""Cross-backend parity for `search_items_advanced`, without a live library.
 
 `tests/live/test_search_backend_parity.py` compares the backends against
 whatever real Zotero happens to be connected. That is the stronger test, but it
@@ -6,7 +6,7 @@ needs `ZOTERO_MCP_LIVE_TESTS=1`, a running Zotero and someone's actual data, so
 it does not run in CI — which is exactly where a silent divergence would be
 introduced.
 
-This module closes that gap. Every case runs the *real* `server.advanced_search`
+This module closes that gap. Every case runs the *real* `server.search_items_advanced`
 twice over the same corpus (`tests/_search_corpus.py`), once routed to the
 SQLite backend and once to the pyzotero path, and asserts the two return the
 same item keys. Nothing is asserted against a hand-written expectation: the
@@ -35,7 +35,7 @@ pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 class _RefusingZotero:
     """A pyzotero stand-in whose use fails the test.
 
-    ``advanced_search`` builds a client before it decides which backend to
+    ``search_items_advanced`` builds a client before it decides which backend to
     use, so the SQL path legitimately *obtains* one — it just must never call
     it. Refusing at method level rather than at construction distinguishes
     those two things.
@@ -70,7 +70,7 @@ def _keys_from_output(text: str) -> set[str]:
 
 
 def _run_raw(monkeypatch, tmp_path, backend: str, **kwargs) -> str:
-    """Route ``advanced_search`` to *backend* and return its raw output.
+    """Route ``search_items_advanced`` to *backend* and return its raw output.
 
     The caller is expected to have already installed whatever
     ``format_item_result`` stand-in it wants to read results through.
@@ -95,11 +95,11 @@ def _run_raw(monkeypatch, tmp_path, backend: str, **kwargs) -> str:
             _client, "get_zotero_client", lambda: _CorpusZotero(corpus.build_api_items())
         )
 
-    return server.advanced_search(ctx=DummyContext(), limit=100, **kwargs)
+    return server.search_items_advanced(ctx=DummyContext(), limit=100, **kwargs)
 
 
 def _run(monkeypatch, tmp_path, backend: str, **kwargs) -> set[str]:
-    """Run the real advanced_search tool against *backend*, return item keys."""
+    """Run the real search_items_advanced tool against *backend*, return item keys."""
     # Render each result as its key alone: parity is about which items come
     # back, and the formatted output is not the thing under test.
     monkeypatch.setattr(

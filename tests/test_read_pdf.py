@@ -1,4 +1,4 @@
-"""Tests for zotero_read_pdf_pages tool."""
+"""Tests for read_pdf_pages tool."""
 
 import tempfile
 

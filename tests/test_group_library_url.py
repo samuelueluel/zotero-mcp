@@ -103,7 +103,7 @@ def test_create_note_against_group_uses_plural_url(monkeypatch, force_local_mode
     monkeypatch.setattr(zclient, "get_zotero_client", lambda: fake)
     monkeypatch.setattr(zclient, "get_web_zotero_client", lambda: fake)
 
-    # Simulate the runtime override left by zotero_switch_library(..., "group").
+    # Simulate the runtime override left by switch_library(..., "group").
     zclient.set_active_library(library_id="5910265", library_type="group")
     try:
         result = server.create_note(

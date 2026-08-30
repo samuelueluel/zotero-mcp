@@ -1,7 +1,7 @@
 """Tests for retrying fulltext extraction on previously-failed items.
 
 A "failed" has_fulltext marker must clear when the item's attachment set
-changes (e.g. a PDF is attached via zotero_attach_file to an item that was
+changes (e.g. a PDF is attached via attach_file to an item that was
 indexed metadata-only). Attaching a file does NOT bump the parent's
 dateModified, so the date check alone can never trigger the retry.
 """

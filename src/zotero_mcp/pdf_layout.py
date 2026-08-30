@@ -2,7 +2,7 @@
 PDF page layout detection for area annotation coordinate grounding.
 
 Detects candidate figure/table regions on a PDF page so that area
-annotations (zotero_create_annotation with a `rect`) can be placed on real
+annotations (create_annotation with a `rect`) can be placed on real
 detected content instead of guessed coordinates.
 
 Detection sources (all PyMuPDF):

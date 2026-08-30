@@ -242,7 +242,7 @@ For example: /Users/eugenehawkin/Documents/some-paper.pdf
 
 ### Test 8.1: Batch Update Tags by Tag Filter (Original Bug Fix)
 ```
-Use zotero_batch_update_tags to find items with the tag "test"
+Use batch_edit_tags_and_extra to find items with the tag "test"
 (use the tag parameter, not just the query) and add the tag
 "mcp-test-verified" to those items.
 ```
@@ -250,7 +250,7 @@ Use zotero_batch_update_tags to find items with the tag "test"
 
 ### Test 8.2: Batch Update Tags by Text Query
 ```
-Use zotero_batch_update_tags with query "Attention" (text search)
+Use batch_edit_tags_and_extra with query "Attention" (text search)
 and add the tag "attention-paper".
 ```
 **Verify:** The arXiv "Attention Is All You Need" paper gets the new tag.
@@ -268,9 +268,9 @@ These are existing library items — they should be restored to their original t
 
 These tests specifically verify bugs found during the first test run.
 
-### Test 9.1: manage_collections Tool Works
+### Test 9.1: set_item_collections Tool Works
 ```
-Use zotero_manage_collections (NOT update_item) to add the Nature
+Use set_item_collections (NOT update_item) to add the Nature
 paper from Phase 3 to "MCP Test Collection". Use the add_to parameter.
 ```
 **Verify:** The item appears in the collection. This tests the fix for the "list indices must be integers" error.
@@ -278,7 +278,7 @@ paper from Phase 3 to "MCP Test Collection". Use the add_to parameter.
 ### Test 9.2: update_item Preserves Existing Collections
 ```
 First, check what collections the Nature paper is currently in.
-Then use zotero_update_item with collections=["<MCP Test Collection key>"]
+Then use update_item with collections=["<MCP Test Collection key>"]
 to add it to that collection.
 Verify it's still in any collections it was in before.
 ```
@@ -551,7 +551,7 @@ After running all tests, fill in this checklist:
 | 7.1 | Add from File | Pass / Fail / Skipped |
 | 8.1 | Batch Update Tags (by tag) | Pass / Fail |
 | 8.2 | Batch Update Tags (by query) | Pass / Fail |
-| 9.1 | manage_collections Works | Pass / Fail |
+| 9.1 | set_item_collections Works | Pass / Fail |
 | 9.2 | update_item Preserves Collections | Pass / Fail |
 | 9.3 | create_note JSON String Tags | Pass / Fail |
 | 9.4 | create_note Returns Correct Key | Pass / Fail |

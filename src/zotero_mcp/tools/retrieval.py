@@ -24,7 +24,7 @@ DEFAULT_FULLTEXT_DISPLAY_MAX = 10
 
 
 def _fulltext_display_max_pages() -> int:
-    """Resolve the page cap for ``zotero_get_item_fulltext``.
+    """Resolve the page cap for ``get_item_fulltext``.
 
     Only ``fulltext_display_max_pages`` governs this. It deliberately does
     *not* fall back to ``pdf_max_pages``: that is the indexing cap, sized so
@@ -40,14 +40,14 @@ def _fulltext_display_max_pages() -> int:
 
 
 @mcp.tool(
-    name="zotero_get_item_metadata",
+    name="get_item_metadata",
     description=(
         "Fetch detailed metadata (title, creators, date, DOI, publisher, "
         "tags, abstract, URL, etc.) for ONE Zotero item by key. "
         "If the metadata and abstract don't contain what you need, call "
-        "zotero_get_item_fulltext to read the paper — but that is "
+        "get_item_fulltext to read the paper — but that is "
         "resource-intensive (10K+ tokens) and should NEVER be used for "
-        "searching; use zotero_search_items or zotero_semantic_search "
+        "searching; use search_items or semantic_search "
         "instead. "
         "item_key: the 8-character Zotero item key (NOT a DOI or title). "
         "include_abstract=True (default) includes the abstractNote in "
@@ -57,15 +57,15 @@ def _fulltext_display_max_pages() -> int:
         "format='json' returns the complete raw Zotero item record; "
         "format='bibtex' returns a BibTeX citation string suitable for "
         ".bib files. "
-        "Scope: active library only (switch with zotero_switch_library). "
+        "Scope: active library only (switch with switch_library). "
         "Unlike list endpoints, this returns items EVEN IF THEY ARE IN "
         "THE TRASH — a Status: In Trash line is surfaced when the item "
         "is trashed (recoverable via the Zotero UI). Collection "
         "membership is shown as keys rather than a bare count so the "
-        "caller can verify entries against zotero_search_collections "
+        "caller can verify entries against search_collections "
         "(the Zotero API does not cascade collection-delete to items, "
         "so dangling references can linger). "
-        "Example: zotero_get_item_metadata(item_key='RTKZQI8E', "
+        "Example: get_item_metadata(item_key='RTKZQI8E', "
         "format='bibtex')."
     )
 )
@@ -113,15 +113,15 @@ def get_item_metadata(
 
 
 @mcp.tool(
-    name="zotero_get_item_fulltext",
+    name="get_item_fulltext",
     description=(
         "Return the full extracted text of a Zotero item's primary "
         "attachment (PDF or EPUB). "
         "WARNING: returns the entire paper (often 10K+ tokens). Use ONLY "
         "when the user explicitly wants to READ the paper — not for "
         "searching or browsing. For topic search use "
-        "zotero_semantic_search; for metadata only use "
-        "zotero_get_item_metadata. "
+        "semantic_search; for metadata only use "
+        "get_item_metadata. "
         "Avoid calling this on multiple papers in one conversation unless "
         "the user specifically asked to read several. "
         "item_key: 8-character Zotero item key. Normally the parent item — "
@@ -129,14 +129,14 @@ def get_item_metadata(
         "unless attachment_priority says otherwise. Passing an attachment's "
         "own key instead reads exactly that file and skips the priority "
         "order, which is how you read one specific attachment of an item "
-        "that has several (find keys via zotero_get_item_children). "
+        "that has several (find keys via list_item_children). "
         "Scope: active library only. "
         "Extraction path (in order): local Zotero storage via SQLite when "
         "running in local mode (fastest, respects pdf_max_pages config); "
         "Zotero's server-side fulltext index; direct download and parsing "
         "as a last resort. Image-only scanned PDFs without OCR "
         "may return little or no text. "
-        "Example: zotero_get_item_fulltext(item_key='RTKZQI8E')."
+        "Example: get_item_fulltext(item_key='RTKZQI8E')."
     )
 )
 @with_zotero_api_lock
@@ -153,7 +153,7 @@ def get_item_fulltext(
             attachment is chosen by ``attachment_priority``. Passing an
             *attachment's* own key is also supported and reads exactly that
             file, bypassing the priority order — pair it with
-            ``zotero_get_item_children`` to read one specific attachment of
+            ``list_item_children`` to read one specific attachment of
             an item that has several (#378).
         ctx: MCP context
 
@@ -205,7 +205,7 @@ def get_item_fulltext(
                             ctx.info("Retrieved full text from MinerU sidecar")
                             return _helpers._prepend_size_warning(
                                 f"{metadata}\n\n---\n\n## Full Text\n\n{_mineru_text}",
-                                "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                                "Consider using semantic_search to find specific content instead of reading full papers."
                             )
                         extracted = reader.extract_fulltext_for_item(local_item.item_id)
                         if extracted and extracted[0]:
@@ -213,7 +213,7 @@ def get_item_fulltext(
                             ctx.info(f"Retrieved full text from local storage ({source})")
                             return _helpers._prepend_size_warning(
                                 f"{metadata}\n\n---\n\n## Full Text\n\n{extracted[0]}",
-                                "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                                "Consider using semantic_search to find specific content instead of reading full papers."
                             )
         except Exception as local_extract_error:
             local_extract_error_msg = str(local_extract_error)
@@ -233,7 +233,7 @@ def get_item_fulltext(
                 ctx.info("Successfully retrieved full text from Zotero's index")
                 return _helpers._prepend_size_warning(
                     f"{metadata}\n\n---\n\n## Full Text\n\n{full_text_data['content']}",
-                    "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                    "Consider using semantic_search to find specific content instead of reading full papers."
                 )
         except Exception as fulltext_error:
             ctx.info(f"Couldn't retrieve indexed full text: {str(fulltext_error)}")
@@ -256,7 +256,7 @@ def get_item_fulltext(
                     converted_text = _client.convert_to_markdown(download.path, max_pages=max_pages)
                     return _helpers._prepend_size_warning(
                         f"{metadata}\n\n---\n\n## Full Text\n\n{converted_text}",
-                        "Consider using zotero_semantic_search to find specific content instead of reading full papers."
+                        "Consider using semantic_search to find specific content instead of reading full papers."
                     )
 
                 error_details = "\n".join(f"  - {err}" for err in download.errors) or "  - No download source succeeded"
@@ -281,15 +281,15 @@ def get_item_fulltext(
 
 
 @mcp.tool(
-    name="zotero_get_attachment_path",
+    name="get_attachment_paths",
     description=(
         "Return the local filesystem path(s) of a Zotero item's attachments. "
         "Local mode only. Useful when you want to read a large PDF directly "
-        "(e.g., a book) instead of going through zotero_get_item_fulltext, "
+        "(e.g., a book) instead of going through get_item_fulltext, "
         "which is page-limited."
     )
 )
-def get_attachment_path(
+def get_attachment_paths(
     item_key: str,
     *,
     ctx: Context
@@ -297,7 +297,7 @@ def get_attachment_path(
     """List resolved local paths for an item's attachments."""
     if not _utils.is_local_mode():
         return (
-            "Error: zotero_get_attachment_path requires local mode "
+            "Error: get_attachment_paths requires local mode "
             "(set ZOTERO_LOCAL=true). Cloud-only attachments have no local path."
         )
     try:
@@ -326,16 +326,16 @@ def get_attachment_path(
 
 
 @mcp.tool(
-    name="zotero_get_collections",
+    name="list_collections",
     description=(
         "List all collections in the currently active Zotero library as a "
         "hierarchical tree (parents and nested subcollections, each with its "
         "8-character key). Use this when the user wants to see the full "
         "library structure. "
         "If you already know a name and just need the key, prefer "
-        "zotero_search_collections — it returns only matches. "
+        "search_collections — it returns only matches. "
         "Scope is limited to the active library — switch libraries with "
-        "zotero_switch_library before listing. Deep hierarchies render inline "
+        "switch_library before listing. Deep hierarchies render inline "
         "without truncation, so very deep trees can be long. "
         "limit: cap on collections returned; pass None (default) to use 100, "
         "or raise to 5000 for libraries with thousands of collections. "
@@ -497,8 +497,8 @@ def _build_attachment_extra(info):
 
 
 @mcp.tool(
-    name="zotero_get_collection_items",
-    description="Get all items in a specific Zotero collection. Supports detail='keys_only' (minimal), 'summary' (default, no abstracts), or 'full' (with abstracts). Includes PDF/notes indicators. include_subcollections=True also returns items filed in collections nested beneath this one (default False, matching Zotero's own 'Search subcollections' checkbox). For a collection larger than limit, page through it with offset (the response names the next offset to pass). TIP: To find papers on a specific topic, use zotero_semantic_search instead — it's faster and returns only relevant results."
+    name="list_collection_items",
+    description="Get all items in a specific Zotero collection. Supports detail='keys_only' (minimal), 'summary' (default, no abstracts), or 'full' (with abstracts). Includes PDF/notes indicators. include_subcollections=True also returns items filed in collections nested beneath this one (default False, matching Zotero's own 'Search subcollections' checkbox). For a collection larger than limit, page through it with offset (the response names the next offset to pass). TIP: To find papers on a specific topic, use semantic_search instead — it's faster and returns only relevant results."
 )
 @with_zotero_api_lock
 def get_collection_items(
@@ -833,13 +833,13 @@ def _format_children_grouped(zot, keys: list[str], ctx: Context) -> str:
 
 
 @mcp.tool(
-    name="zotero_get_item_children",
+    name="list_item_children",
     description=(
         "List the child items (attachments, notes, annotations under an "
         "attachment) of one OR MANY parent Zotero items. "
         "Use it to find an item's PDF/EPUB attachment key before "
-        "zotero_create_annotation or "
-        "zotero_get_pdf_outline — those take an attachment key, NOT the "
+        "create_annotation or "
+        "get_pdf_outline — those take an attachment key, NOT the "
         "parent item key. "
         "item_key: one 8-character parent key, or an ARRAY of keys (a "
         "JSON-encoded list string also works). Pass every key you have in "
@@ -849,8 +849,8 @@ def _format_children_grouped(zot, keys: list[str], ctx: Context) -> str:
         "and notes in full under the parent title; several keys: one compact "
         "line per child, grouped under each parent. "
         "Scope: active library only. "
-        "Examples: zotero_get_item_children(item_key='RTKZQI8E'); "
-        "zotero_get_item_children(item_key=['RTKZQI8E', '9UZR8GXT'])."
+        "Examples: list_item_children(item_key='RTKZQI8E'); "
+        "list_item_children(item_key=['RTKZQI8E', '9UZR8GXT'])."
     )
 )
 @with_zotero_api_lock
@@ -891,14 +891,14 @@ def get_item_children(
 
 
 @mcp.tool(
-    name="zotero_get_tags",
+    name="list_tags",
     description=(
         "List all tags used in the currently active Zotero library, as a "
         "flat markdown list (one tag per line). "
         "Use this for tag discovery before filtering with "
-        "zotero_search_by_tag or batch-editing with zotero_batch_update. "
+        "search_items_by_tag or batch-editing with batch_edit_tags_and_extra. "
         "Scope is the active library only — switch with "
-        "zotero_switch_library before listing. The list is flat: tags have "
+        "switch_library before listing. The list is flat: tags have "
         "no parent/child structure in Zotero, only a colon convention "
         "(\"area/subtag\") that this tool preserves verbatim. "
         "limit: cap on tags returned; None (default) returns all. "
@@ -970,7 +970,7 @@ def get_tags(
 
 
 @mcp.tool(
-    name="zotero_list_libraries",
+    name="list_libraries",
     description=(
         "List every Zotero library this MCP can address: the user's "
         "personal library (libraryID=1 conventionally), all group "
@@ -978,9 +978,9 @@ def get_tags(
         "local mode) RSS feed libraries. Each entry shows the "
         "library/group ID, display name, and item count. "
         "Use this to discover a library ID before calling "
-        "zotero_switch_library — the two form a read-then-switch "
+        "switch_library — the two form a read-then-switch "
         "workflow. If the user only wants to see Zotero collections "
-        "inside the CURRENT library, use zotero_get_collections "
+        "inside the CURRENT library, use list_collections "
         "instead. "
         "No parameters. "
         "In local mode: reads the local Zotero SQLite DB (fast, includes "
@@ -988,9 +988,9 @@ def get_tags(
         "API (no feeds). "
         "Read-only; no side effects. The active library isn't flagged "
         "in the output — track it yourself from the last successful "
-        "zotero_switch_library call (or the ZOTERO_LIBRARY_ID env var "
+        "switch_library call (or the ZOTERO_LIBRARY_ID env var "
         "if none). "
-        "Example: zotero_list_libraries()."
+        "Example: list_libraries()."
     ),
 )
 @with_zotero_api_lock
@@ -1088,7 +1088,7 @@ def list_libraries(*, ctx: Context) -> str:
 
         output.append("")
         output.append(
-            "Use `zotero_switch_library` to switch to a different library."
+            "Use `switch_library` to switch to a different library."
         )
 
         return "\n".join(output)
@@ -1099,16 +1099,16 @@ def list_libraries(*, ctx: Context) -> str:
 
 
 @mcp.tool(
-    name="zotero_switch_library",
+    name="switch_library",
     description=(
         "Switch the active library context. EVERY subsequent read/write "
         "tool call (collections, items, annotations, search — all of "
         "them) operates on the library set here. Changes persist for the "
         "rest of the session or until the next switch. "
-        "Discover valid library IDs/types via zotero_list_libraries "
+        "Discover valid library IDs/types via list_libraries "
         "first; don't guess. "
         "library_id: library ID string as returned by "
-        "zotero_list_libraries (numeric for user/group, numeric for "
+        "list_libraries (numeric for user/group, numeric for "
         "feeds). "
         "library_type: 'user' — the personal library; 'group' (default) "
         "— a group library; 'feeds' — a local RSS feed library; "
@@ -1117,8 +1117,8 @@ def list_libraries(*, ctx: Context) -> str:
         "in this mode). "
         "Fails fast if the library_id isn't accessible under the "
         "current credentials. "
-        "Example: zotero_switch_library(library_id='5294983', "
-        "library_type='group') or zotero_switch_library("
+        "Example: switch_library(library_id='5294983', "
+        "library_type='group') or switch_library("
         "library_id='', library_type='default')."
     ),
 )
@@ -1224,20 +1224,20 @@ def validate_library_switch(library_id: str, library_type: str) -> str | None:
 
 
 @mcp.tool(
-    name="zotero_list_feeds",
+    name="list_feeds",
     description=(
         "List all RSS feed subscriptions configured in the local Zotero "
         "desktop install. Each entry includes the feed's library ID, "
         "display name, source URL, item count, and last-checked "
         "timestamp. "
         "Use this to discover a feed's library_id before calling "
-        "zotero_get_feed_items; the two form a list-then-fetch workflow "
+        "list_feed_items; the two form a list-then-fetch workflow "
         "analogous to list_libraries + switch_library. "
         "No parameters. "
         "LOCAL MODE ONLY — RSS feeds live in the local SQLite database "
         "and are not exposed by the Zotero web API. Running this in web "
         "mode returns a clear error. Read-only; no side effects. "
-        "Example: zotero_list_feeds() → all subscribed feeds."
+        "Example: list_feeds() → all subscribed feeds."
     ),
 )
 @with_zotero_api_lock
@@ -1274,7 +1274,7 @@ def list_feeds(*, ctx: Context) -> str:
                 output.append("")
 
             output.append(
-                "Use `zotero_get_feed_items` with a feed's library ID to view its items."
+                "Use `list_feed_items` with a feed's library ID to view its items."
             )
             return "\n".join(output)
         finally:
@@ -1286,21 +1286,21 @@ def list_feeds(*, ctx: Context) -> str:
 
 
 @mcp.tool(
-    name="zotero_get_feed_items",
+    name="list_feed_items",
     description=(
         "Fetch recent items from a SPECIFIC Zotero RSS feed by its local "
         "library ID. Returns titles, authors, dates, and URLs as a "
         "markdown list. "
-        "Find the right library_id first with zotero_list_feeds — "
+        "Find the right library_id first with list_feeds — "
         "guessing feed IDs never works. "
         "library_id: INTEGER library ID of the feed (as shown by "
-        "zotero_list_feeds, NOT the feed's name or URL). "
+        "list_feeds, NOT the feed's name or URL). "
         "limit: max feed items to return (default 20). "
         "LOCAL MODE ONLY — feeds aren't exposed by the Zotero web API. "
         "Calls in web mode return a clear error. Read-only; does not "
         "trigger a new RSS fetch (Zotero desktop refreshes on its own "
         "schedule). "
-        "Example: zotero_get_feed_items(library_id=12, limit=30)."
+        "Example: list_feed_items(library_id=12, limit=30)."
     ),
 )
 @with_zotero_api_lock
@@ -1314,7 +1314,7 @@ def get_feed_items(
     Retrieve items from a specific RSS feed.
 
     Args:
-        library_id: The libraryID of the feed (from zotero_list_feeds).
+        library_id: The libraryID of the feed (from list_feeds).
         limit: Maximum number of items to return.
         ctx: MCP context
 
@@ -1378,13 +1378,13 @@ def get_feed_items(
 
 
 @mcp.tool(
-    name="zotero_get_recent",
+    name="list_recent_items",
     description=(
         "List the most recently ADDED items (by dateAdded) in the active "
         "library, optionally scoped to a single collection. "
         "Use this for 'what did I add recently?' questions — NOT for "
-        "general topic search (use zotero_semantic_search) or for a "
-        "collection's full contents (use zotero_get_collection_items). "
+        "general topic search (use semantic_search) or for a "
+        "collection's full contents (use list_collection_items). "
         "limit: how many recent items to return (default 10). "
         "collection_key: optional 8-character collection key to restrict "
         "results to that collection; when omitted, returns the N most "
@@ -1393,13 +1393,13 @@ def get_feed_items(
         "INCLUDING standalone notes and attachments — so results can mix "
         "papers, notes, and loose PDFs. If you only want parent items, "
         "filter client-side by itemType in the output. "
-        "Scope: active library only (switch with zotero_switch_library). "
-        "Example: zotero_get_recent(limit=20) or "
-        "zotero_get_recent(collection_key='MT53KB66', limit=5)."
+        "Scope: active library only (switch with switch_library). "
+        "Example: list_recent_items(limit=20) or "
+        "list_recent_items(collection_key='MT53KB66', limit=5)."
     )
 )
 @with_zotero_api_lock
-def get_recent(
+def list_recent_items(
     limit: int | str = 10,
     collection_key: str | None = None,
     *,
@@ -1434,7 +1434,7 @@ def get_recent(
             except Exception:
                 _col = None
             if not _col or _col.get("key") != collection_key:
-                return f"Collection not found: '{collection_key}'. Use zotero_get_collections or zotero_search_collections to find valid collection keys."
+                return f"Collection not found: '{collection_key}'. Use list_collections or search_collections to find valid collection keys."
             items = _utils._paginate(
                 zot.collection_items, collection_key,
                 sort="dateAdded", direction="desc", max_items=limit,
@@ -1466,10 +1466,10 @@ def get_recent(
 
 
 @mcp.tool(
-    name="zotero_get_item_related",
+    name="list_related_items",
     description="Get all related items for a specific Zotero item. Returns items that are linked via the relations field."
 )
-def get_item_related(
+def list_related_items(
     item_key: str,
     *,
     ctx: Context

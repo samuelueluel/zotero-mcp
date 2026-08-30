@@ -831,8 +831,8 @@ def resolve_exact_source(
                         "semantic_search",
                         "get_item_fulltext",
                         "get_pdf_outline",
-                        "get_paper_lineage",
-                        "find_connected_papers",
+                        "get_citation_neighbors",
+                        "find_bibliographically_coupled_papers",
                     ]
                     if status in {"ambiguous", "absent"}
                     else []

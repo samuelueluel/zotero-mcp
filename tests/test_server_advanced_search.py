@@ -55,7 +55,7 @@ def test_advanced_search_filters_items(monkeypatch):
     ]
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: FakeZotero(fake_items))
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[
             {"field": "title", "operation": "contains", "value": "quantum"},
             {"field": "year", "operation": "isGreaterThan", "value": "2020"},
@@ -73,7 +73,7 @@ def test_advanced_search_filters_items(monkeypatch):
 def test_advanced_search_rejects_unknown_operation(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: FakeZotero([]))
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[{"field": "title", "operation": "regex", "value": ".*"}],
         ctx=DummyContext(),
     )
@@ -137,7 +137,7 @@ def test_collection_condition_matches_membership(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
                         lambda: FakeZotero(_collection_items()))
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[
             {"field": "collection", "operation": "is", "value": "MSYFGVKG"},
             {"field": "tag", "operation": "contains", "value": "_ai-noted"},
@@ -157,7 +157,7 @@ def test_collection_condition_alone(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
                         lambda: FakeZotero(_collection_items()))
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[{"field": "collection", "operation": "is", "value": "MSYFGVKG"}],
         ctx=DummyContext(),
     )
@@ -171,7 +171,7 @@ def test_collection_is_not_excludes_members_and_keeps_unfiled(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
                         lambda: FakeZotero(_collection_items()))
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[{"field": "collection", "operation": "isNot", "value": "MSYFGVKG"}],
         ctx=DummyContext(),
     )
@@ -186,7 +186,7 @@ def test_collections_plural_is_accepted(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
                         lambda: FakeZotero(_collection_items()))
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[{"field": "collections", "operation": "is", "value": "OTHERKEY"}],
         ctx=DummyContext(),
     )
@@ -224,7 +224,7 @@ def _order(result):
 def _run_sorted(monkeypatch, items, **kwargs):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
                         lambda: FakeZotero(items))
-    return server.advanced_search(
+    return server.search_items_advanced(
         conditions=[{"field": "tag", "operation": "contains", "value": "t"}],
         limit=10, ctx=DummyContext(), **kwargs,
     )

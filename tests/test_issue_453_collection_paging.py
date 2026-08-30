@@ -1,11 +1,11 @@
 """A collection larger than 100 items can be enumerated in full (#453).
 
-`zotero_get_collection_items` capped at `_normalize_limit`'s default ceiling
+`list_collection_items` capped at `_normalize_limit`'s default ceiling
 of 100 and then told the caller to "increase the limit parameter to see more",
 which is the one thing that could not help: past 100 the parameter did
 nothing, and there was no offset. A 158-item collection could not be read.
 
-`zotero_get_recent` shared the cap and was worse -- it truncated silently and
+`list_recent_items` shared the cap and was worse -- it truncated silently and
 titled the result with the number of items that had been *asked* for.
 """
 
@@ -157,7 +157,7 @@ class TestPaging:
 
 class TestGetRecent:
     def test_recent_beyond_100_is_not_silently_truncated(self, big):
-        result = retrieval_tools.get_recent(limit=105, ctx=DummyContext())
+        result = retrieval_tools.list_recent_items(limit=105, ctx=DummyContext())
         assert result.startswith("# 105 Most Recently Added Items")
 
     def test_heading_reports_what_came_back_not_what_was_asked(self, monkeypatch):
@@ -167,7 +167,7 @@ class TestGetRecent:
         zot = BigCollectionZotero(size=12)
         monkeypatch.setattr(retrieval_tools._client, "get_zotero_client", lambda: zot)
 
-        result = retrieval_tools.get_recent(limit=105, ctx=DummyContext())
+        result = retrieval_tools.list_recent_items(limit=105, ctx=DummyContext())
         assert result.startswith("# 12 Most Recently Added Items")
 
 

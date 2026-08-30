@@ -58,54 +58,54 @@ TOOLSETS: dict[str, frozenset[str]] = {
     # a research session reaches for.
     "duplicates": frozenset(
         {
-            "zotero_find_duplicates",
-            "zotero_merge_duplicates",
+            "find_duplicate_items",
+            "merge_duplicate_items",
         }
     ),
     # Corpus-level exploration built on the semantic index.
     "discovery": frozenset(
         {
-            "zotero_find_related_papers",
-            "zotero_library_coverage",
+            "discover_citing_and_referenced_works",
+            "audit_pdf_coverage",
         }
     ),
     # Zotero RSS feed subscriptions.
     "feeds": frozenset(
         {
-            "zotero_list_feeds",
-            "zotero_get_feed_items",
+            "list_feeds",
+            "list_feed_items",
         }
     ),
     # Explicit item-to-item relations ("related items" in the Zotero UI).
     "relations": frozenset(
         {
-            "zotero_add_item_relation",
-            "zotero_remove_item_relation",
-            "zotero_get_item_related",
+            "add_item_relation",
+            "remove_item_relation",
+            "list_related_items",
         }
     ),
     # Group/personal library enumeration and switching. Only useful to users
     # who actually belong to group libraries.
     "libraries": frozenset(
         {
-            "zotero_list_libraries",
-            "zotero_switch_library",
+            "list_libraries",
+            "switch_library",
         }
     ),
     # Semantic-index administration. The same operations are available from
     # the CLI (``zotero-mcp update-db``), so agent access is a convenience.
     "search-admin": frozenset(
         {
-            "zotero_update_search_database",
-            "zotero_get_search_database_status",
+            "update_semantic_index",
+            "get_semantic_index_status",
         }
     ),
     # PDF page geometry. Pairs with area annotations, which need a coordinate
     # space, and with outline-driven navigation of long documents.
     "pdf-geometry": frozenset(
         {
-            "zotero_get_page_layout",
-            "zotero_get_pdf_outline",
+            "detect_pdf_regions",
+            "get_pdf_outline",
         }
     ),
     # The ChatGPT deep-research connector contract, which requires tools named

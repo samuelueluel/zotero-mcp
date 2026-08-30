@@ -1,6 +1,6 @@
 """Regression test for issue #362.
 
-``zotero_get_search_database_status`` reported "0 documents / Not initialized"
+``get_semantic_index_status`` reported "0 documents / Not initialized"
 against a fully populated database, while the CLI ``db-status`` reported the
 correct count for the *same* database.
 

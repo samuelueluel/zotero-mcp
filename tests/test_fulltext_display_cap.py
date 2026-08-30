@@ -2,7 +2,7 @@
 
 ``pdf_max_pages`` is sized so extraction never becomes the binding limit on
 what the semantic index can see — deliberately far above the ~8 pages that
-embedding token limits actually admit. ``zotero_get_item_fulltext`` is bound
+embedding token limits actually admit. ``get_item_fulltext`` is bound
 by something else entirely: an agent's context. If the display cap inherited
 the indexing cap, raising the latter would quietly start dumping dozens of
 pages of Markdown into a conversation.

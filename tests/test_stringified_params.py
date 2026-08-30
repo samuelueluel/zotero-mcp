@@ -8,7 +8,7 @@ it can never reach.
 
 #459 was the `rect` instance: area annotations were unreachable from Claude
 Code entirely. Sweeping for the same shape turned up one more,
-`zotero_advanced_search.conditions`, which was worse — its own description
+`search_items_advanced.conditions`, which was worse — its own description
 promised "also accepts a JSON string" and its body had the `json.loads` branch
 to honour that, both unreachable.
 
@@ -86,7 +86,7 @@ class TestKnownInstances:
         return next(t for t in tools if t.name == name)
 
     def test_advanced_search_conditions_accepts_a_json_string(self, registered_tools):
-        tool = self._tool(registered_tools, "zotero_advanced_search")
+        tool = self._tool(registered_tools, "search_items_advanced")
         annotation = dict(typing.get_type_hints(tool.fn))["conditions"]
         assert _accepts_bare_str(annotation)
 
@@ -96,11 +96,11 @@ class TestKnownInstances:
         """The description and the annotation have to agree. They did not:
         the description said "also accepts a JSON string" while the signature
         made that impossible."""
-        tool = self._tool(registered_tools, "zotero_advanced_search")
+        tool = self._tool(registered_tools, "search_items_advanced")
         assert "JSON string" in (tool.description or "")
 
     def test_create_annotation_rect_accepts_a_json_string(self, registered_tools):
-        tool = self._tool(registered_tools, "zotero_create_annotation")
+        tool = self._tool(registered_tools, "create_annotation")
         annotation = dict(typing.get_type_hints(tool.fn))["rect"]
         assert _accepts_bare_str(annotation)
 
@@ -109,7 +109,7 @@ class TestValidationLayer:
     """Annotations are the mechanism; this asserts the actual behaviour."""
 
     def test_stringified_conditions_passes_validation(self, registered_tools):
-        tool = next(t for t in registered_tools if t.name == "zotero_advanced_search")
+        tool = next(t for t in registered_tools if t.name == "search_items_advanced")
         payload = json.dumps([{"field": "itemType", "operation": "is", "value": "book"}])
 
         try:
@@ -122,7 +122,7 @@ class TestValidationLayer:
             )
 
     def test_stringified_rect_passes_validation(self, registered_tools):
-        tool = next(t for t in registered_tools if t.name == "zotero_create_annotation")
+        tool = next(t for t in registered_tools if t.name == "create_annotation")
 
         try:
             asyncio.run(tool.run({

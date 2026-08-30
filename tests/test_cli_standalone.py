@@ -315,15 +315,15 @@ class TestCmdSearch:
     def test_search_tag_mode(self):
         args = self._args(mode="tag", query="important,reviewed")
         mock_search = MagicMock()
-        mock_search.search_by_tag.return_value = "tagged results"
+        mock_search.search_items_by_tag.return_value = "tagged results"
 
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
             with patch("zotero_mcp.cli_standalone._import_tools",
                        return_value=(mock_search, MagicMock(), MagicMock(), MagicMock(), MagicMock())):
                 cmd_search(args)
 
-        mock_search.search_by_tag.assert_called_once()
-        call_kwargs = mock_search.search_by_tag.call_args.kwargs
+        mock_search.search_items_by_tag.assert_called_once()
+        call_kwargs = mock_search.search_items_by_tag.call_args.kwargs
         assert call_kwargs["tag"] == ["important", "reviewed"]
 
     def test_search_advanced_invalid_json_exits(self):

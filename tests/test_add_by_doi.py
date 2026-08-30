@@ -1,4 +1,4 @@
-"""Tests for the DOI source of zotero_add_item (formerly zotero_add_by_doi)."""
+"""Tests for the DOI source of add_item (formerly zotero_add_by_doi)."""
 
 import pytest
 from unittest.mock import MagicMock, patch

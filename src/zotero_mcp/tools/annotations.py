@@ -161,7 +161,7 @@ def _get_note_write_client(op_description: str):
 
 
 @mcp.tool(
-    name="zotero_get_annotations",
+    name="get_annotations",
     description=(
         "Get annotations (highlights and attached notes on PDF/EPUB "
         "attachments) for a specific item or across the active Zotero "
@@ -177,7 +177,7 @@ def _get_note_write_client(op_description: str):
         "with stable keys for downstream scripts and other MCP tools. "
         "Uses Better BibTeX when Zotero desktop is running locally, "
         "otherwise the Zotero web API. "
-        "Example: zotero_get_annotations(item_key='ABC12345') → every "
+        "Example: get_annotations(item_key='ABC12345') → every "
         "highlight/note on that paper."
     )
 )
@@ -1054,7 +1054,7 @@ def search_notes(
 
 
 @mcp.tool(
-    name="zotero_get_notes",
+    name="get_notes",
     description=(
         "Read notes from the active Zotero library. "
         "Omit query to LIST notes: with item_key, that item's child notes; "
@@ -1067,10 +1067,10 @@ def search_notes(
         "False for complete content (list mode only). "
         "raw_html=True returns a note's original HTML instead of stripped "
         "text — use it when you intend to edit and round-trip via "
-        "zotero_manage_note(action='update'). "
-        "Scope: active library only (zotero_switch_library to change). "
-        "Example: zotero_get_notes(item_key='ABC12345', raw_html=True); "
-        "zotero_get_notes(query='mindfulness')."
+        "manage_note(action='update'). "
+        "Scope: active library only (switch_library to change). "
+        "Example: get_notes(item_key='ABC12345', raw_html=True); "
+        "get_notes(query='mindfulness')."
     )
 )
 def get_notes_tool(
@@ -1105,17 +1105,17 @@ def get_notes_tool(
 
 
 @mcp.tool(
-    name="zotero_manage_note",
+    name="manage_note",
     description=(
         "Create, update, or trash a Zotero note. "
         "item_key: the PARENT item's key for action='create', the NOTE's "
-        "own key for 'update' and 'delete' (zotero_get_notes finds it). "
+        "own key for 'update' and 'delete' (get_notes finds it). "
         "create: needs note_text — plain text, or simple HTML (p, strong, "
         "em, ul/li, a, code), which is preserved; note_title becomes a "
         "heading; tags optional. "
         "update: needs note_text. append=False (default) REPLACES the "
         "whole body, append=True concatenates. To keep formatting, fetch "
-        "with zotero_get_notes(raw_html=True), edit that HTML, and pass it "
+        "with get_notes(raw_html=True), edit that HTML, and pass it "
         "back whole. "
         "delete: moves the note to the Trash — recoverable; emptying the "
         "Trash is manual in Zotero. Notes only, not items/collections/"
@@ -1417,20 +1417,20 @@ def delete_note(
 
 
 @mcp.tool(
-    name="zotero_create_annotation",
+    name="create_annotation",
     description=(
         "Create an annotation on a PDF attachment (EPUB: highlights only). "
         "Exactly one of two modes per call: text= HIGHLIGHTS selectable "
         "text; rect= draws an AREA box over a figure, table, or other "
         "non-text region (PDF only). Passing both or neither is an error. "
         "attachment_key: the PDF/EPUB attachment key, NOT the parent item "
-        "key (zotero_get_item_children finds it). "
+        "key (list_item_children finds it). "
         "page: 1-indexed page (EPUB: 1-indexed chapter). "
         "text: exact text to highlight, matched against the text layer — "
         "scanned/image-only PDFs will not match. "
         "rect: [x, y, width, height] normalized to [0, 1], with (0, 0) at "
         "the page's top-left; width/height are page-relative and the box "
-        "must fit the page. Call zotero_get_page_layout first and reuse a "
+        "must fit the page. Call detect_pdf_regions first and reuse a "
         "detected region's bbox instead of guessing coordinates. "
         "comment, color (hex, default '#ffd400'), tags: optional. "
         "Requires PyMuPDF (the [pdf] extra) and a writable library (web "
@@ -1496,7 +1496,7 @@ def create_annotation(
         return (
             "Error: nothing to annotate. Pass text= with the exact text to "
             "highlight, or rect=[x, y, width, height] (normalized 0-1) to "
-            "draw an area box — zotero_get_page_layout returns usable "
+            "draw an area box — detect_pdf_regions returns usable "
             "coordinates."
         )
 
@@ -1980,10 +1980,10 @@ def _format_page_layout(
     first_x, first_y, first_w, first_h = regions[0]["bbox"]
     lines.extend([
         "",
-        "To annotate a region, pass its bbox to zotero_create_annotation "
+        "To annotate a region, pass its bbox to create_annotation "
         "as rect — e.g. for region 1:",
         "```",
-        f"zotero_create_annotation(attachment_key='{attachment_key}', "
+        f"create_annotation(attachment_key='{attachment_key}', "
         f"page={page}, rect=[{first_x:.4f}, {first_y:.4f}, "
         f"{first_w:.4f}, {first_h:.4f}], comment='...')",
         "```",
@@ -1993,30 +1993,30 @@ def _format_page_layout(
 
 
 @mcp.tool(
-    name="zotero_get_page_layout",
+    name="detect_pdf_regions",
     description=(
         "Detect candidate figure/table regions on a PDF page and return "
         "their normalized bounding boxes, so area annotations can be placed "
         "on detected content instead of guessed positions. ALWAYS call this "
-        "before zotero_create_annotation's area mode unless exact "
+        "before create_annotation's area mode unless exact "
         "coordinates are already known. Returns each region's bounding box "
         "(x, y, width, height in [0, 1]), source "
         "(image/drawing/table/merged), associated caption (e.g. 'Figure 3: "
         "...'), confidence level, and a ready-to-paste "
-        "zotero_create_annotation call. "
+        "create_annotation call. "
         "Note: detection is geometric — boxes cover the graphical core of a "
         "figure/table; text labels inside figures or unruled table headers "
         "may fall outside the box. Confidence reflects caption matching, "
         "not box completeness. "
         "attachment_key: PDF attachment key — NOT the parent item key (use "
-        "zotero_get_item_children to find attachments). "
+        "list_item_children to find attachments). "
         "page: 1-indexed page number (page 1 is the first page). "
         "Scope: PDFs only — EPUB attachments are NOT supported. Read-only: "
         "works in both local and web API modes. "
-        "Example: zotero_get_page_layout(attachment_key='NHZFE5A7', page=7)."
+        "Example: detect_pdf_regions(attachment_key='NHZFE5A7', page=7)."
     )
 )
-def get_page_layout(
+def detect_pdf_regions(
     attachment_key: str,
     page: int,
     *,
@@ -2097,7 +2097,7 @@ def get_page_layout(
 
 
 @mcp.tool(
-    name="zotero_update_annotation",
+    name="update_annotation",
     description=(
         "Update an existing Zotero annotation. Editable fields: text (highlight text), "
         "comment, color (hex like '#ffd400'), and tags. "
@@ -2190,7 +2190,7 @@ def update_annotation(
 
 
 @mcp.tool(
-    name="zotero_delete_annotation",
+    name="delete_annotation",
     description=(
         "Move a Zotero annotation to the Trash. Trashed annotations are recoverable "
         "from Zotero's Trash — empty the Trash in the Zotero UI for permanent deletion."

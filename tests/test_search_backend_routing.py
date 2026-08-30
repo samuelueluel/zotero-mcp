@@ -1,6 +1,6 @@
 """Tests for the #167 SQLite/pyzotero backend routing in tools/search.py.
 
-Verifies that zotero_search_items / zotero_advanced_search (a) use the
+Verifies that search_items / search_items_advanced (a) use the
 SQLite backend when ZOTERO_SEARCH_BACKEND=sqlite and a local DB is
 available, never touching the pyzotero client; (b) fall back to the
 existing pyzotero-based path on any condition the SQL backend doesn't
@@ -68,7 +68,7 @@ def test_advanced_search_uses_sqlite_backend_when_enabled(monkeypatch, tmp_path)
     monkeypatch.setattr(_client, "get_zotero_client", lambda: _RefusingZotero())
     monkeypatch.setattr(_client, "get_active_group_id", lambda: 0)
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[{"field": "title", "operation": "contains", "value": "Quantum"}],
         ctx=DummyContext(),
     )
@@ -104,7 +104,7 @@ def test_advanced_search_falls_back_on_unsupported_field(monkeypatch, tmp_path):
     monkeypatch.setattr(_client, "get_zotero_client", lambda: _FallbackZotero([fake_item]))
     monkeypatch.setattr(_client, "get_active_group_id", lambda: 0)
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[{"field": "volume", "operation": "is", "value": "3"}],
         ctx=DummyContext(),
     )
@@ -227,7 +227,7 @@ def test_global_scope_survives_the_fallback_cascade(monkeypatch, tmp_path):
 def test_global_advanced_search_spans_libraries(monkeypatch, tmp_path):
     _sqlite_mode(monkeypatch, tmp_path)
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[{"field": "title", "operation": "contains", "value": "quantum"}],
         search_all_libraries=True, ctx=DummyContext(),
     )
@@ -240,7 +240,7 @@ def test_global_advanced_search_spans_libraries(monkeypatch, tmp_path):
 def test_global_advanced_search_rejects_a_collection_condition(monkeypatch, tmp_path):
     _sqlite_mode(monkeypatch, tmp_path)
 
-    result = server.advanced_search(
+    result = server.search_items_advanced(
         conditions=[{"field": "collection", "operation": "is", "value": "COLLB001"}],
         search_all_libraries=True, ctx=DummyContext(),
     )

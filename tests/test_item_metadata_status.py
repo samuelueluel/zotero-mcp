@@ -13,7 +13,7 @@ rubric pass (Hasan et al., arXiv:2602.14878):
    data.collections array still contained the dangling key (the Zotero
    web API doesn't cascade collection-delete to items), so the count was
    stale. Listing the actual keys lets agents verify against
-   zotero_search_collections.
+   search_collections.
 """
 
 import importlib.util

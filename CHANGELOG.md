@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (Samuel fork): renamed the complete 60-tool MCP surface.** Ordinary raw tool names no longer repeat the server namespace (`zotero_semantic_search` → `semantic_search`, exposed by Pi as `zotero_semantic_search` rather than `zotero_zotero_semantic_search`). Misleading names now describe their behavior: the former “collection hubs” query is `rank_works_by_inbound_citations`, direct lineage is `get_citation_neighbors`, shared-reference similarity is `find_bibliographically_coupled_papers`, and annotation “synthesis” is `compile_annotation_digest`. Inactive toolsets were migrated too. Schemas and behavior are unchanged. The ChatGPT connector’s contract-mandated raw `search`/`fetch` names and existing `scite_*` names remain unchanged. See [`docs/tool-name-migration.md`](docs/tool-name-migration.md) for the exhaustive mapping.
+
 ## [0.11.0] - 2026-08-25
 
 **Upgrading:** `zotero_semantic_search` now defaults to the active library instead of every indexed library. If you relied on the old implicit behaviour, pass `search_all_libraries=True`.

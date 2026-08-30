@@ -1,11 +1,11 @@
 """Tests for Features 1-3: Collection operations.
 
-Feature 1: zotero_create_collection
-Feature 2: zotero_search_collections
-Feature 3: zotero_set_item_collections
+Feature 1: create_collection
+Feature 2: search_collections
+Feature 3: set_item_collections
 
 These tests are written BEFORE implementation. They will FAIL until
-the tool functions (create_collection, search_collections, manage_collections)
+the tool functions (create_collection, search_collections, set_item_collections)
 are added to server.py.
 """
 
@@ -140,7 +140,7 @@ def _patch_local_only(monkeypatch, fake_zot):
 
 
 # ===========================================================================
-# Feature 1: zotero_create_collection
+# Feature 1: create_collection
 # ===========================================================================
 
 
@@ -248,7 +248,7 @@ class TestCreateCollection:
 
 
 # ===========================================================================
-# Feature 2: zotero_search_collections
+# Feature 2: search_collections
 # ===========================================================================
 
 
@@ -320,13 +320,13 @@ class TestSearchCollections:
 
 
 # ===========================================================================
-# Feature 3: zotero_set_item_collections (formerly zotero_manage_collections)
+# Feature 3: set_item_collections (formerly zotero_manage_collections)
 # ===========================================================================
 
 
 class TestManageCollections:
-    """Tests for the manage_collections implementation, exposed as the
-    zotero_set_item_collections tool."""
+    """Tests for the set_item_collections implementation, exposed as the
+    set_item_collections tool."""
 
     def test_registered_under_the_unambiguous_tool_name(self):
         """The old name read as 'create/delete collections'; it manages an
@@ -336,14 +336,14 @@ class TestManageCollections:
         from zotero_mcp._app import mcp
 
         names = {t.name for t in asyncio.run(mcp.list_tools())}
-        assert "zotero_set_item_collections" in names
+        assert "set_item_collections" in names
         assert "zotero_manage_collections" not in names
 
     def test_add_items_to_collection(self, monkeypatch, fake_zot, ctx):
         """Add items to a collection."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["ABC00003"],
             ctx=ctx,
@@ -358,7 +358,7 @@ class TestManageCollections:
         """Remove items from a collection."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0002"],
             remove_from=["ABC00003"],
             ctx=ctx,
@@ -373,7 +373,7 @@ class TestManageCollections:
         """Both add_to and remove_from in a single call."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["ABC00003"],
             remove_from=["ABC00001"],
@@ -388,7 +388,7 @@ class TestManageCollections:
         """item_keys passed as a JSON string should be normalized."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys='["ITEM0001", "ITEM0002"]',
             add_to=["ABC00002"],
             ctx=ctx,
@@ -402,7 +402,7 @@ class TestManageCollections:
         """add_to passed as a JSON string should be normalized."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to='["ABC00002", "ABC00003"]',
             ctx=ctx,
@@ -414,7 +414,7 @@ class TestManageCollections:
         """remove_from passed as a JSON string should be normalized."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             remove_from='["ABC00001"]',
             ctx=ctx,
@@ -426,7 +426,7 @@ class TestManageCollections:
         """A single item_key string (not a list) should be normalized to a list."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys="ITEM0001",
             add_to=["ABC00002"],
             ctx=ctx,
@@ -453,7 +453,7 @@ class TestManageCollections:
 
         _patch_hybrid(monkeypatch, read_zot, write_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["COL00001"],
             ctx=ctx,
@@ -466,7 +466,7 @@ class TestManageCollections:
         """In local-only mode, return clear error."""
         _patch_local_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["ABC00001"],
             ctx=ctx,
@@ -478,7 +478,7 @@ class TestManageCollections:
         """Must specify at least one of add_to or remove_from."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             ctx=ctx,
         )
@@ -490,7 +490,7 @@ class TestManageCollections:
         any filing happens (resolve_collection_specs)."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["NLP Papers"],
             ctx=ctx,
@@ -504,7 +504,7 @@ class TestManageCollections:
         """A 'parent/child' path disambiguates nested collections."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["Machine Learning/Deep Learning"],
             ctx=ctx,
@@ -518,7 +518,7 @@ class TestManageCollections:
         """Multiple items should all be processed."""
         _patch_web_only(monkeypatch, fake_zot)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001", "ITEM0002"],
             add_to=["ABC00002"],
             ctx=ctx,
@@ -529,7 +529,7 @@ class TestManageCollections:
 
 
 # ===========================================================================
-# Feature 4: zotero_delete_collection
+# Feature 4: delete_collection
 # ===========================================================================
 
 

@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_PDF_MAX_PAGES = 50
 
 # Library identity used throughout zotero-mcp (ChromaDB metadata, the
-# `zotero_switch_library` tool, etc.): 0 for the personal ("user") library,
+# `switch_library` tool, etc.): 0 for the personal ("user") library,
 # else the Zotero server-assigned groupID. This matches Zotero's own
 # sentinel for the account-less personal library.
 PERSONAL_LIBRARY_GROUP_ID = 0
@@ -220,14 +220,14 @@ def _extract_worker(path_str: str, max_pages: int) -> str:
 # #167 SQLite metadata search backend
 #
 # Direct-SQL equivalents of the pyzotero-based filtering in
-# tools/search.py's search_items / advanced_search, active only when
+# tools/search.py's search_items / search_items_advanced, active only when
 # ZOTERO_SEARCH_BACKEND=sqlite (see utils.get_search_backend()). Each entry
 # point returns None when it hits a condition/operator/itemType expression it
 # doesn't support, so the caller can fall back to the existing pyzotero path
 # — that path remains the correctness safety net.
 # ---------------------------------------------------------------------------
 
-# Operators supported by zotero_advanced_search's conditions today (must stay
+# Operators supported by search_items_advanced's conditions today (must stay
 # in sync with tools/search.py's own `valid_operations` set).
 _VALID_CONDITION_OPERATIONS = frozenset({
     "is", "isNot", "contains", "doesNotContain", "beginsWith", "endsWith",
@@ -235,7 +235,7 @@ _VALID_CONDITION_OPERATIONS = frozenset({
 })
 
 # field.lower() -> canonical field name, mirroring tools/search.py's
-# advanced_search field_aliases (author/authors/creators/tags handled
+# search_items_advanced field_aliases (author/authors/creators/tags handled
 # separately since they're multi-valued).
 _CONDITION_FIELD_ALIASES = {
     "itemtype": "itemType",
@@ -455,7 +455,7 @@ def _tag_condition(operation: str, value: str) -> tuple[str, list]:
 # reading the caller wanted, decline the query and let them fall back.
 _TAG_WILDCARDS = ("%", "*")
 
-# ` OR ` as documented by `zotero_search_by_tag`, and `||` as Zotero's own
+# ` OR ` as documented by `search_items_by_tag`, and `||` as Zotero's own
 # API spells it. Uppercase only: "or" is an ordinary word inside a tag name.
 _TAG_OR_SEPARATOR = re.compile(r"\s+OR\s+|\|\|")
 
@@ -463,7 +463,7 @@ _TAG_OR_SEPARATOR = re.compile(r"\s+OR\s+|\|\|")
 def _tag_dsl_condition(entries: list[str]) -> tuple[str, list] | None:
     """Compile the `tag=` boolean DSL into one SQL fragment.
 
-    The syntax is the one `zotero_search_by_tag` documents and pyzotero
+    The syntax is the one `search_items_by_tag` documents and pyzotero
     forwards to Zotero's `tag` parameter: entries are ANDed, ` OR ` (or
     Zotero's own `||` spelling) disjoins within an entry, and a leading `-`
     on a term excludes it.
@@ -599,7 +599,7 @@ class LocalZoteroReader:
             fulltext_cache_enabled: Whether to read/write the transient
                 plain-text cache (see the :mod:`.fulltext_cache` module).
                 Off by default: callers that extract under a *different* page
-                cap than indexing uses (``zotero_get_item_fulltext`` does)
+                cap than indexing uses (``get_item_fulltext`` does)
                 would otherwise poison the cache with truncated text.
             config_path: Semantic-search config path, used only to locate the
                 fulltext cache directory next to it.
@@ -1813,9 +1813,9 @@ class LocalZoteroReader:
         """Map each local ``libraryID`` to ``(group_id, display_name)``.
 
         ``group_id`` is the codebase-wide identity (0 = personal, else the
-        Zotero groupID) that ChromaDB metadata and ``zotero_switch_library``
+        Zotero groupID) that ChromaDB metadata and ``switch_library``
         already use. The personal library has no stored name, so it gets
-        "My Library" — the same label ``zotero_list_libraries`` prints.
+        "My Library" — the same label ``list_libraries`` prints.
         Feeds and other libraries with no group_id equivalent are omitted,
         matching ``_resolve_scope_library_ids``.
 
@@ -1855,11 +1855,11 @@ class LocalZoteroReader:
         caller falls back to the existing path.
 
         Defaults to DIRECT membership only (an item must be filed in this
-        exact collection) — matching both the pyzotero/API advanced_search
+        exact collection) — matching both the pyzotero/API search_items_advanced
         path (``_extract_values`` in tools/search.py, which only ever sees an
         item's own "collections" list) and Zotero's own "Collection is X" UI
         checkbox with subcollections unchecked. This keeps the two
-        advanced_search backends in agreement regardless of
+        search_items_advanced backends in agreement regardless of
         ZOTERO_SEARCH_BACKEND.
 
         Recursive (subcollection-inclusive) resolution is fully implemented —
@@ -2058,7 +2058,7 @@ class LocalZoteroReader:
         limit: int = 10,
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
     ) -> list[dict] | None:
-        """#167 SQLite metadata search backend for zotero_search_items.
+        """#167 SQLite metadata search backend for search_items.
 
         Substring-matches every variant `_generate_search_variants(query)`
         produces against title/creator/year (plus abstract/tags/notes in
@@ -2149,7 +2149,7 @@ class LocalZoteroReader:
         join_mode: str = "all",
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
     ) -> list[dict] | None:
-        """#167 SQLite metadata search backend for zotero_advanced_search.
+        """#167 SQLite metadata search backend for search_items_advanced.
 
         Always excludes attachments/notes/annotations and trashed items,
         matching the existing pyzotero-based paging loop it replaces.

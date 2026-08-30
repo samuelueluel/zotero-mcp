@@ -1,6 +1,6 @@
 """The PDF outline child's JSON channel survives a polluted stdout (#455).
 
-`zotero_get_pdf_outline` failed on every PDF, whatever the file, with
+`get_pdf_outline` failed on every PDF, whatever the file, with
 "unreadable outline data: Expecting value: line 1 column 1 (char 0)". The
 child script did `import fitz`; PyMuPDF >= 1.28 ends its legacy `fitz` shim
 with a deprecation notice written to *stdout*, so the notice arrived ahead of

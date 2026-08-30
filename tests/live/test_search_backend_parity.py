@@ -1,4 +1,4 @@
-"""Live cross-backend parity: zotero_search_items / zotero_advanced_search
+"""Live cross-backend parity: search_items / search_items_advanced
 must return the same items whether served by the local Zotero-desktop API,
 the Zotero web API, or the opt-in SQLite backend (ZOTERO_SEARCH_BACKEND=sqlite).
 
@@ -17,7 +17,7 @@ Realistic backend-pair coverage per environment:
 All comparisons scope to the connected account's personal library
 (group_id=0 / the active library from ZOTERO_LIBRARY_ID/TYPE).
 
-advanced_search's pyzotero fallback has no server-side query support — it
+search_items_advanced's pyzotero fallback has no server-side query support — it
 pages the entire library client-side and filters in Python (the exact
 slowness the SQL backend exists to fix). Comparing it against a real,
 sizeable library can take minutes rather than seconds, so
@@ -35,7 +35,7 @@ from ._discovery import CONDITION_FIELDS
 
 _ITEM_KEY_RE = re.compile(r"\*\*Item Key:\*\*\s*(\w+)")
 
-# advanced_search's pyzotero fallback pages 100 items/request with no
+# search_items_advanced's pyzotero fallback pages 100 items/request with no
 # server-side filter — keep this comparison to libraries small enough that
 # the full page-through finishes quickly (see module docstring).
 _MAX_LIBRARY_SIZE_FOR_API_FALLBACK = 300
@@ -47,7 +47,7 @@ def _backend_pairs(available_backends: dict) -> list[str]:
 
 def _run_advanced_search(backend: str, field: str, value: str, monkeypatch,
                           dummy_ctx, *, local_zot, web_zot) -> set[str]:
-    from zotero_mcp.tools.search import advanced_search
+    from zotero_mcp.tools.search import search_items_advanced
 
     if backend == "sqlite":
         monkeypatch.setattr("zotero_mcp.utils.get_search_backend", lambda: "sqlite")
@@ -56,7 +56,7 @@ def _run_advanced_search(backend: str, field: str, value: str, monkeypatch,
         client = local_zot if backend == "local_api" else web_zot
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: client)
 
-    text = advanced_search(
+    text = search_items_advanced(
         conditions=[{"field": field, "operation": "is", "value": value}],
         join_mode="all",
         limit=200,
@@ -92,7 +92,7 @@ def test_advanced_search_condition_parity(field, available_backends, discovered_
     names = _backend_pairs(available_backends)
     if (personal_library_item_count is not None
             and personal_library_item_count > _MAX_LIBRARY_SIZE_FOR_API_FALLBACK):
-        # advanced_search's pyzotero fallback pages the whole library
+        # search_items_advanced's pyzotero fallback pages the whole library
         # client-side (see module docstring) — too slow to compare routinely
         # against a real-sized library, so only non-API-fallback backends
         # (i.e. sqlite) are compared here.
@@ -115,7 +115,7 @@ def test_advanced_search_condition_parity(field, available_backends, discovered_
     first_name, first_keys = next(iter(results.items()))
     for name, keys in list(results.items())[1:]:
         assert keys == first_keys, (
-            f"advanced_search condition field={field!r} value={value!r} diverged: "
+            f"search_items_advanced condition field={field!r} value={value!r} diverged: "
             f"{first_name}={sorted(first_keys)} vs {name}={sorted(keys)}"
         )
 

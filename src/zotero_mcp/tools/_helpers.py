@@ -99,7 +99,7 @@ def crossref_type_note(cr_type: str) -> str:
         f"\nNote: CrossRef type '{cr_type}' is not one this version maps to a "
         "Zotero type, so the item was created as 'document' and any journal, "
         "volume, issue or page values were dropped. Set the right type with "
-        "zotero_update_item(item_type=...)."
+        "update_item(item_type=...)."
     )
 
 
@@ -188,7 +188,7 @@ def is_collection_trashed(zot, collection_key: str) -> bool | None:
     """Return True if a collection is in the trash, False if live, None on error.
 
     Reads a single collection by key and inspects ``data.deleted``. Used to
-    pre-validate ``zotero_set_item_collections`` calls so the tool returns a
+    pre-validate ``set_item_collections`` calls so the tool returns a
     clear error instead of silently filing items into trashed parents.
     """
     try:
@@ -359,7 +359,7 @@ def global_search_error() -> str | None:
             "rather than emulated by searching each library in turn. Set "
             "ZOTERO_SEARCH_BACKEND=sqlite (with ZOTERO_LOCAL=true) and restart "
             "the server, or search one library at a time with "
-            "zotero_switch_library."
+            "switch_library."
         )
     reader = get_local_zotero_reader()
     if reader is None:
@@ -368,7 +368,7 @@ def global_search_error() -> str | None:
             "local database is not available. Set ZOTERO_LOCAL=true (and "
             "ZOTERO_DB_PATH if your Zotero data directory is in a custom "
             "location), or search one library at a time with "
-            "zotero_switch_library."
+            "switch_library."
         )
     reader.close()
     return None
@@ -379,8 +379,8 @@ def _parse_library_id_param(value: int | str | None) -> int | None:
 
     Accepts an int, a numeric string (the Zotero groupID), "0"/"user" for
     the personal library, or None (no filter — search all indexed
-    libraries). This is the single-parameter convention `zotero_semantic_search`
-    exposes; `zotero_switch_library` instead takes separate library_id +
+    libraries). This is the single-parameter convention `semantic_search`
+    exposes; `switch_library` instead takes separate library_id +
     library_type args since it must also validate library_type ("feed" has
     no meaning here — feed libraries are never semantically indexed).
     """
@@ -899,7 +899,7 @@ def _collection_not_found_message(zot, spec, paths) -> str:
         msg += f" Close matches: {shown}."
     else:
         msg += (
-            " Use zotero_search_collections (or `zotero-cli collections "
+            " Use search_collections (or `zotero-cli collections "
             "search`) to list available collections."
         )
     return msg
@@ -1094,7 +1094,7 @@ def _url_resolves_to_public_host(url: str) -> bool:
     SSRF guard for the open-access PDF download path: the candidate URL comes
     from third-party metadata APIs (Unpaywall / Semantic Scholar) and is
     therefore attacker-influenceable (a hostile paper record, or prompt
-    injection steering ``zotero_add_item``). We reject non-http(s) schemes
+    injection steering ``add_item``). We reject non-http(s) schemes
     and any host that resolves to a private, loopback, link-local, reserved,
     or otherwise non-global address — including the 169.254.169.254
     cloud-metadata endpoint, which matters for HTTP/SSE-transport deployments.
@@ -1218,7 +1218,7 @@ def _download_and_attach_pdf(write_zot, item_key, pdf_url, doi, ctx):
 def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
     """Suffix to append to a user-facing 'file attached' message.
 
-    PR #279 added WebDAV-aware upload to ``zotero_add_item``. The same
+    PR #279 added WebDAV-aware upload to ``add_item``. The same
     treatment is needed everywhere else ``attachment_both`` is called: the
     Web API's file upload lands bytes in Zotero Storage, which a desktop
     client with File Syncing set to WebDAV never consults.

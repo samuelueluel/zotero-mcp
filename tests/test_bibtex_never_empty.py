@@ -1,6 +1,6 @@
 """``format="bibtex"`` must never answer with an empty string.
 
-Reported against a real 15k-item library: ``zotero_get_item_metadata`` on
+Reported against a real 15k-item library: ``get_item_metadata`` on
 item ``KGBSSZ3W`` returned ``""`` for ``format="bibtex"`` while
 ``format="markdown"`` rendered the full record. The item existed and was
 readable; it was a deduplicated duplicate sitting in the *trash*.

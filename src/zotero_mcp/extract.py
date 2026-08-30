@@ -2,7 +2,7 @@
 
 Every fulltext path in zotero-mcp funnels through here: the local-storage
 reader (``local_db``), the Web API download path (``client``), the
-semantic indexer, and ``zotero_read_pdf_pages``. Keeping one seam means
+semantic indexer, and ``read_pdf_pages``. Keeping one seam means
 page provenance, OCR routing and engine choice are decided once instead of
 drifting across three call sites.
 

@@ -1,13 +1,13 @@
 """Regression tests for #372: PDF tools and attachment keys / TOC crashes.
 
-Bug 1 — ``zotero_read_pdf_pages`` given an ATTACHMENT key returned
+Bug 1 — ``read_pdf_pages`` given an ATTACHMENT key returned
 "No PDF attachment found". ``_get_pdf_path`` only scanned an item's
 children for a PDF, and an attachment has no children. The local reader
 could not help either: ``get_item_by_key`` is backed by a query that
 excludes the 'attachment' item type entirely, so the key resolved to
 nothing at all.
 
-Bug 2 — ``zotero_get_pdf_outline`` crashed the whole MCP server. It
+Bug 2 — ``get_pdf_outline`` crashed the whole MCP server. It
 downloaded via the legacy ``zot.dump`` path (no WebDAV support) and then
 called ``fitz.Document.get_toc()`` in-process, which segfaults on some
 born-digital journal PDFs (e.g. doi:10.1038/s41598-022-15627-3). A

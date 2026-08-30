@@ -5,7 +5,7 @@ attachment the local Zotero API answers ``/file`` with a 302 to a ``file://``
 URL, which httpx refuses to follow ("unsupported protocol"), and a linked file
 is by definition never uploaded to WebDAV or Zotero storage — so every source
 in the chain failed on a file sitting readable on the same disk.
-``zotero_get_annotations`` was the visible casualty: unlike the fulltext and
+``get_annotations`` was the visible casualty: unlike the fulltext and
 read_pdf paths it had no local-DB step in front of the downloader.
 
 The fix resolves the path out of zotero.sqlite first, which also covers plain

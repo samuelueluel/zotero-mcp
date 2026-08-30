@@ -7,7 +7,7 @@ from zotero_mcp.tools import _helpers
 
 
 @mcp.tool(
-    name="zotero_set_item_parent",
+    name="set_item_parent",
     description=(
         "Set or clear the parent of a Zotero item. Pass a parent item key to "
         "assign or change the parent, or null to make the item top-level. "

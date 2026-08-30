@@ -1,6 +1,6 @@
 """One definition of search-condition semantics, shared by both backends.
 
-``zotero_advanced_search`` can run two ways: the pyzotero path in
+``search_items_advanced`` can run two ways: the pyzotero path in
 ``tools/search.py``, which fetches items and filters them in Python, and the
 direct-SQL path in ``local_db.py`` used when ``ZOTERO_SEARCH_BACKEND=sqlite``.
 Both have to answer a condition like ``creator contains "muller"`` identically,

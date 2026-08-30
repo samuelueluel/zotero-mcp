@@ -1,4 +1,4 @@
-"""Tests for Feature 9: PDF Outline Extraction (zotero_get_pdf_outline)."""
+"""Tests for Feature 9: PDF Outline Extraction (get_pdf_outline)."""
 
 import pytest
 

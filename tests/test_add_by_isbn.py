@@ -1,4 +1,4 @@
-"""Tests for the ISBN source of zotero_add_item (#226).
+"""Tests for the ISBN source of add_item (#226).
 
 Covers ISBN normalization (10→13 conversion, checksum validation), the
 Open Library → Google Books lookup cascade, and the resulting Zotero book

@@ -164,10 +164,10 @@ class TestGrandparentResolution:
 
 
 class TestMergeAttachmentDedup:
-    """Unit tests for merge_duplicates attachment deduplication."""
+    """Unit tests for merge_duplicate_items attachment deduplication."""
 
     def _setup_merge(self, keeper_children, dup_children):
-        """Set up mocked clients and monkeypatch for merge_duplicates."""
+        """Set up mocked clients and monkeypatch for merge_duplicate_items."""
         keeper = {
             "key": "KEEPER",
             "version": 1,
@@ -238,9 +238,9 @@ class TestMergeAttachmentDedup:
         write_zot = self._setup_merge([keeper_att], [dup_att])
         mock_get_client.return_value = (write_zot, write_zot)
 
-        from zotero_mcp.tools.write import merge_duplicates
+        from zotero_mcp.tools.write import merge_duplicate_items
 
-        result = merge_duplicates("KEEPER", ["DUP1"], confirm=True, ctx=dummy_ctx)
+        result = merge_duplicate_items("KEEPER", ["DUP1"], confirm=True, ctx=dummy_ctx)
 
         # The duplicate attachment should NOT have been re-parented
         # update_item should not be called for the dup attachment
@@ -282,9 +282,9 @@ class TestMergeAttachmentDedup:
         write_zot = self._setup_merge([keeper_att], [dup_att])
         mock_get_client.return_value = (write_zot, write_zot)
 
-        from zotero_mcp.tools.write import merge_duplicates
+        from zotero_mcp.tools.write import merge_duplicate_items
 
-        result = merge_duplicates("KEEPER", ["DUP1"], confirm=True, ctx=dummy_ctx)
+        result = merge_duplicate_items("KEEPER", ["DUP1"], confirm=True, ctx=dummy_ctx)
 
         # The different attachment SHOULD have been re-parented
         reparent_calls = [
@@ -324,9 +324,9 @@ class TestMergeAttachmentDedup:
         write_zot = self._setup_merge([keeper_att], [dup_att])
         mock_get_client.return_value = (write_zot, write_zot)
 
-        from zotero_mcp.tools.write import merge_duplicates
+        from zotero_mcp.tools.write import merge_duplicate_items
 
-        result = merge_duplicates("KEEPER", ["DUP1"], confirm=False, ctx=dummy_ctx)
+        result = merge_duplicate_items("KEEPER", ["DUP1"], confirm=False, ctx=dummy_ctx)
 
         assert "duplicate attachment" in result.lower()
         assert "skipped" in result.lower() or "1" in result

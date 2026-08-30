@@ -331,7 +331,7 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
         other = [i.get("key") for i in existing[1:]]
         note = (
             f"\n\nNote: {len(existing)} items match ({other} besides the one "
-            "used); consider zotero_find_duplicates / zotero_merge_duplicates."
+            "used); consider find_duplicate_items / merge_duplicate_items."
         )
 
     header = (
@@ -806,7 +806,7 @@ def batch_update_extra(
 
 
 @mcp.tool(
-    name="zotero_batch_update",
+    name="batch_edit_tags_and_extra",
     description=(
         "Edit metadata across many items in one call: add/remove tags "
         "and upsert/remove `Key: value` lines in Extra (Better BibTeX "
@@ -823,12 +823,12 @@ def batch_update_extra(
         "limit: max items for query/tag selection (default 50). "
         "Attachments and items needing no change are skipped and "
         "counted. Requires a writable library. "
-        "Example: zotero_batch_update(tag='to-read', "
+        "Example: batch_edit_tags_and_extra(tag='to-read', "
         "add_tags=['reviewed'], remove_tags=['to-read'])."
     )
 )
 @with_zotero_api_lock
-def batch_update(
+def batch_edit_tags_and_extra(
     item_keys: list[str] | str | None = None,
     query: str = "",
     tag: str | list[str] | None = None,
@@ -876,12 +876,12 @@ def batch_update(
 
 
 @mcp.tool(
-    name="zotero_create_collection",
+    name="create_collection",
     description=(
         "Create a new collection (project/folder) in your Zotero library. "
         "To create a subcollection, pass parent_collection (not parent_key) as either "
         "a collection key (8-character string like 'KMMQDFQ4') or a collection name. "
-        "Use zotero_search_collections to find collection keys."
+        "Use search_collections to find collection keys."
     )
 )
 @with_zotero_api_lock
@@ -931,7 +931,7 @@ def create_collection(
 
 
 @mcp.tool(
-    name="zotero_delete_collection",
+    name="delete_collection",
     description=(
         "Delete a collection (folder) from your Zotero library by its "
         "8-character key. Items inside the collection are NOT deleted — they "
@@ -939,8 +939,8 @@ def create_collection(
         "Subcollections ARE deleted along with the parent. "
         "This is a hard delete — Zotero's API does not trash collections, so "
         "the operation cannot be undone via the API. Use "
-        "zotero_search_collections to find the key first. "
-        'Example: zotero_delete_collection(collection_key="KMMQDFQ4").'
+        "search_collections to find the key first. "
+        'Example: delete_collection(collection_key="KMMQDFQ4").'
     )
 )
 def delete_collection(
@@ -973,7 +973,7 @@ def delete_collection(
 
 
 @mcp.tool(
-    name="zotero_search_collections",
+    name="search_collections",
     description=(
         "Search collections by name in the active library and return their "
         "8-character keys. Matching is case-insensitive substring and applies "
@@ -991,7 +991,7 @@ def delete_collection(
         "Performance: scans all collections in the active library (O(n)); "
         "for very large libraries expect a full-list pagination under the "
         "hood. "
-        'Example: zotero_search_collections(query="orals") → keys for every '
+        'Example: search_collections(query="orals") → keys for every '
         'collection with "orals" in its name.'
     )
 )
@@ -1052,23 +1052,23 @@ def search_collections(
 
 
 @mcp.tool(
-    name="zotero_set_item_collections",
+    name="set_item_collections",
     description=(
         "Change which collections existing items belong to — an "
         "incremental add/remove of item membership, NOT collection "
-        "creation (use zotero_create_collection / "
-        "zotero_delete_collection for that). "
+        "creation (use create_collection / "
+        "delete_collection for that). "
         "item_keys must be an ARRAY of item keys, e.g. [\"KEY1\", \"KEY2\"] — not a single string. "
         "add_to and remove_from accept arrays of collection keys, names, or "
         "'/'-separated paths (resolved and validated automatically; unknown, "
         "trashed, or ambiguous specs fail before anything is changed). "
         "Existing memberships not named in remove_from are left alone; to "
-        "replace an item's memberships wholesale use zotero_update_item. "
-        "Use zotero_search_items to find item keys and zotero_search_collections to find collection keys."
+        "replace an item's memberships wholesale use update_item. "
+        "Use search_items to find item keys and search_collections to find collection keys."
     )
 )
 @with_zotero_api_lock
-def manage_collections(
+def set_item_collections(
     item_keys: list[str] | str,
     add_to: list[str] | str | None = None,
     remove_from: list[str] | str | None = None,
@@ -1145,7 +1145,7 @@ def manage_collections(
 
 
 # Source-specific add implementations. These are no longer registered as
-# individual MCP tools — ``zotero_add_item`` is the single public facade that
+# individual MCP tools — ``add_item`` is the single public facade that
 # detects the source shape and dispatches here. They stay importable (and
 # individually callable) for the CLI and for direct use.
 def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
@@ -1552,7 +1552,7 @@ def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
         f"PDF: {cr_result['pdf_status']}\n"
         f"{type_note}\n"
         "_Note: To include this item in semantic search, run "
-        "zotero_update_search_database._"
+        "update_semantic_index._"
     )
 
 
@@ -1907,7 +1907,7 @@ def _add_from_embedded_metadata(
             f"Source: metadata embedded in the page\n"
             f"Collections: {_collections_status(coll_keys, missing)}\n\n"
             "_Note: To include this item in semantic search, run "
-            "zotero_update_search_database._"
+            "update_semantic_index._"
         )
     return f"Failed to create item: {result}"
 
@@ -2074,7 +2074,7 @@ def add_by_url(
                 reason = (
                     f"\nOnly the URL could be recorded: {embed_problem}. "
                     "Add the item by DOI if you have one, or set the fields with "
-                    "zotero_update_item."
+                    "update_item."
                     if embed_problem else ""
                 )
                 return (
@@ -2082,7 +2082,7 @@ def add_by_url(
                     f"Collections: {_collections_status(coll_keys, missing)}\n"
                     f"{reason}\n"
                     "_Note: To include this item in semantic search, run "
-                    "zotero_update_search_database._"
+                    "update_semantic_index._"
                 )
             return f"Failed to create item: {result}"
 
@@ -2361,7 +2361,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
         f"Collections: {_collections_status(coll_keys, missing)}\n"
         f"PDF: {pdf_status}\n\n"
         "_Note: To include this item in semantic search, run "
-        "zotero_update_search_database._"
+        "update_semantic_index._"
     )
 
 
@@ -2622,8 +2622,8 @@ def add_by_isbn(
                 f"Source: {meta['source']}\n\n"
                 "_Note: Open Library and Google Books metadata can be noisy "
                 "(publisher-as-author, concatenated places, off-by-one dates). "
-                "Verify via `zotero_get_item_metadata` after creation. "
-                "Run `zotero_update_search_database` to include this item "
+                "Verify via `get_item_metadata` after creation. "
+                "Run `update_semantic_index` to include this item "
                 "in semantic search._"
             )
         return f"Failed to create item: {result}"
@@ -2759,7 +2759,7 @@ def _unknown_fields_error(unknown: list[str], item_type: str) -> str:
 
 
 @mcp.tool(
-    name="zotero_update_item",
+    name="update_item",
     description=(
         "Update metadata on an existing Zotero item by key. Only what "
         "you pass is changed. "
@@ -2777,12 +2777,12 @@ def _unknown_fields_error(unknown: list[str], item_type: str) -> str:
         "are mutually exclusive with tags. "
         "collections (keys) and collection_names likewise REPLACE "
         "membership — pass collections=[] to clear it; for incremental "
-        "moves use zotero_set_item_collections. "
+        "moves use set_item_collections. "
         "creators: full replacement list of {creatorType, firstName, "
         "lastName} objects. "
         "Requires a writable library (fails in local-only mode). To edit "
-        "notes use zotero_manage_note. "
-        "Example: zotero_update_item(item_key='RTKZQI8E', "
+        "notes use manage_note. "
+        "Example: update_item(item_key='RTKZQI8E', "
         "fields={'doi': '10.1145/3708319'}, add_tags=['reviewed'])."
     )
 )
@@ -2828,7 +2828,7 @@ def update_item(
         REPLACES the full tag list, ``add_tags`` / ``remove_tags`` are
         incremental. Prefer the incremental forms.
         collections / collection_names: REPLACE collection memberships;
-        for incremental moves use zotero_set_item_collections instead.
+        for incremental moves use set_item_collections instead.
         ctx: MCP context.
 
     Returns:
@@ -2957,7 +2957,7 @@ def update_item(
 
         # Collections — REPLACE membership (matches tags semantics and the
         # docstring contract). For incremental moves use
-        # zotero_set_item_collections. Passing collections=[] clears all
+        # set_item_collections. Passing collections=[] clears all
         # memberships. ``collections`` and ``collection_names`` may both be
         # supplied; the union of their resolved keys is the new membership.
         if collections is not None or collection_names is not None:
@@ -3033,12 +3033,12 @@ def update_item(
 
 
 @mcp.tool(
-    name="zotero_delete_item",
+    name="delete_item",
     description=(
         "Move a Zotero item to the Trash. Works for any item type (book, "
         "journalArticle, webpage, attachment, etc.). For notes, use "
-        "zotero_delete_note — identical mechanism, constrained to notes "
-        "for safety. Trashed items are recoverable from Zotero's Trash — "
+        "manage_note(action='delete', item_key=...) for an explicit note-only "
+        "operation. Trashed items are recoverable from Zotero's Trash — "
         "empty the Trash in the Zotero UI for permanent deletion. "
         "By default refuses to trash notes; set allow_note=True to override."
     )
@@ -3055,8 +3055,8 @@ def delete_item(
     Args:
         item_key: Zotero item key/ID to trash
         allow_note: If True, permits trashing note items. Default False
-            directs callers to zotero_delete_note for notes (which has the
-            same mechanism but is explicit about what it affects).
+            directs callers to ``manage_note(action='delete', ...)`` for an
+            explicit note-only operation.
         ctx: MCP context
 
     Returns:
@@ -3080,8 +3080,9 @@ def delete_item(
 
         if item_type == "note" and not allow_note:
             return (
-                f"Error: Item {item_key} is a note. Use zotero_delete_note "
-                "for notes, or pass allow_note=True to override."
+                f"Error: Item {item_key} is a note. Use "
+                f"manage_note(action='delete', item_key='{item_key}') for notes, "
+                "or pass allow_note=True to override."
             )
 
         # pyzotero's delete_item() permanently destroys items, and update_item()
@@ -3113,13 +3114,13 @@ def delete_item(
 
 
 # ---------------------------------------------------------------------------
-# Duplicate detection — shared by find_duplicates and merge_duplicates
+# Duplicate detection — shared by find_duplicate_items and merge_duplicate_items
 # ---------------------------------------------------------------------------
 
 # Whole-library scan ceiling. Past this a caller wants collection_key instead.
 _DUP_SCAN_MAX_ITEMS = 5000
 
-# find_duplicates renders one compact line per item of already-grouped
+# find_duplicate_items renders one compact line per item of already-grouped
 # duplicates, so it does not have the token-budget problem that the shared
 # _normalize_limit ceiling of 100 exists to solve (#394). Groups beyond this
 # stay reachable through `offset`.
@@ -3146,7 +3147,7 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
     stable across calls. ``error`` is a message to hand straight back to the
     caller (library too large), in which case ``groups`` is empty.
 
-    Both zotero_find_duplicates and zotero_merge_duplicates(auto=True) go
+    Both find_duplicate_items and merge_duplicate_items(auto=True) go
     through here, so "merge everything that qualifies" and "show me what
     qualifies" can never disagree about what a group is.
     """
@@ -3196,18 +3197,18 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
 
 
 @mcp.tool(
-    name="zotero_find_duplicates",
+    name="find_duplicate_items",
     description=(
         "Scan the active library (or a single collection) for duplicate "
         "items and return candidate groups for review. This tool only "
         "IDENTIFIES duplicates — it doesn't merge them. Call "
-        "zotero_merge_duplicates to merge one group, or "
-        "zotero_merge_duplicates(auto=True) to merge every high-confidence "
+        "merge_duplicate_items to merge one group, or "
+        "merge_duplicate_items(auto=True) to merge every high-confidence "
         "group in one pass. "
         "method: 'both' (default) — match on title OR DOI; 'title' — "
         "normalized-title match only (lowercase, punctuation-stripped); "
         "'doi' — exact DOI match only (safest for automation). Prefer "
-        "'doi' when the user intends to run merge_duplicates "
+        "'doi' when the user intends to run merge_duplicate_items "
         "unattended. "
         "collection_key: optional 8-character key to restrict scanning "
         "to one collection; otherwise scans the whole active library. "
@@ -3222,14 +3223,14 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
         "partial page is never mistaken for the complete set. "
         "Returns a markdown block per group with keys, titles, DOIs and "
         "dateAdded — use it to pick the item to KEEP before calling "
-        "zotero_merge_duplicates. "
+        "merge_duplicate_items. "
         "Read-only; works in local or web mode. "
-        "Example: zotero_find_duplicates(method='doi', limit=20). "
-        "Paging: zotero_find_duplicates(limit=100, offset=100)."
+        "Example: find_duplicate_items(method='doi', limit=20). "
+        "Paging: find_duplicate_items(limit=100, offset=100)."
     )
 )
 @with_zotero_api_lock
-def find_duplicates(
+def find_duplicate_items(
     method: Literal["title", "doi", "both"] = "both",
     collection_key: str | None = None,
     limit: int | str | None = 50,
@@ -3303,8 +3304,8 @@ def find_duplicates(
             lines.append("")
 
         lines.append(
-            "To merge, call `zotero_merge_duplicates` with the key you want to keep "
-            "and the keys to merge into it, or `zotero_merge_duplicates(auto=True)` "
+            "To merge, call `merge_duplicate_items` with the key you want to keep "
+            "and the keys to merge into it, or `merge_duplicate_items(auto=True)` "
             "to merge every high-confidence group in one pass."
         )
         return "\n".join(lines)
@@ -3694,14 +3695,14 @@ def _render_auto_plan(qualifying, skipped, clipped, token, method, max_groups) -
 
 
 @mcp.tool(
-    name="zotero_merge_duplicates",
+    name="merge_duplicate_items",
     description=(
         "Merge duplicate items INTO a keeper: consolidates tags, "
         "collections, notes, annotations and children onto it, then "
         "trashes the duplicates (recoverable in Zotero). "
         "SINGLE GROUP (default): pass keeper_key + duplicate_keys. Dry-run "
         "by DEFAULT — confirm=True executes. Find groups with "
-        "zotero_find_duplicates. keeper_key: 8-char key to KEEP; its gaps "
+        "find_duplicate_items. keeper_key: 8-char key to KEEP; its gaps "
         "are filled from the duplicates, conflicts keep its own value. "
         "duplicate_keys: ARRAY of 8-char keys to merge in and trash (or a "
         "JSON list string); must not contain the keeper. "
@@ -3720,14 +3721,14 @@ def _render_auto_plan(qualifying, skipped, clipped, token, method, max_groups) -
         "plan_token; executing needs confirm=True AND that token. "
         "confirm=True alone is refused, as is a stale token. "
         "Needs a writable library (web API key/hybrid); fails local-only. "
-        "Example: zotero_merge_duplicates(keeper_key='ABC12345', "
+        "Example: merge_duplicate_items(keeper_key='ABC12345', "
         "duplicate_keys=['XYZ98765']), then again with confirm=True. "
-        "Auto: zotero_merge_duplicates(auto=True), then the same plus "
+        "Auto: merge_duplicate_items(auto=True), then the same plus "
         "confirm=True and plan_token."
     )
 )
 @with_zotero_api_lock
-def merge_duplicates(
+def merge_duplicate_items(
     keeper_key: str | None = None,
     duplicate_keys: list[str] | str | None = None,
     confirm: bool = False,
@@ -3824,7 +3825,7 @@ def merge_duplicates(
 def _merge_duplicates_auto(
     read_zot, write_zot, method, collection_key, max_groups, confirm, plan_token, ctx,
 ):
-    """The auto/batch path of zotero_merge_duplicates (#395)."""
+    """The auto/batch path of merge_duplicate_items (#395)."""
     max_groups = _helpers._normalize_limit(
         max_groups,
         default=_AUTO_MERGE_MAX_GROUPS,
@@ -3834,7 +3835,7 @@ def _merge_duplicates_auto(
     if confirm and not plan_token:
         return (
             "Error: auto mode will not execute on confirm=True alone. Call "
-            "zotero_merge_duplicates(auto=True) first to get the plan and its "
+            "merge_duplicate_items(auto=True) first to get the plan and its "
             "plan_token, then call again with confirm=True and that token. "
             "This is deliberate: a batch merge trashes items across the whole "
             "library, so the plan has to be produced and reviewed first."
@@ -3861,7 +3862,7 @@ def _merge_duplicates_auto(
             f"Token for the library's current state: `{token}`\n\n"
             "The set of duplicate groups, or the keeper chosen for one of "
             "them, is not what it was when the plan you are confirming was "
-            "produced. Re-run zotero_merge_duplicates(auto=True), review the "
+            "produced. Re-run merge_duplicate_items(auto=True), review the "
             "new plan, and confirm that one."
         )
 
@@ -4134,23 +4135,23 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
 
 
 @mcp.tool(
-    name="zotero_get_pdf_outline",
+    name="get_pdf_outline",
     description=(
         "Extract the table of contents (outline/bookmarks) from a PDF "
         "attachment, returned as a hierarchical markdown list with each "
         "entry's page number. "
         "Use this to orient in a paper before calling "
-        "zotero_get_item_fulltext — the outline is typically < 200 "
+        "get_item_fulltext — the outline is typically < 200 "
         "tokens versus 10K+ for the full text. If the PDF has no "
         "embedded outline, returns a short 'no outline' message rather "
         "than failing. "
         "item_key: the PDF ATTACHMENT key OR the parent item key — both "
         "are accepted; attachment-to-parent resolution is automatic. "
-        "Find the right key with zotero_get_item_children if unsure. "
+        "Find the right key with list_item_children if unsure. "
         "Scope: PDFs only (EPUBs have no outline extraction here). "
         "Requires PyMuPDF (the [pdf] extra). "
         "Read-only; works in local or web mode. "
-        "Example: zotero_get_pdf_outline(item_key='RTKZQI8E')."
+        "Example: get_pdf_outline(item_key='RTKZQI8E')."
     )
 )
 def get_pdf_outline(
@@ -4237,8 +4238,8 @@ def get_pdf_outline(
                 f"Could not read the outline of attachment `{attachment_key}`: "
                 f"the PDF reader crashed on this file ({outcome.detail}). The "
                 "crash was contained in a separate process, so the server is "
-                "unaffected. Try zotero_read_pdf_pages or "
-                "zotero_get_item_fulltext for this item instead."
+                "unaffected. Try read_pdf_pages or "
+                "get_item_fulltext for this item instead."
             )
         if outcome.status == "timeout":
             return (
@@ -4397,7 +4398,7 @@ def add_from_file(
                         f"{result_msg}\n"
                         f"Attachment already present: {display_name} (not re-uploaded)\n\n"
                         "_Note: To include this item in semantic search, run "
-                        "zotero_update_search_database._"
+                        "update_semantic_index._"
                     )
 
             webdav_suffix = _helpers._webdav_first_attach(
@@ -4431,7 +4432,7 @@ def add_from_file(
             f"{'DOI: ' + extracted_doi + chr(10) if extracted_doi else ''}"
             f"{attach_info}\n\n"
             "_Note: To include this item in semantic search, run "
-            "zotero_update_search_database._"
+            "update_semantic_index._"
         )
 
     except Exception as e:
@@ -4489,18 +4490,18 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
     return (
         f"File attached to `{item_key}`: {display_name}{key_note}{suffix}\n\n"
         "_Note: To include this item in semantic search, run "
-        "zotero_update_search_database._"
+        "update_semantic_index._"
     )
 
 
 @mcp.tool(
-    name="zotero_attach_file",
+    name="attach_file",
     description=(
         "Attach a file to an EXISTING Zotero item as an imported child "
         "attachment (uploads the file bytes). Use when the item is already "
         "in the library and you have its key — e.g. attaching a PDF you "
         "found for a reference. To create a NEW item from a file, use "
-        "zotero_add_from_file instead. "
+        "add_item(source=<path>, source_type='file') instead. "
         "item_key: key of the existing REGULAR item. Passing an "
         "attachment/note key fails with a hint to use its parent. "
         "file_path: ABSOLUTE local path (.pdf, .epub, .djvu, .doc, .docx, "
@@ -4516,9 +4517,9 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         "content (MD5), nothing is re-uploaded. Requires a writable library "
         "(fails in local-only mode). Uploads count against the Zotero "
         "cloud storage quota unless WebDAV sync is configured. Run "
-        "zotero_update_search_database afterwards to index the new file "
+        "update_semantic_index afterwards to index the new file "
         "for semantic search. "
-        "Example: zotero_attach_file(item_key='ABCD2345', "
+        "Example: attach_file(item_key='ABCD2345', "
         "file_path='/Users/me/smith-2020.pdf')."
     ),
 )
@@ -4689,7 +4690,7 @@ def _find_matching_uri(rel_list: list, library_id: str, item_key: str) -> str | 
 
 
 @mcp.tool(
-    name="zotero_add_item_relation",
+    name="add_item_relation",
     description="Add a related item relationship to a Zotero item. Creates a bidirectional link between two items."
 )
 def add_item_relation(
@@ -4808,7 +4809,7 @@ def add_item_relation(
 
 
 @mcp.tool(
-    name="zotero_remove_item_relation",
+    name="remove_item_relation",
     description="Remove a related item relationship from a Zotero item."
 )
 def remove_item_relation(
@@ -5210,7 +5211,7 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
     lines.append("")
     lines.append(
         "_Note: To include new items in semantic search, run "
-        "zotero_update_search_database._"
+        "update_semantic_index._"
     )
     return "\n".join(lines)
 
@@ -5304,7 +5305,7 @@ def add_by_bibtex(
             for (idx, _), cr_result in zip(pending, created):
                 results[idx] = cr_result
 
-        return _format_batch_result("# zotero_add_by_bibtex", results)
+        return _format_batch_result("# add_item (BibTeX)", results)
 
     except Exception as e:
         ctx.error(f"Error adding by BibTeX: {e}")
@@ -5400,7 +5401,7 @@ def add_by_csl_json(
             for (idx, _), cr_result in zip(pending, created):
                 results[idx] = cr_result
 
-        return _format_batch_result("# zotero_add_by_csl_json", results)
+        return _format_batch_result("# add_item (CSL JSON)", results)
 
     except Exception as e:
         ctx.error(f"Error adding by CSL JSON: {e}")
@@ -5408,7 +5409,7 @@ def add_by_csl_json(
 
 
 # ---------------------------------------------------------------------------
-# zotero_add_item — the single public add facade
+# add_item — the single public add facade
 # ---------------------------------------------------------------------------
 
 _ADD_SOURCE_TYPES = ("doi", "url", "isbn", "bibtex", "csl_json", "file")
@@ -5492,7 +5493,7 @@ def _is_citation_path(source: str, exts: set[str]) -> bool:
 
 
 def detect_source_type(source: str) -> str:
-    """Classify an ``zotero_add_item`` source string.
+    """Classify an ``add_item`` source string.
 
     Returns one of ``_ADD_SOURCE_TYPES``. Raises ValueError with an
     actionable message when the shape is not recognizable.
@@ -5574,7 +5575,7 @@ def detect_source_type(source: str) -> str:
 
 
 @mcp.tool(
-    name="zotero_add_item",
+    name="add_item",
     description=(
         "Add item(s) to Zotero from any source: DOI, URL, ISBN, BibTeX, "
         "CSL JSON, or a local file. Use for every 'add this to Zotero' "
@@ -5606,8 +5607,8 @@ def detect_source_type(source: str) -> str:
         "bookmarks it, 'none' skips, 'required' fails without one. "
         "title: file sources only, when extraction misses. "
         "Requires a writable library (fails in local-only mode). Run "
-        "zotero_update_search_database afterwards for semantic search. "
-        "Example: zotero_add_item(source='10.1145/3708319', "
+        "update_semantic_index afterwards for semantic search. "
+        "Example: add_item(source='10.1145/3708319', "
         "collections=['9SU943GB'], if_exists='file')."
     )
 )

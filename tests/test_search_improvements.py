@@ -299,7 +299,7 @@ class TestFallbackCascade:
 # ---------------------------------------------------------------------------
 
 class TestAdvancedSearchNormalization:
-    """Test that _compare in advanced_search normalizes both sides."""
+    """Test that _compare in search_items_advanced normalizes both sides."""
 
     def test_umlaut_matches_ascii(self, monkeypatch):
         """Müller should match Muller in advanced search conditions."""
@@ -314,7 +314,7 @@ class TestAdvancedSearchNormalization:
         monkeypatch.setattr(search_module._client, "get_zotero_client", lambda: fake_zot)
 
         ctx = DummyContext()
-        result = search_module.advanced_search(
+        result = search_module.search_items_advanced(
             conditions=[{"field": "creator", "operation": "contains", "value": "Muller"}],
             ctx=ctx
         )
@@ -334,7 +334,7 @@ class TestAdvancedSearchNormalization:
         monkeypatch.setattr(search_module._client, "get_zotero_client", lambda: fake_zot)
 
         ctx = DummyContext()
-        result = search_module.advanced_search(
+        result = search_module.search_items_advanced(
             conditions=[{"field": "creator", "operation": "contains", "value": "Cladder-Micus"}],
             ctx=ctx
         )
@@ -555,7 +555,7 @@ class TestCascadeTimeout:
 
 
 # ---------------------------------------------------------------------------
-# search_by_tag scope legibility (#418)
+# search_items_by_tag scope legibility (#418)
 # ---------------------------------------------------------------------------
 
 def _tagged(key, tag=None):
@@ -592,7 +592,7 @@ def test_empty_scoped_tag_search_names_the_collection(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
                         lambda: _ScopeZotero([_tagged("KYYQ2HSY", "didn't use")]))
 
-    result = server.search_by_tag(tag=["didn't use"], collection_key="MSYFGVKG",
+    result = server.search_items_by_tag(tag=["didn't use"], collection_key="MSYFGVKG",
                                   limit=6, ctx=DummyContext())
 
     assert "MSYFGVKG" in result
@@ -607,7 +607,7 @@ def test_unscoped_tag_search_says_it_is_unscoped(monkeypatch):
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
                         lambda: _ScopeZotero(hits))
 
-    result = server.search_by_tag(tag=["didn't use"], limit=6, ctx=DummyContext())
+    result = server.search_items_by_tag(tag=["didn't use"], limit=6, ctx=DummyContext())
 
     assert "entire library" in result
     assert "no collection scope applied" in result
@@ -622,7 +622,7 @@ def test_scoped_hits_still_name_the_collection(monkeypatch):
             return [_tagged("INSCOPE1", "t")]
 
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: Scoped([]))
-    result = server.search_by_tag(tag=["t"], collection_key="MSYFGVKG",
+    result = server.search_items_by_tag(tag=["t"], collection_key="MSYFGVKG",
                                   limit=6, ctx=DummyContext())
     assert "in Collection MSYFGVKG" in result
     assert "entire library" not in result

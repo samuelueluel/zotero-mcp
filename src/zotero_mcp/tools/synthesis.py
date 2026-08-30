@@ -69,7 +69,7 @@ def _resolve_paper_context(
 
 
 @mcp.tool(
-    name="zotero_synthesize_annotations",
+    name="compile_annotation_digest",
     description=(
         "Collect every highlight, annotation comment, and child note across "
         "a scope and organize them into a structured, per-paper digest that "
@@ -92,11 +92,11 @@ def _resolve_paper_context(
         "plus a top summary line counting papers, highlights, and notes. "
         "Use this before writing a thematic review so you can spot themes "
         "and contradictions across sources. "
-        "Example: zotero_synthesize_annotations(collection_key='MT53KB66')."
+        "Example: compile_annotation_digest(collection_key='MT53KB66')."
     ),
 )
 @with_zotero_api_lock
-def synthesize_annotations(
+def compile_annotation_digest(
     collection_key: str | None = None,
     tag: list[str] | str | None = None,
     limit: int | str | None = 200,
@@ -336,7 +336,7 @@ def _render_entries(rendered) -> list[str]:
 
 
 @mcp.tool(
-    name="zotero_export_bibliography",
+    name="export_bibliography",
     description=(
         "Render a formatted bibliography or in-text citations for a set of "
         "Zotero items using Zotero's own CSL citation engine, so you can drop "
@@ -357,7 +357,7 @@ def _render_entries(rendered) -> list[str]:
         "no API credentials, as well as over the web API. "
         "Capped at 100 items per call; scope with item_keys or collection_key "
         "for anything larger. "
-        "Example: zotero_export_bibliography(item_keys=['RTKZQI8E'], "
+        "Example: export_bibliography(item_keys=['RTKZQI8E'], "
         "style='apa', export_format='bib')."
     ),
 )

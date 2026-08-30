@@ -1,5 +1,5 @@
 """Regression tests for #224: standalone (parentless) attachments must appear
-in zotero_get_collection_items.
+in list_collection_items.
 
 A PDF dragged into Zotero without a parent metadata item is a top-level
 "attachment" item. The collection listing previously filtered out every

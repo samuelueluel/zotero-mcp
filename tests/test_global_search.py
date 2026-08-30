@@ -2,7 +2,7 @@
 
 `group_id=None` is the "every accessible library" sentinel on the SQLite
 metadata backend, matching the convention `_parse_library_id_param` already
-uses for `zotero_semantic_search`. Feeds and "My Publications" are excluded,
+uses for `semantic_search`. Feeds and "My Publications" are excluded,
 mirroring `get_key_group_map`'s rule for the semantic index.
 
 Builds on test_sql_search_backend's fixture, which already carries a personal
@@ -271,7 +271,7 @@ def test_tag_search_spans_libraries_when_global(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# zotero_semantic_search — library scope (#163)
+# semantic_search — library scope (#163)
 # ---------------------------------------------------------------------------
 #
 # Before #163 phase 2 this tool searched every indexed library implicitly.

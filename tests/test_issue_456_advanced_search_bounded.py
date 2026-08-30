@@ -1,4 +1,4 @@
-"""`zotero_advanced_search` no longer reads the whole library (#456).
+"""`search_items_advanced` no longer reads the whole library (#456).
 
 The client-side path paged the entire library 100 items at a time and
 evaluated every condition in Python, with no server-side filter, no early
@@ -144,7 +144,7 @@ class TestReportedRepro:
         library += [_item(f"B{i}", item_type="blogPost") for i in range(10)]
         zot = patched(library)
 
-        result = search_tools.advanced_search(
+        result = search_tools.search_items_advanced(
             conditions=[{"field": "itemType", "operation": "is", "value": "blogPost"}],
             limit=3,
             ctx=DummyContext(),
@@ -161,7 +161,7 @@ class TestReportedRepro:
         library = [_item(f"A{i}", title="match me") for i in range(5000)]
         zot = patched(library)
 
-        search_tools.advanced_search(
+        search_tools.search_items_advanced(
             conditions=[{"field": "title", "operation": "contains", "value": "match"}],
             limit=5,
             ctx=DummyContext(),
@@ -175,7 +175,7 @@ class TestReportedRepro:
         library = [_item(f"A{i:04d}", title=f"match me {i:04d}") for i in range(250)]
         zot = patched(library)
 
-        result = search_tools.advanced_search(
+        result = search_tools.search_items_advanced(
             conditions=[{"field": "title", "operation": "contains", "value": "match"}],
             limit=5,
             sort_by="title",
@@ -202,7 +202,7 @@ class TestScanIsBounded:
         # after its first page rather than reading 100 of them.
         _advance_clock_past_budget(zot, monkeypatch)
 
-        result = search_tools.advanced_search(
+        result = search_tools.search_items_advanced(
             conditions=[{"field": "title", "operation": "contains", "value": "needle"}],
             limit=50,
             sort_by="title",  # disables the early exit, forcing the budget path
@@ -222,7 +222,7 @@ class TestScanIsBounded:
         zot = patched(library)
         _advance_clock_past_budget(zot, monkeypatch)
 
-        result = search_tools.advanced_search(
+        result = search_tools.search_items_advanced(
             conditions=[
                 {"field": "title", "operation": "contains", "value": "no-such-thing"}
             ],
@@ -245,7 +245,7 @@ class TestNoBehaviourChangeOnSmallLibraries:
         library[3]["data"]["title"] = "needle here"
         patched(library)
 
-        result = search_tools.advanced_search(
+        result = search_tools.search_items_advanced(
             conditions=[{"field": "title", "operation": "contains", "value": "needle"}],
             limit=50,
             ctx=DummyContext(),
@@ -257,7 +257,7 @@ class TestNoBehaviourChangeOnSmallLibraries:
     def test_no_match_is_still_the_plain_message(self, patched):
         patched([_item(f"A{i}") for i in range(10)])
 
-        result = search_tools.advanced_search(
+        result = search_tools.search_items_advanced(
             conditions=[{"field": "title", "operation": "contains", "value": "zzz"}],
             limit=50,
             ctx=DummyContext(),

@@ -315,14 +315,14 @@ PDFs are parsed with [pdf-inspector](https://github.com/firecrawl/pdf-inspector)
 | Key | Default | What it does |
 |---|---|---|
 | `pdf_max_pages` | `50` | Pages extracted per PDF when indexing. Raising it does not widen what search sees on its own — that is bounded by the embedding model's token limit or `chunking.max_chunks_per_item`. |
-| `fulltext_display_max_pages` | `10` | Pages returned by `zotero_get_item_fulltext`. Separate from the above because reading a paper is bounded by your assistant's context, not by recall. |
+| `fulltext_display_max_pages` | `10` | Pages returned by `get_item_fulltext`. Separate from the above because reading a paper is bounded by your assistant's context, not by recall. |
 | `attachment_priority` | `["pdf", "html", "other"]` | Order in which attachment kinds are tried when an item has several readable files. |
 
 **`attachment_priority`** exists for the case where you have converted a paper to clean Markdown yourself and attached it next to the original PDF. By default the PDF still wins; listing `"markdown"` first makes your converted copy the one that gets read and indexed. Valid entries are `pdf`, `html`, `markdown`, `text` and `other`. `other` is a catch-all matching every kind not named elsewhere in the list, so the default sweeps Markdown and plain text into one bucket where the larger file wins. Omitting `other` means anything unlisted is never chosen.
 
 Changing this setting marks affected items for re-extraction, so a following `zotero-mcp update-db` refreshes text that came from a now-deprioritized attachment rather than leaving stale embeddings behind.
 
-To read one specific attachment regardless of priority, pass that attachment's own key to `zotero_get_item_fulltext` (find it with `zotero_get_item_children`) — an attachment key bypasses the priority order and reads exactly that file.
+To read one specific attachment regardless of priority, pass that attachment's own key to `get_item_fulltext` (find it with `list_item_children`) — an attachment key bypasses the priority order and reads exactly that file.
 
 ## 🖥️ Setup & Usage
 
@@ -482,19 +482,19 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
   default `~/Zotero` location.
 
 **Search backend:**
-- `ZOTERO_SEARCH_BACKEND=sqlite`: Route `zotero_search_items` and
-  `zotero_advanced_search` through direct SQL against `zotero.sqlite` instead of
+- `ZOTERO_SEARCH_BACKEND=sqlite`: Route `search_items` and
+  `search_items_advanced` through direct SQL against `zotero.sqlite` instead of
   fetching over the API and filtering in Python (default: `api`). Requires
   `ZOTERO_LOCAL=true`, since it reads the database off disk. Substantially
-  faster on large libraries — an `advanced_search` that pages the whole library
+  faster on large libraries — a `search_items_advanced` call that pages the whole library
   over the API drops from minutes to well under a second. Any query the backend
   doesn't cover falls back to the API path automatically, so the results are
   either the same or better, never worse.
 
 **Global search across libraries:**
 
-With the SQLite backend enabled, `zotero_search_items`, `zotero_advanced_search`
-and `zotero_semantic_search` accept `search_all_libraries=True` (`--all-libraries`
+With the SQLite backend enabled, `search_items`, `search_items_advanced`
+and `semantic_search` accept `search_all_libraries=True` (`--all-libraries`
 on the CLI). One query then covers your personal library and every group library
 at once, and each result is labelled with the library it came from:
 
@@ -811,13 +811,13 @@ Zotero MCP supports managing relationships between items in your library. This i
 
 ### View Related Items
 ```
-zotero_get_item_related(item_key="ABCD1234")
+list_related_items(item_key="ABCD1234")
 ```
 
 ### Add a Relation
 Create a bidirectional link between two items:
 ```
-zotero_add_item_relation(
+add_item_relation(
     item_key="ABCD1234",
     related_item_key="EFGH5678",
     relation_type="dc:relation"  # Optional, defaults to "dc:relation"
@@ -826,7 +826,7 @@ zotero_add_item_relation(
 
 ### Remove a Relation
 ```
-zotero_remove_item_relation(
+remove_item_relation(
     item_key="ABCD1234",
     related_item_key="EFGH5678",
     remove_bidirectional=True  # Also remove the reverse relation (default: true)
@@ -861,12 +861,12 @@ group name is an error at startup rather than a silent no-op.
 |---|---|---|
 | `scite` | off | Scite citation tallies and retraction checks (calls scite.ai; pairs with the `[scite]` extra) |
 | `duplicates` | off | Find and merge duplicate items — library maintenance |
-| `discovery` | off | `find_related_papers`, `library_coverage` — corpus-level exploration |
+| `discovery` | off | `discover_citing_and_referenced_works`, `audit_pdf_coverage` — corpus-level exploration |
 | `feeds` | off | Zotero RSS feed subscriptions |
 | `relations` | off | Explicit item-to-item "related items" links |
 | `libraries` | **on** | List and switch between personal/group libraries |
 | `search-admin` | **on** | Build and inspect the semantic search index |
-| `pdf-geometry` | **on** | Page layout and PDF outline — pairs with area annotations |
+| `pdf-geometry` | **on** | PDF region detection and outline extraction — pairs with area annotations |
 | `chatgpt-connector` | auto | The `search`/`fetch` pair required by ChatGPT deep research |
 
 `chatgpt-connector` is scoped by transport: it turns on automatically when the
@@ -893,31 +893,31 @@ Example (Claude Desktop / Claude Code):
 > [Tool Groups](#-tool-groups) above.
 
 ### 🧠 Semantic Search Tools
-- `zotero_semantic_search`: AI-powered similarity search with embedding models
-- `zotero_update_search_database`: Manually update the semantic search database
-- `zotero_get_search_database_status`: Check database status and configuration
+- `semantic_search`: AI-powered similarity search with embedding models
+- `update_semantic_index`: Manually update the semantic search database
+- `get_semantic_index_status`: Check database status and configuration
 
 ### 🔍 Search Tools
-- `zotero_search_items`: Search your library by keywords
-- `zotero_advanced_search`: Perform complex searches with multiple criteria
-- `zotero_get_collections`: List collections
-- `zotero_get_collection_items`: Get items in a collection
-- `zotero_get_tags`: List all tags
-- `zotero_get_recent`: Get recently added items
-- `zotero_search_by_tag`: Search your library using custom tag filters
+- `search_items`: Search your library by keywords
+- `search_items_advanced`: Perform complex searches with multiple criteria
+- `list_collections`: List collections
+- `list_collection_items`: Get items in a collection
+- `list_tags`: List all tags
+- `list_recent_items`: Get recently added items
+- `search_items_by_tag`: Search your library using custom tag filters
 
 ### 📚 Content Tools
-- `zotero_get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
-- `zotero_get_item_fulltext`: Get full text content
-- `zotero_get_item_children`: Get attachments and notes for one item or many (pass an array of keys)
+- `get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
+- `get_item_fulltext`: Get full text content
+- `list_item_children`: Get attachments and notes for one item or many (pass an array of keys)
 
 ### 📝 Annotation & Notes Tools
-- `zotero_get_annotations`: Get annotations (including direct PDF extraction); use `format="json"` for normalized records suitable for scripts and other MCP tools
-- `zotero_synthesize_annotations`: Build a per-paper annotation/note digest; supports `format="json"` for structured grouped output
-- `zotero_get_notes`: Retrieve notes from your Zotero library; pass `query` to search note and annotation text instead of listing
-- `zotero_create_annotation`: Create a highlight (`text=`) or an area annotation (`rect=[x, y, width, height]`)
-- `zotero_manage_note`: Create, update, or delete a note via `action="create"|"update"|"delete"` (beta feature)
-- `zotero_get_page_layout`: Detect figure/table regions on a PDF page (with captions and normalized coordinates) for accurate area annotation placement — its reported `bbox` can be passed straight to `zotero_create_annotation(rect=...)`
+- `get_annotations`: Get annotations (including direct PDF extraction); use `format="json"` for normalized records suitable for scripts and other MCP tools
+- `compile_annotation_digest`: Build a per-paper annotation/note digest; supports `format="json"` for structured grouped output
+- `get_notes`: Retrieve notes from your Zotero library; pass `query` to search note and annotation text instead of listing
+- `create_annotation`: Create a highlight (`text=`) or an area annotation (`rect=[x, y, width, height]`)
+- `manage_note`: Create, update, or delete a note via `action="create"|"update"|"delete"` (beta feature)
+- `detect_pdf_regions`: Detect figure/table regions on a PDF page (with captions and normalized coordinates) for accurate area annotation placement — its reported `bbox` can be passed straight to `create_annotation(rect=...)`
 
 ### 📊 Scite Citation Intelligence Tools
 
@@ -928,29 +928,26 @@ Example (Claude Desktop / Claude Code):
 - `scite_check_retractions`: Scan items for retractions and editorial notices
 
 ### 📦 Item & Collection Management Tools
-- `zotero_add_by_doi`: Add a paper by DOI with automatic metadata and open-access PDF attachment
-- `zotero_add_by_url`: Add a paper by URL (arXiv, DOI URLs, and general webpages)
-- `zotero_add_by_isbn`: Add a book by ISBN (Open Library + Google Books cascade)
-- `zotero_add_by_bibtex`: Add one or more items from BibTeX (inline or .bib file)
-- `zotero_add_by_csl_json`: Add one or more items from CSL JSON (inline or file)
-- `zotero_add_from_file`: Import a local PDF or EPUB file with automatic DOI extraction
+- `add_item`: Add one or more items from a DOI, URL, ISBN, BibTeX, CSL JSON, or local file. It resolves collection keys/names/paths before creation and supports `if_exists` plus `create_missing_collections`.
+- `attach_file`: Attach a local file or PDF URL to an existing item (no new parent item is created).
+- `set_item_parent`: Set, change, or clear an item's parent (`parent_key=null` makes it top-level).
+- `create_collection` / `delete_collection`: Create or remove collection folders.
+- `search_collections`: Find collection keys by name.
+- `set_item_collections`: Incrementally add or remove item memberships using collection keys, names, or paths.
+- `update_item` / `delete_item`: Edit item metadata or move an item to Zotero Trash.
+- `batch_edit_tags_and_extra`: Add/remove tags and edit structured `Extra` fields across a selected item set.
+- `find_duplicate_items` / `merge_duplicate_items`: Find or merge duplicates; merge supports preview and confirmation.
+- `get_pdf_outline`: Extract a PDF's table of contents/bookmarks.
 
-All add tools take a `collections` parameter accepting collection keys, names, or `parent/child` paths — resolved and validated before the item is created, so unknown or ambiguous specs fail with suggestions instead of producing an unfiled item. They also take `if_exists` (`"duplicate"` — default — always creates; `"file"` reuses an existing item matching the DOI/arXiv ID/ISBN/URL, filing it into missing collections and adding missing tags; `"skip"` leaves a match untouched) and `create_missing_collections` (create unknown collection specs, including path chains, instead of failing). The `zotero-cli add` commands default to `--if-exists file`.
-- `zotero_attach_file`: Attach a local file or a PDF URL to an existing item by key (no new item created; returns the attachment key; idempotent per filename and content hash)
-- `zotero_set_item_parent`: Set, change, or clear an item's parent (`parent_key=null` makes it top-level)
-- `zotero_create_collection`: Create a new collection (folder/project) in your library
-- `zotero_search_collections`: Search for collections by name to find their keys
-- `zotero_manage_collections`: Add or remove items from collections (accepts keys, names, or `parent/child` paths)
-- `zotero_update_item`: Update metadata for an existing item (title, tags, abstract, date, etc.)
-- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`
-- `zotero_merge_duplicates`: Merge duplicate items with dry-run preview; consolidates all child items. `auto=True` merges every high-confidence (same-DOI) group in one pass behind a two-call plan/confirm gate
-- `zotero_get_pdf_outline`: Extract the table of contents / outline from a PDF attachment
-- `zotero_search_by_citation_key`: Look up items by BetterBibTeX citation key (with Extra field fallback)
+### 🔗 Citation and Related-Item Tools
+- `rank_works_by_inbound_citations`: Rank works by resolved citation-subgraph in-degree; this is not a hub or centrality measure.
+- `get_citation_neighbors`: Return the works directly cited by, and directly citing, a selected work.
+- `find_bibliographically_coupled_papers`: Rank local papers by shared references.
+- `search_bibliography_entries`: Search parsed bibliography entries rather than substantive paper text.
+- `rebuild_citation_graph`, `rebuild_reference_index`, `get_reference_index_status`: Maintain and inspect citation/reference data.
+- `list_related_items`, `add_item_relation`, `remove_item_relation`: Read or edit Zotero's explicit Related Items links, which are separate from citation edges.
 
-### 🔗 Related Items Tools
-- `zotero_get_item_related`: Get all related items for a specific Zotero item
-- `zotero_add_item_relation`: Add a related item relationship (creates bidirectional link)
-- `zotero_remove_item_relation`: Remove a related item relationship
+For the exhaustive 60-tool old-to-new mapping—including inactive toolsets and the fixed-name ChatGPT connector—see [Tool-name migration](docs/tool-name-migration.md).
 
 ## 🧪 Testing
 

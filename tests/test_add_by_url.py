@@ -1,4 +1,4 @@
-"""Tests for the URL source of zotero_add_item (formerly zotero_add_by_url)."""
+"""Tests for the URL source of add_item (formerly zotero_add_by_url)."""
 
 import pytest
 from unittest.mock import patch, MagicMock

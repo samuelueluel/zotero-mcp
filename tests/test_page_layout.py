@@ -1,4 +1,4 @@
-"""Tests for PDF page layout detection (zotero_get_page_layout).
+"""Tests for PDF page layout detection (detect_pdf_regions).
 
 Covers the pure-logic detection helpers in pdf_layout, the
 detect_page_regions engine, and the MCP tool layer.
@@ -558,7 +558,7 @@ class TestDetectPageRegions:
 
 
 # ---------------------------------------------------------------------------
-# MCP tool: zotero_get_page_layout
+# MCP tool: detect_pdf_regions
 # ---------------------------------------------------------------------------
 
 def _pdf_attachment(key="ATTACH01", item_type="attachment", content_type="application/pdf"):
@@ -629,7 +629,7 @@ class TestGetPageLayoutTool:
             ),
         ]))
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=7, ctx=DummyContext()
         )
 
@@ -641,7 +641,7 @@ class TestGetPageLayoutTool:
         assert "0.1012" in result
         assert "high" in result
         # Ready-to-paste call template references the same attachment and page
-        assert "zotero_create_annotation" in result
+        assert "create_annotation" in result
         assert "attachment_key='ATTACH01'" in result
         assert "page=7" in result
         # ...and hands the bbox over in the merged tool's rect= form
@@ -651,7 +651,7 @@ class TestGetPageLayoutTool:
         self._setup_clients(monkeypatch, fake_zot)
         self._patch_detection(monkeypatch, _layout_result([]))
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=3, ctx=DummyContext()
         )
 
@@ -666,7 +666,7 @@ class TestGetPageLayoutTool:
                       "and captions are unavailable."],
         ))
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=1, ctx=DummyContext()
         )
 
@@ -676,7 +676,7 @@ class TestGetPageLayoutTool:
         self._setup_clients(monkeypatch, fake_zot)
         self._patch_detection(monkeypatch, {"error": "Page 99 out of range (PDF has 12 pages)"})
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=99, ctx=DummyContext()
         )
 
@@ -688,7 +688,7 @@ class TestGetPageLayoutTool:
             monkeypatch, fake_zot, items=[_pdf_attachment(content_type="text/html")]
         )
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=1, ctx=DummyContext()
         )
 
@@ -699,7 +699,7 @@ class TestGetPageLayoutTool:
             monkeypatch, fake_zot, items=[_pdf_attachment(item_type="journalArticle")]
         )
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=1, ctx=DummyContext()
         )
 
@@ -708,7 +708,7 @@ class TestGetPageLayoutTool:
     def test_rejects_invalid_page_number(self, monkeypatch, fake_zot):
         self._setup_clients(monkeypatch, fake_zot)
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=0, ctx=DummyContext()
         )
 
@@ -719,7 +719,7 @@ class TestGetPageLayoutTool:
         monkeypatch.setattr("zotero_mcp.client.get_web_zotero_client", lambda: None)
         monkeypatch.setattr("zotero_mcp.client.get_local_zotero_client", lambda: None)
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=1, ctx=DummyContext()
         )
 
@@ -742,7 +742,7 @@ class TestGetPageLayoutTool:
             ),
         ]))
 
-        result = server.get_page_layout(
+        result = server.detect_pdf_regions(
             attachment_key="ATTACH01", page=2, ctx=DummyContext()
         )
 

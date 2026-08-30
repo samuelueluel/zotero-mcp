@@ -28,33 +28,33 @@ tiktoken = pytest.importorskip("tiktoken")
 # why in the PR — that's an active choice, not an accident.
 TOOL_BUDGETS = {
     # tools/annotations.py
-    "zotero_get_annotations":          (110, 245),
-    "zotero_get_notes":                (119, 267),
-    "zotero_manage_note":              (139, 312),
-    "zotero_create_annotation":        (196, 439),
+    "get_annotations":          (110, 245),
+    "get_notes":                (119, 267),
+    "manage_note":              (139, 312),
+    "create_annotation":        (196, 439),
     # tools/retrieval.py
-    "zotero_get_tags":                 ( 85, 195),
-    "zotero_get_item_children":        (138, 310),
+    "list_tags":                 ( 85, 195),
+    "list_item_children":        (138, 310),
     # tools/write.py
-    "zotero_add_item":                 (277, 450),  # max clamped to the hard cap
-    "zotero_update_item":              (190, 426),
-    "zotero_batch_update":             (131, 294),
-    "zotero_set_item_collections":     ( 98, 220),
+    "add_item":                 (277, 450),  # max clamped to the hard cap
+    "update_item":              (190, 426),
+    "batch_edit_tags_and_extra":             (131, 294),
+    "set_item_collections":     ( 98, 220),
     # Both rewritten for the paging/auto-merge work (#394, #395): the auto
     # mode's two-call confirmation and keeper heuristic are things a model has
     # to know before it calls, so they belong in the description. merge's max
     # is clamped to the hard cap.
-    "zotero_find_duplicates":          (234, 450),
-    "zotero_merge_duplicates":         (295, 450),
-    "zotero_attach_file":              (190, 430),
+    "find_duplicate_items":          (234, 450),
+    "merge_duplicate_items":         (295, 450),
+    "attach_file":              (190, 430),
     # tools/search.py
-    "zotero_search_items":             (175, 400),
-    "zotero_search_by_tag":            (115, 265),
-    "zotero_search_by_citation_key":   (125, 280),
-    "zotero_advanced_search":          (175, 400),
-    "zotero_semantic_search":          (130, 295),
-    "zotero_update_search_database":   (130, 295),
-    "zotero_get_search_database_status": ( 75, 170),
+    "search_items":             (175, 400),
+    "search_items_by_tag":            (115, 265),
+    "find_item_by_citation_key":   (125, 280),
+    "search_items_advanced":          (175, 400),
+    "semantic_search":          (125, 295),
+    "update_semantic_index":   (130, 295),
+    "get_semantic_index_status": ( 75, 170),
 }
 
 # Global ceiling: even rubric-rich descriptions shouldn't exceed this.

@@ -81,7 +81,7 @@ def personal_library_item_count(local_zot, web_zot) -> int | None:
     """Fast item count (zot.num_items(), a single lightweight request) for
     whichever pyzotero client is available, or None if neither is.
 
-    advanced_search's pyzotero fallback has no server-side query support at
+    search_items_advanced's pyzotero fallback has no server-side query support at
     all — it pages the ENTIRE library client-side, 100 items at a time, and
     filters in Python (this is exactly the slowness the SQL backend exists
     to fix). Against a real library of any size that makes it impractical

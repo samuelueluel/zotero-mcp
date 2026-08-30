@@ -1,4 +1,4 @@
-"""Tests for zotero_attach_file (tools/write.attach_file) and its helpers."""
+"""Tests for attach_file (tools/write.attach_file) and its helpers."""
 
 import hashlib
 
@@ -282,7 +282,7 @@ class TestAttachFileLocal:
         assert att["parentid"] == "ITEM1"
         assert att["files"][0] == ("smith-2020.pdf", "/Users/test/smith-2020.pdf")
         assert "File attached" in result
-        assert "zotero_update_search_database" in result
+        assert "update_semantic_index" in result
 
     def test_filename_override(self, monkeypatch, dummy_ctx):
         fake = FakeZoteroForAttach()

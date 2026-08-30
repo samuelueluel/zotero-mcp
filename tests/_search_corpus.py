@@ -1,6 +1,6 @@
 """One declaration of a test corpus, materialised for both search backends.
 
-`zotero_advanced_search` has two implementations — direct SQL against
+`search_items_advanced` has two implementations — direct SQL against
 `zotero.sqlite`, and pyzotero-plus-Python-filtering — and they must answer
 every condition identically. Testing that needs the *same* items in both
 shapes, so this module declares the corpus once and builds it two ways:

@@ -62,7 +62,7 @@ semantic = [
     "tiktoken>=0.7.0",
 ]
 pdf = [
-    # >=1.24.2 for Page.cluster_drawings (vector figure detection in zotero_get_page_layout)
+    # >=1.24.2 for Page.cluster_drawings (vector figure detection in detect_pdf_regions)
     "pymupdf>=1.24.2",
     "ebooklib>=0.18",
 ]

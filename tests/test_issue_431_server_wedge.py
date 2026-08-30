@@ -1,6 +1,6 @@
 """Regression tests for #431: one hung tool call wedged the whole server.
 
-Reported on Windows: ``zotero_get_pdf_outline`` never returned, and from then
+Reported on Windows: ``get_pdf_outline`` never returned, and from then
 on *every* other MCP tool timed out with no recovery. Separately, concurrent
 tool calls produced "Connection closed" and orphan server processes.
 

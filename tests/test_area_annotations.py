@@ -207,7 +207,7 @@ def test_create_area_annotation_requires_web_api(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Merged zotero_create_annotation surface: highlight vs area dispatch
+# Merged create_annotation surface: highlight vs area dispatch
 # ---------------------------------------------------------------------------
 
 

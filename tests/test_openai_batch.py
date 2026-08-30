@@ -174,7 +174,7 @@ def test_update_db_batch_flag_resolution_reads_config(tmp_path, monkeypatch):
 def test_batch_manifest_group_id_uses_the_runs_pinned_library(monkeypatch):
     """The manifest's group_id keys the watermark save at import time. It
     must come from the run's pinned library identity, not the mutable
-    module-level override — a zotero_switch_library landing during the long
+    module-level override — a switch_library landing during the long
     prepare/upload window would otherwise write library A's sync version
     under library B's watermark key (the #393 corruption, reborn)."""
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())

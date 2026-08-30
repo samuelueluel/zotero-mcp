@@ -2,10 +2,10 @@
 
 Three behaviors covered:
 
-- ``zotero_get_collections(include_trashed=True)`` shows trashed
+- ``list_collections(include_trashed=True)`` shows trashed
   collections (annotated as such), while the default ``False`` preserves
   the existing tree.
-- ``zotero_search_collections(include_trashed=True)`` matches trashed
+- ``search_collections(include_trashed=True)`` matches trashed
   collections too.
 - ``zotero_manage_collections`` pre-validates each ``add_to`` /
   ``remove_from`` key and refuses if the key is in the Trash or missing,
@@ -126,7 +126,7 @@ class TestManageCollectionsValidation:
         )
         _patch_clients(monkeypatch, z)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["DEAD0000"],
             ctx=DummyContext(),
@@ -140,7 +140,7 @@ class TestManageCollectionsValidation:
         z = _CollectionFakeZotero(live=[], trashed=[])
         _patch_clients(monkeypatch, z)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["NONESUCH"],
             ctx=DummyContext(),
@@ -155,7 +155,7 @@ class TestManageCollectionsValidation:
         )
         _patch_clients(monkeypatch, z)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["LIVE0000"],
             ctx=DummyContext(),
@@ -170,7 +170,7 @@ class TestManageCollectionsValidation:
         )
         _patch_clients(monkeypatch, z)
 
-        result = server.manage_collections(
+        result = server.set_item_collections(
             item_keys=["ITEM0001"],
             add_to=["LIVE0000"],
             remove_from=["DEAD0000"],
@@ -184,7 +184,7 @@ class TestManageCollectionsValidation:
 
 
 # ---------------------------------------------------------------------------
-# zotero_get_collections / zotero_search_collections include_trashed
+# list_collections / search_collections include_trashed
 # ---------------------------------------------------------------------------
 
 

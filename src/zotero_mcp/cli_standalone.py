@@ -196,19 +196,19 @@ def cmd_search(args):
     ctx = _ctx(args)
 
     if args.mode == "tag":
-        result = search_mod.search_by_tag(
+        result = search_mod.search_items_by_tag(
             tag=args.query.split(","), limit=args.limit,
             collection_key=getattr(args, "collection", None), ctx=ctx,
         )
     elif args.mode == "citekey":
-        result = search_mod.search_by_citation_key(citekey=args.query, ctx=ctx)
+        result = search_mod.find_item_by_citation_key(citekey=args.query, ctx=ctx)
     elif args.mode == "advanced":
         try:
             conditions = json.loads(args.conditions)
         except json.JSONDecodeError as e:
             print(f"Error: invalid JSON in --conditions: {e}", file=sys.stderr)
             sys.exit(1)
-        result = search_mod.advanced_search(
+        result = search_mod.search_items_advanced(
             conditions=conditions, join_mode=args.join_mode,
             sort_by=args.sort_by, sort_direction=args.sort_direction,
             limit=args.limit,
@@ -332,7 +332,7 @@ def cmd_get(args):
             return
         print(retrieval.get_tags(limit=args.limit, ctx=ctx))
     elif sub == "recent":
-        result = retrieval.get_recent(
+        result = retrieval.list_recent_items(
             limit=args.limit, collection_key=getattr(args, "collection", None), ctx=ctx,
         )
         if json_mode:
@@ -537,7 +537,7 @@ def cmd_collections(args):
     elif args.subcommand == "search":
         _out(args, "collections search", text=write_mod.search_collections(query=args.query, ctx=ctx))
     elif args.subcommand == "manage":
-        _out(args, "collections manage", text=write_mod.manage_collections(
+        _out(args, "collections manage", text=write_mod.set_item_collections(
             item_keys=args.item_keys.split(","),
             add_to=args.add_to.split(",") if args.add_to else None,
             remove_from=args.remove_from.split(",") if args.remove_from else None,
@@ -618,12 +618,12 @@ def cmd_duplicates(args):
     ctx = _ctx(args)
 
     if args.subcommand == "find":
-        _out(args, "duplicates find", text=write_mod.find_duplicates(
+        _out(args, "duplicates find", text=write_mod.find_duplicate_items(
             method=args.method, collection_key=getattr(args, "collection", None),
             limit=args.limit, ctx=ctx,
         ))
     elif args.subcommand == "merge":
-        _out(args, "duplicates merge", text=write_mod.merge_duplicates(
+        _out(args, "duplicates merge", text=write_mod.merge_duplicate_items(
             keeper_key=args.keeper_key,
             duplicate_keys=args.duplicate_keys.split(","),
             confirm=not args.dry_run, ctx=ctx,
@@ -869,7 +869,7 @@ def cmd_export(args):
 def cmd_related(args):
     setup_zotero_environment()
     from zotero_mcp.tools import discovery as discovery_mod
-    _out(args, "related", text=discovery_mod.find_related_papers(
+    _out(args, "related", text=discovery_mod.discover_citing_and_referenced_works(
         identifier=args.identifier, direction=args.direction,
         limit=args.limit, ctx=_ctx(args),
     ))
@@ -878,7 +878,7 @@ def cmd_related(args):
 def cmd_coverage(args):
     setup_zotero_environment()
     from zotero_mcp.tools import discovery as discovery_mod
-    _out(args, "coverage", text=discovery_mod.library_coverage(
+    _out(args, "coverage", text=discovery_mod.audit_pdf_coverage(
         collection_key=args.collection, limit=args.limit, ctx=_ctx(args),
     ))
 
@@ -888,7 +888,7 @@ def cmd_synthesize(args):
     from zotero_mcp.tools import synthesis as synthesis_mod
     json_mode = _json_mode(args)
     fmt = "json" if (json_mode and args.format == "markdown") else args.format
-    result = synthesis_mod.synthesize_annotations(
+    result = synthesis_mod.compile_annotation_digest(
         collection_key=args.collection, tag=_split_csv(args.tag),
         limit=args.limit, format=fmt, ctx=_ctx(args),
     )
@@ -905,7 +905,7 @@ def cmd_path(args):
     """Where an item's attachment actually lives on disk."""
     setup_zotero_environment()
     _s, retrieval, _a, _w, _c = _import_tools()
-    text = retrieval.get_attachment_path(item_key=args.item_key, ctx=_ctx(args))
+    text = retrieval.get_attachment_paths(item_key=args.item_key, ctx=_ctx(args))
     _out(args, "path",
          data={"item_key": args.item_key, "text": text} if _json_mode(args) else None,
          text=text)
@@ -920,7 +920,7 @@ def cmd_batch(args):
             set_keys = json.loads(args.set)
         except json.JSONDecodeError as e:
             _fail(args, "batch", f"invalid JSON in --set: {e}", "bad_json")
-    _out(args, "batch", text=write_mod.batch_update(
+    _out(args, "batch", text=write_mod.batch_edit_tags_and_extra(
         item_keys=_split_csv(args.item_keys), query=args.query or "",
         tag=_split_csv(args.tag), add_tags=_split_csv(args.add_tags),
         remove_tags=_split_csv(args.remove_tags), set_keys=set_keys,
