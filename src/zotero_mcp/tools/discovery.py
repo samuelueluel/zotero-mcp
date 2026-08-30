@@ -520,11 +520,16 @@ def get_citation_neighbors(
 
     Args:
         item_key: Zotero item key or external-reference graph key.
-        depth: Traversal depth (direct neighbors are currently returned).
+        depth: Must be ``1``; multi-hop traversal is not implemented.
         scope: Graph scope (default: library).
         collection_key: Required for collection scopes.
     """
     try:
+        if depth != 1:
+            return (
+                "Error: get_citation_neighbors supports only depth=1 "
+                "(direct cited and citing neighbors); multi-hop traversal is not implemented."
+            )
         g = _get_graph()
         data = g.get_citation_neighbors(
             item_key,

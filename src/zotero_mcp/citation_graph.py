@@ -1155,7 +1155,9 @@ class CitationGraph:
         scope: str = "library",
         collection_key: str = "",
     ) -> dict[str, Any]:
-        """Return direct citation ancestors and descendants under a scope."""
+        """Return direct cited and citing neighbors under a scope."""
+        if depth != 1:
+            return {"error": "Only depth=1 direct citation neighbors are supported"}
         if not self._loaded and not self.load():
             return {"error": "Graph not loaded"}
 

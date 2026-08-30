@@ -941,7 +941,7 @@ Example (Claude Desktop / Claude Code):
 
 ### 🔗 Citation and Related-Item Tools
 - `rank_works_by_inbound_citations`: Rank works by resolved citation-subgraph in-degree; this is not a hub or centrality measure.
-- `get_citation_neighbors`: Return the works directly cited by, and directly citing, a selected work.
+- `get_citation_neighbors`: Return the works directly cited by, and directly citing, a selected work. `depth` must be `1`; unsupported multi-hop requests are rejected rather than silently treated as one hop.
 - `find_bibliographically_coupled_papers`: Rank local papers by shared references.
 - `search_bibliography_entries`: Search parsed bibliography entries rather than substantive paper text.
 - `rebuild_citation_graph`, `rebuild_reference_index`, `get_reference_index_status`: Maintain and inspect citation/reference data.

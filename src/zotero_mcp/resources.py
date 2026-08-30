@@ -1,9 +1,11 @@
 """MCP resources: expose the Zotero library as attachable context.
 
 Importing this module registers each ``@mcp.resource`` with the FastMCP app (a
-side effect, mirroring the tool modules). Resources let an MCP host attach
-library content (a collection listing, a single item, a collection's items) as
-context directly, without the model having to issue a tool call for each.
+side effect, mirroring the tool modules). Resources let an MCP host attach a
+single item or a collection's items as context directly, without the model
+having to issue a tool call for each. Collection discovery itself stays on the
+canonical ``list_collections`` tool rather than duplicating it as a static
+resource adapter.
 
 The Zotero client is reached lazily via module-level attribute access
 (``_client.get_zotero_client()``) so tests can monkeypatch it, and every
@@ -16,32 +18,6 @@ from zotero_mcp._app import mcp
 from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
 
-
-@mcp.resource(
-    "zotero://collections",
-    name="Zotero collections",
-    description="All collections in the active Zotero library (name, key, item count).",
-    mime_type="text/markdown",
-)
-@with_zotero_api_lock
-def collections_resource() -> str:
-    """List every collection in the active library as markdown."""
-    try:
-        zot = _client.get_zotero_client()
-        collections = _helpers._paginate(zot.collections)
-        if not collections:
-            return "# Zotero Collections\n\nNo collections found."
-        lines = ["# Zotero Collections", ""]
-        for c in collections:
-            data = c.get("data", {})
-            name = data.get("name", "Untitled")
-            key = c.get("key", "")
-            parent = data.get("parentCollection")
-            suffix = f" — child of {parent}" if parent else ""
-            lines.append(f"- **{name}** (`{key}`){suffix}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"# Zotero Collections\n\nError loading collections: {e}"
 
 
 @mcp.resource(

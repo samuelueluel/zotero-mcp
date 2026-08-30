@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The citation-neighbor and collection-discovery surfaces now fail honestly and have one canonical route.** `get_citation_neighbors` retains its compatibility `depth` parameter but rejects every value except `1`; multi-hop traversal is not implemented and is no longer silently treated as a direct-neighbor query. The redundant static `zotero://collections` resource was removed because gateways exposed it as an extra `zotero_read_zotero_collections` callable beside `zotero_list_collections`. Parameterized item and collection-item resources remain available.
+
 - **Breaking (Samuel fork): renamed the complete 60-tool MCP surface.** Ordinary raw tool names no longer repeat the server namespace (`zotero_semantic_search` → `semantic_search`, exposed by Pi as `zotero_semantic_search` rather than `zotero_zotero_semantic_search`). Misleading names now describe their behavior: the former “collection hubs” query is `rank_works_by_inbound_citations`, direct lineage is `get_citation_neighbors`, shared-reference similarity is `find_bibliographically_coupled_papers`, and annotation “synthesis” is `compile_annotation_digest`. Inactive toolsets were migrated too. Schemas and behavior are unchanged. The ChatGPT connector’s contract-mandated raw `search`/`fetch` names and existing `scite_*` names remain unchanged. See [`docs/tool-name-migration.md`](docs/tool-name-migration.md) for the exhaustive mapping.
 
 ## [0.11.0] - 2026-08-25

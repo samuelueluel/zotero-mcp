@@ -1,12 +1,13 @@
 # Tool-name migration
 
-This fork intentionally makes a breaking MCP API change. Ordinary raw tool names no longer repeat the server name: Pi (or another gateway) supplies the single `zotero_` namespace prefix. Schemas and behavior are unchanged unless a row records a behavior-clarifying name.
+This fork intentionally makes a breaking MCP API change. Ordinary raw tool names no longer repeat the server name: Pi (or another gateway) supplies the single `zotero_` namespace prefix. Tool schemas remain structurally unchanged. Behavior is unchanged except that `get_citation_neighbors` now rejects `depth != 1` instead of silently ignoring unsupported multi-hop requests.
 
 - **Raw name** is registered by the MCP server.
 - **Pi-visible name** is the name used by Samuel’s agent skills.
 - `search` and `fetch` remain fixed because the ChatGPT connector contract requires those exact raw names.
 - `scite_*` names were already clear and remain unchanged.
 - Toolset `core` is always registered; other rows retain their existing optional/default-on toolset membership.
+- The redundant static `zotero://collections` resource was removed separately; use `list_collections`. Parameterized read resources remain available.
 
 | Toolset | Old raw name | New raw name | New Pi-visible name |
 |---|---|---|---|
