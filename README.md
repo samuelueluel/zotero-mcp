@@ -27,6 +27,39 @@
 
 ---
 
+## Samuel's fork
+
+This repository is a maintained personal fork of
+[`54yyyu/zotero-mcp`](https://github.com/54yyyu/zotero-mcp). The `main`
+branch is kept as a clean upstream mirror; the `samuel` branch contains the
+customized, tested installation.
+
+Compared with upstream v0.11.0, the fork adds or integrates:
+
+- linked-file extraction in hybrid/local mode and optional MinerU sidecars;
+- local HTTP reranking through llama.cpp, with fail-closed behavior;
+- hybrid dense + BM25 retrieval with reciprocal-rank fusion;
+- deterministic contextual retrieval and AST-aware Markdown chunking;
+- collection, library, item-type, tag, and date filtering;
+- exact-source resolution, bibliography/reference indexing, and citation-graph tools;
+- retrieval score provenance, bibliography filtering, and multi-library search fixes;
+- regression tests covering the customized retrieval and indexing behavior.
+
+The package pins PyZotero below 1.15 because PyZotero 1.15 changed its HTTP
+transport. The live installation is pinned to a tested fork tag rather than
+to an unreviewed branch tip.
+
+### Upstream update policy
+
+A weekly GitHub Actions check compares upstream `main` with this fork's clean
+`main` mirror. When upstream advances, it opens or updates a draft pull request
+against `main`; it does not merge changes, alter `samuel`, publish a release, or
+deploy the live service. If the histories diverge, it opens an issue for manual
+resolution.
+
+After review, changes must be merged into `samuel`, tested, tagged, and then
+selected explicitly by the pinned installation configuration.
+
 ## ✨ Features
 
 ### 🧠 AI-Powered Semantic Search
