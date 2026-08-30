@@ -1354,36 +1354,18 @@ def advanced_search(
 @mcp.tool(
     name="zotero_semantic_search",
     description=(
-        "Prioritized topic-search tool. Find papers by semantic similarity "
-        "to a query using AI embeddings — the BEST tool for finding papers "
-        "on a topic (e.g. 'papers about mindfulness-based therapy'), far "
-        "more efficient than scanning collection items or reading "
-        "abstracts. Searches the ACTIVE library by default; pass "
-        "search_all_libraries=True to cover every indexed library. "
-        "query: the topic or concept; natural-language phrases work well. "
-        "limit: max results (default 10). "
-        "filters: optional metadata filters as a dict (e.g. "
-        "{'itemType': 'journalArticle', 'year': '2023'}); also accepts a "
-        "JSON string. It also accepts source_group/source_groups, "
-        "item_type/item_types, item_key/item_keys (exact parent-item "
-        "identity scope, e.g. from zotero_resolve_exact_source), and "
-        "tag/tags/required_tags; these filters "
-        "are optional and combine with AND. A tag-only filter is valid. "
-        "library_id: optional — scope to one library other than the active "
-        "one: 0 or 'user' for personal, else a groupID (see "
-        "zotero_list_libraries). collection: optional — scope to a Zotero collection "
-        "key (preferred) or exact name, including all subcollections; find keys "
-        "with zotero_search_collections. search_all_libraries: search every indexed "
-        "library at once, labelling each result with its library; needs "
-        "ZOTERO_SEARCH_BACKEND=sqlite, excludes library_id. "
-        "Requires the semantic search database to be POPULATED — run "
-        "zotero_update_search_database first if you just installed the "
-        "server or added new items; check readiness with "
-        "zotero_get_search_database_status. "
-        "Available only when the [semantic] optional dependency is "
-        "installed. "
-        "Example: zotero_semantic_search(query='mindfulness-based "
-        "cognitive therapy for depression', limit=5)."
+        "Search Zotero passages by semantic similarity using AI embeddings. "
+        "Use this for topic discovery and substantive findings; results include "
+        "grounded passages, locations, relevance, and reranker scores. Searches "
+        "the active library by default. Optional library_id, collection (key or "
+        "exact name, including subcollections), search_all_libraries (requires "
+        "the SQLite backend), and metadata filters for item types, source groups, "
+        "tags, or exact parent item keys are supported; filters combine with AND. "
+        "Requires a populated semantic database: run "
+        "zotero_update_search_database and check "
+        "zotero_get_search_database_status. Example: "
+        "zotero_semantic_search(query='mindfulness-based cognitive therapy for "
+        "depression', limit=5)."
     )
 )
 @with_zotero_api_lock
@@ -1489,11 +1471,17 @@ def semantic_search(
         # so subsequent searches see fresh library state. Never blocks here.
         _maybe_fire_presearch_sync(search)
 
-        # Perform search
-        results = search.search(
-            query=query, limit=limit, filters=filters, group_id=group_id,
-            collection_key=collection,  # [scoped patch]
-        )
+        # Perform search. Keep the legacy call shape when no collection was
+        # requested so lightweight integrations and test doubles remain valid.
+        search_kwargs = {
+            "query": query,
+            "limit": limit,
+            "filters": filters,
+            "group_id": group_id,
+        }
+        if collection is not None:
+            search_kwargs["collection_key"] = collection  # [scoped patch]
+        results = search.search(**search_kwargs)
 
         if results.get("error"):
             return f"Semantic search error: {results['error']}"

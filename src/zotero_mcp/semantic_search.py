@@ -3067,7 +3067,7 @@ class ZoteroSemanticSearch:
 
             # [sparse patch] rebuild the BM25 sparse index after successful
             # realtime indexing so newly added/changed chunks are searchable.
-            if self._hybrid_config.get("enabled", False):
+            if (getattr(self, "_hybrid_config", {}) or {}).get("enabled", False):
                 try:
                     _sparse_stats = self._build_sparse_index()
                     logger.info(
@@ -3078,7 +3078,7 @@ class ZoteroSemanticSearch:
                     logger.warning(f"sparse index build failed: {_e}")
 
             # [sparse patch] rebuild BM25 after successful indexing.
-            if self._hybrid_config.get("enabled", False):
+            if (getattr(self, "_hybrid_config", {}) or {}).get("enabled", False):
                 try:
                     sparse_stats = self._build_sparse_index()
                     logger.info(
@@ -3989,7 +3989,7 @@ class ZoteroSemanticSearch:
 
     def _get_sparse_index(self):
         """[sparse patch] Return the process-cached BM25 index, or None."""
-        cfg = self._hybrid_config
+        cfg = getattr(self, "_hybrid_config", {}) or {}
         if not cfg.get("enabled", False):
             return None
         index_path = cfg.get("index_path") or str(
@@ -4006,14 +4006,15 @@ class ZoteroSemanticSearch:
         import time as _time
 
         t0 = _time.monotonic()
-        index_path = self._hybrid_config.get("index_path") or str(
+        hybrid_config = getattr(self, "_hybrid_config", {}) or {}
+        index_path = hybrid_config.get("index_path") or str(
             Path.home() / ".config" / "zotero-mcp" / "bm25_index.json"
         )
         idx = _sparse.BM25Index(index_path)
         docs: list[tuple[str, str]] = []
         excluded = 0
         exclude_references = bool(
-            self._hybrid_config.get("exclude_reference_chunks", True)
+            hybrid_config.get("exclude_reference_chunks", True)
         )
         for ids, documents, _metas in self.chroma_client.iter_documents():
             for doc_id, text in zip(ids, documents):
@@ -4040,13 +4041,14 @@ class ZoteroSemanticSearch:
         allowed_item_keys: set[str] | None = None,
     ) -> dict[str, Any]:
         """[hybrid filter patch] Dense + BM25 -> RRF candidate set."""
+        hybrid_config = getattr(self, "_hybrid_config", {}) or {}
         dense = self.chroma_client.search(
             query_texts=[query], n_results=fetch_limit, where=where
         )
 
         # Ordinary semantic RAG never uses bibliography-section chunks. Exact
         # DOI/title/citation lookups belong in zotero_search_references.
-        if bool(self._hybrid_config.get("suppress_reference_chunks_dense", True)):
+        if bool(hybrid_config.get("suppress_reference_chunks_dense", True)):
             dense_ids_all = (dense.get("ids") or [[]])[0]
             if dense_ids_all:
                 keep = [
@@ -4073,7 +4075,7 @@ class ZoteroSemanticSearch:
         sparse_docs = dict(zip(sparse_payload["ids"], sparse_payload["documents"]))
         sparse_metas = dict(zip(sparse_payload["ids"], sparse_payload["metadatas"]))
         exclude_sparse_refs = bool(
-            self._hybrid_config.get("exclude_reference_chunks", True)
+            hybrid_config.get("exclude_reference_chunks", True)
         )
         sparse_hits = [
             (doc_id, score)
@@ -4084,7 +4086,7 @@ class ZoteroSemanticSearch:
 
         rank_lists = [dense_ids, [doc_id for doc_id, _ in sparse_hits]]
         if (
-            float(self._hybrid_config.get("figure_boost", 0.0) or 0.0) > 0
+            float(hybrid_config.get("figure_boost", 0.0) or 0.0) > 0
             and is_figure_query(query)
         ):
             schema_ids = [
@@ -4114,7 +4116,7 @@ class ZoteroSemanticSearch:
 
         fused = _sparse.rrf_merge(
             rank_lists,
-            k=int(self._hybrid_config.get("rrf_k", 60) or 60),
+            k=int((getattr(self, "_hybrid_config", {}) or {}).get("rrf_k", 60) or 60),
         )
         fused_ids = [doc_id for doc_id, _ in fused[:fetch_limit]]
         if not fused_ids:
@@ -4316,10 +4318,9 @@ class ZoteroSemanticSearch:
                 documents = results["documents"][0]
                 top_k = len(documents) if self._chunking_enabled else limit
                 scored = reranker.rerank_with_scores(query, documents, top_k=top_k)
-                figure_boost = float(
-                    self._hybrid_config.get("figure_boost", 0.0) or 0.0
-                )
-                floor = self._hybrid_config.get("rerank_floor")
+                hybrid_config = getattr(self, "_hybrid_config", {}) or {}
+                figure_boost = float(hybrid_config.get("figure_boost", 0.0) or 0.0)
+                floor = hybrid_config.get("rerank_floor")
                 figure_query = figure_boost > 0 and is_figure_query(query)
                 kept: list[tuple[int, float, float]] = []
                 for result_index, raw_score in scored:
