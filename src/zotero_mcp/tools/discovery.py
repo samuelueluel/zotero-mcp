@@ -512,10 +512,11 @@ def get_citation_neighbors(
     collection_key: str = "",
     ctx: Context = None,
 ) -> str:
-    """Trace citation ancestors and descendants under an explicit graph scope.
+    """Return a work's direct cited and citing neighbors under a graph scope.
 
-    Expanded scopes can expose external-reference nodes. Such nodes represent
-    bibliography evidence only; their own lineage requires their full text.
+    This currently returns one-hop neighbors only. Expanded scopes can expose
+    external-reference nodes. Such nodes represent bibliography evidence only;
+    their own outgoing references require their full text.
 
     Args:
         item_key: Zotero item key or external-reference graph key.
@@ -539,7 +540,7 @@ def get_citation_neighbors(
         t_au = f" — *{target['creators']}*" if target['creators'] else ""
         marker = _node_marker(target)
         lines = [
-            f"# Citation Lineage for **{target['title']}**{t_yr}{t_au}{marker} (`{item_key}`)",
+            f"# Direct Citation Neighbors for **{target['title']}**{t_yr}{t_au}{marker} (`{item_key}`)",
             f"Scope: `{_scope_label(data.get('scope', scope), collection_key)}`\n",
         ]
 
@@ -567,7 +568,7 @@ def get_citation_neighbors(
 
         return "\n".join(lines)
     except Exception as e:
-        return f"Error retrieving paper lineage: {e}"
+        return f"Error retrieving citation neighbors: {e}"
 
 
 @mcp.tool()
