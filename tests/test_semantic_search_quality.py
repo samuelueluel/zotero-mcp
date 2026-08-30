@@ -581,7 +581,10 @@ class TestReranking:
 
         # Mock reranker to reverse the order
         mock_reranker = MagicMock()
-        mock_reranker.rerank.return_value = [2, 0, 1]  # Birds, Cats, Dogs
+        mock_reranker.rerank_with_scores.return_value = [
+            (2, 0.9), (0, 0.8), (1, 0.7)
+        ]  # Birds, Cats, Dogs
+
         s._reranker = mock_reranker
 
         # Mock the Zotero client to avoid API calls
@@ -591,14 +594,14 @@ class TestReranking:
         result = s.search("birds", limit=3)
 
         # Verify reranker was called
-        mock_reranker.rerank.assert_called_once()
+        mock_reranker.rerank_with_scores.assert_called_once()
         # First result should be "Birds" (index 2 in original)
         assert result["results"][0]["metadata"]["title"] == "Birds"
 
     def test_search_overfetches_when_reranker_enabled(self):
         s = self._make_search_with_reranker(enabled=True)
         s._reranker = MagicMock()
-        s._reranker.rerank.return_value = [0, 1]
+        s._reranker.rerank_with_scores.return_value = [(0, 0.9), (1, 0.8)]
 
         s.zotero_client = MagicMock()
         s.zotero_client.item.return_value = {"data": {"title": "mock"}}

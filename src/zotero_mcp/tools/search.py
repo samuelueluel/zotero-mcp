@@ -1162,7 +1162,7 @@ def advanced_search(
                 target,
                 operation,
                 date_field=condition["field"].lower()
-                in {"date", "year", "dateadded", "datemodified", "accessdate"},
+                in {"date", "year", "accessdate"},
             )
 
         # #167: try the SQLite metadata backend first — it replaces the

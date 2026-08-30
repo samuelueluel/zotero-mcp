@@ -550,18 +550,26 @@ def test_unattributed_count_is_persisted_and_rewarned_on_later_updates(monkeypat
 # search(): DB-side `where` filtering
 # ---------------------------------------------------------------------------
 
-def test_search_no_group_id_means_no_library_filter(monkeypatch):
+def _paper_rag_exclusion_clause():
+    from zotero_mcp.source_filters import DEFAULT_EXCLUDED_ITEM_TYPES
+
+    return {"item_type": {"$nin": sorted(DEFAULT_EXCLUDED_ITEM_TYPES)}}
+
+
+def test_search_no_group_id_keeps_paper_rag_default(monkeypatch):
     chroma = _FakeChromaClient()
     search = _build_search(monkeypatch, chroma)
     search.search(query="q")
-    assert chroma.last_search_where is None
+    assert chroma.last_search_where == _paper_rag_exclusion_clause()
 
 
-def test_search_group_id_only_filter(monkeypatch):
+def test_search_group_id_only_combines_paper_rag_default(monkeypatch):
     chroma = _FakeChromaClient()
     search = _build_search(monkeypatch, chroma)
     search.search(query="q", group_id=GROUP_ID)
-    assert chroma.last_search_where == {"group_id": GROUP_ID}
+    assert chroma.last_search_where == {
+        "$and": [_paper_rag_exclusion_clause(), {"group_id": GROUP_ID}]
+    }
 
 
 def test_search_group_id_personal_filter_is_not_falsy_none(monkeypatch):
@@ -570,7 +578,9 @@ def test_search_group_id_personal_filter_is_not_falsy_none(monkeypatch):
     chroma = _FakeChromaClient()
     search = _build_search(monkeypatch, chroma)
     search.search(query="q", group_id=0)
-    assert chroma.last_search_where == {"group_id": 0}
+    assert chroma.last_search_where == {
+        "$and": [_paper_rag_exclusion_clause(), {"group_id": 0}]
+    }
 
 
 def test_search_merges_group_id_with_user_filters(monkeypatch):

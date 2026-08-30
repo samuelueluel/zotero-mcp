@@ -928,6 +928,11 @@ class ZoteroSemanticSearch:
         """
         if not self._reranker_config.get("enabled", False):
             return None
+        # A caller that injects a reranker (for example, a test double) has
+        # already supplied the dependency; do not require endpoint config or
+        # replace it. Normal instances never have this attribute populated.
+        if (reranker := getattr(self, "_reranker", None)) is not None:
+            return reranker
         # [local-only reranker patch] The local HTTP endpoint is mandatory;
         # never fall back to sentence-transformers/Hugging Face.
         url = str(self._reranker_config.get("url") or "").strip()
@@ -3065,18 +3070,6 @@ class ZoteroSemanticSearch:
             except Exception:
                 pass
 
-            # [sparse patch] rebuild the BM25 sparse index after successful
-            # realtime indexing so newly added/changed chunks are searchable.
-            if (getattr(self, "_hybrid_config", {}) or {}).get("enabled", False):
-                try:
-                    _sparse_stats = self._build_sparse_index()
-                    logger.info(
-                        f"Rebuilt sparse index: {_sparse_stats['docs']} docs, "
-                        f"{_sparse_stats['terms']} terms, {_sparse_stats['ms']} ms"
-                    )
-                except Exception as _e:
-                    logger.warning(f"sparse index build failed: {_e}")
-
             # [sparse patch] rebuild BM25 after successful indexing.
             if (getattr(self, "_hybrid_config", {}) or {}).get("enabled", False):
                 try:
@@ -4227,14 +4220,16 @@ class ZoteroSemanticSearch:
             allowed_item_keys: set[str] | None = None
 
             # Keep the paper-RAG default narrow even when older index records
-            # contain excluded item types. This is a metadata predicate, not
-            # an embedding change.
-            excluded_clause = {
-                "item_type": {
-                    "$nin": sorted(_source_filters.DEFAULT_EXCLUDED_ITEM_TYPES)
+            # contain excluded item types. An explicit item-type/source-group
+            # filter is an intentional override, so do not make e.g.
+            # ``item_type=note`` impossible by ANDing it with the default.
+            if not item_types:
+                excluded_clause = {
+                    "item_type": {
+                        "$nin": sorted(_source_filters.DEFAULT_EXCLUDED_ITEM_TYPES)
+                    }
                 }
-            }
-            where = {"$and": [excluded_clause, where]} if where else excluded_clause
+                where = {"$and": [excluded_clause, where]} if where else excluded_clause
 
             # Resolve type/tag predicates to current parent item keys whenever
             # local SQLite is available. This makes both dense and sparse legs

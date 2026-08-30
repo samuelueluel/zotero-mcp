@@ -558,9 +558,10 @@ class TestCascadeTimeout:
 # search_by_tag scope legibility (#418)
 # ---------------------------------------------------------------------------
 
-def _tagged(key):
+def _tagged(key, tag=None):
     return {"key": key, "data": {"key": key, "itemType": "journalArticle",
-                                 "title": f"Item {key}", "creators": [], "tags": [],
+                                 "title": f"Item {key}", "creators": [],
+                                 "tags": ([{"tag": tag}] if tag else []),
                                  "collections": ["OTHERCOL"]}}
 
 
@@ -589,7 +590,7 @@ def test_empty_scoped_tag_search_names_the_collection(monkeypatch):
     look scoped."""
     from zotero_mcp import server
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
-                        lambda: _ScopeZotero([_tagged("KYYQ2HSY")]))
+                        lambda: _ScopeZotero([_tagged("KYYQ2HSY", "didn't use")]))
 
     result = server.search_by_tag(tag=["didn't use"], collection_key="MSYFGVKG",
                                   limit=6, ctx=DummyContext())
@@ -602,7 +603,7 @@ def test_empty_scoped_tag_search_names_the_collection(monkeypatch):
 def test_unscoped_tag_search_says_it_is_unscoped(monkeypatch):
     """A library-wide result must not be mistakable for a scoped one."""
     from zotero_mcp import server
-    hits = [_tagged(k) for k in ("KYYQ2HSY", "YLVWDV8K", "JVB8MG2B")]
+    hits = [_tagged(k, "didn't use") for k in ("KYYQ2HSY", "YLVWDV8K", "JVB8MG2B")]
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
                         lambda: _ScopeZotero(hits))
 
@@ -618,7 +619,7 @@ def test_scoped_hits_still_name_the_collection(monkeypatch):
 
     class Scoped(_ScopeZotero):
         def collection_items(self, key, **kwargs):
-            return [_tagged("INSCOPE1")]
+            return [_tagged("INSCOPE1", "t")]
 
     monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: Scoped([]))
     result = server.search_by_tag(tag=["t"], collection_key="MSYFGVKG",

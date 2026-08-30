@@ -1,17 +1,9 @@
-"""Regression tests for issue #283.
+"""Regression tests for reranker lifecycle and the local-only policy.
 
-With the reranker enabled, every ``zotero_semantic_search`` MCP call constructs
-a fresh ``ZoteroSemanticSearch`` (``create_semantic_search`` is called per
-request). The cross-encoder was held on that throwaway instance
-(``self._reranker``), so the ~30s model load happened on *every* request and
-blew past the client's timeout.
-
-Fix: cache the loaded reranker at module scope, keyed by model name, so it is
-loaded once per process and reused across instances. ``warmup_reranker`` lets
-the server populate that cache at startup so the first real search is fast too.
-
-These tests use a fake reranker class (patched over ``CrossEncoderReranker``) to
-assert the *caching behaviour* without loading the real ~30s model.
+The production path uses a local HTTP reranker and fails closed when that
+endpoint is enabled but missing. The old process-wide in-process cache helper
+is retained and tested directly for compatibility, while startup/search tests
+ensure the disabled Hugging Face fallback is never loaded.
 """
 
 import pytest
@@ -58,19 +50,15 @@ def test_get_cached_reranker_loads_once_per_model():
     assert _FakeReranker.load_count == 2  # distinct model loads separately
 
 
-def test_reranker_shared_across_instances():
-    """The core #283 fix: two separate ZoteroSemanticSearch instances (as the
-    per-request MCP path creates) must reuse one loaded model."""
-    s1 = semantic_search.ZoteroSemanticSearch(chroma_client=_FakeChromaClient())
-    s2 = semantic_search.ZoteroSemanticSearch(chroma_client=_FakeChromaClient())
-    s1._reranker_config = {"enabled": True, "model": "shared-model"}
-    s2._reranker_config = {"enabled": True, "model": "shared-model"}
+def test_reranker_requires_local_endpoint():
+    """Enabled reranking must fail closed without the configured local service."""
+    s = semantic_search.ZoteroSemanticSearch(chroma_client=_FakeChromaClient())
+    s._reranker_config = {"enabled": True, "model": "shared-model"}
 
-    r1 = s1._get_reranker()
-    r2 = s2._get_reranker()
+    with pytest.raises(RuntimeError, match="Local reranker is enabled"):
+        s._get_reranker()
 
-    assert r1 is r2
-    assert _FakeReranker.load_count == 1  # loaded once despite two instances
+    assert _FakeReranker.load_count == 0
 
 
 def test_get_reranker_returns_none_when_disabled():
@@ -80,20 +68,28 @@ def test_get_reranker_returns_none_when_disabled():
     assert _FakeReranker.load_count == 0  # disabled never loads
 
 
-def test_warmup_reranker_populates_cache(monkeypatch):
+def test_warmup_reranker_requires_local_endpoint(monkeypatch):
     monkeypatch.setattr(semantic_search.os.path, "exists", lambda p: False)
     # Disabled config -> no warmup, no load.
     assert semantic_search.warmup_reranker(config_path=None) is False
     assert _FakeReranker.load_count == 0
 
-    # Enabled config -> warms the cache exactly once.
+    # Enabled config without a local endpoint fails closed and never loads the
+    # disabled in-process CrossEncoder.
     monkeypatch.setattr(
         semantic_search,
         "load_reranker_config",
         lambda cp: {"enabled": True, "model": "warm-model"},
     )
+    assert semantic_search.warmup_reranker(config_path=None) is False
+    assert _FakeReranker.load_count == 0
+
+    # A configured local endpoint passes the startup gate without making a
+    # network request; the HTTP client is created lazily on first search.
+    monkeypatch.setattr(
+        semantic_search,
+        "load_reranker_config",
+        lambda cp: {"enabled": True, "url": "http://127.0.0.1:8083/v1/rerank"},
+    )
     assert semantic_search.warmup_reranker(config_path=None) is True
-    assert _FakeReranker.load_count == 1
-    # The warmed instance is what a later search would get.
-    assert semantic_search.get_cached_reranker("warm-model") is not None
-    assert _FakeReranker.load_count == 1  # already warm -> no extra load
+    assert _FakeReranker.load_count == 0

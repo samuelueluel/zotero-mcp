@@ -13,10 +13,8 @@ same item keys. Nothing is asserted against a hand-written expectation: the
 assertion is that the backends *agree*, so adding a case to `CONDITION_CASES`
 extends coverage of both paths at once and cannot go stale.
 
-The one deliberate disagreement — `year`/`date` on multipart dates, where SQL
-can read Zotero's ISO prefix and the API can only see the display text — is
-asserted explicitly at the bottom rather than skipped, so that if it ever
-changes, a test says so.
+Multipart `date` values are normalized on the API path so both backends
+agree on the year; the SQL path still reads Zotero's ISO prefix directly.
 """
 
 from __future__ import annotations
@@ -229,29 +227,16 @@ def test_excluded_item_types_never_appear(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The one divergence that is intentional
+# Multipart dates are normalized on both backends
 # ---------------------------------------------------------------------------
 
-def test_year_on_multipart_dates_diverges_by_design(monkeypatch, tmp_path):
-    """SQL reads Zotero's ISO prefix; the API can only see the display text.
-
-    Zotero stores ``"2016-10-01 October 1, 2016"`` but exposes only
-    ``"October 1, 2016"`` over the API, so the API path's ``date[:4]`` yields
-    ``"Octo"`` where SQL's ``SUBSTR(value, 1, 4)`` yields ``"2016"``. The SQL
-    answer is the correct one — it is what Zotero itself does — so this is a
-    fix rather than a divergence to reconcile, and normalizing the two would
-    mean re-introducing the bug on the SQL side.
-
-    Asserted rather than skipped so that a change in either path is noticed.
-    """
+def test_year_on_multipart_dates_is_now_parity(monkeypatch, tmp_path):
+    """The API display half is parsed instead of slicing ``date[:4]``."""
     sql = _run(monkeypatch, tmp_path, "sqlite", conditions=_cond("year", "is", "2016"))
     api = _run(monkeypatch, tmp_path, "api", conditions=_cond("year", "is", "2016"))
 
     assert "ACCENT01" in sql, "SQL should read the ISO prefix of a multipart date"
-    assert "ACCENT01" not in api, (
-        "the API path cannot see the ISO prefix; if this now passes, the "
-        "divergence has been fixed and this test should become a parity case"
-    )
+    assert api == sql
 
 
 # ---------------------------------------------------------------------------
