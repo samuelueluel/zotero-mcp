@@ -1288,12 +1288,19 @@ class LocalZoteroReader:
 
         return KeyGroupMap(groups, excluded_keys)
 
-    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None, collection_keys: list[str] | None = None) -> list[ZoteroItem]:
+    def get_items_with_text(
+        self,
+        limit: int | None = None,
+        include_fulltext: bool = False,
+        key_filter: str | list[str] | None = None,
+        collection_keys: list[str] | None = None,
+    ) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
 
         Args:
             limit: Optional limit on number of items to return.
+            key_filter: Optional exact item key or list of exact item keys.
             collection_keys: Optional list of collection keys; when set, only
                 items in those collections (or any of their subcollections)
                 are returned.
@@ -1385,9 +1392,17 @@ class LocalZoteroReader:
                 query += f" AND i.itemID IN (SELECT DISTINCT itemID FROM collectionItems WHERE collectionID IN ({placeholders}))"
                 params.extend(all_collection_ids)
 
-        if key_filter:
-            query += " AND i.key = ?"
-            params.append(key_filter)
+        if key_filter is not None:
+            if isinstance(key_filter, (list, tuple, set)):
+                keys = [str(key).strip() for key in key_filter if str(key).strip()]
+                if not keys:
+                    return []
+                placeholders = ",".join("?" * len(keys))
+                query += f" AND i.key IN ({placeholders})"
+                params.extend(keys)
+            else:
+                query += " AND i.key = ?"
+                params.append(key_filter)
 
         query += """
         GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,

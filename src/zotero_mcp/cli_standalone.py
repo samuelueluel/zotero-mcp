@@ -663,6 +663,7 @@ def cmd_db(args):
         stats = search.update_database(
             force_full_rebuild=args.force_rebuild,
             limit=args.limit,
+            item_keys=getattr(args, "item_keys", None),
             extract_fulltext=fulltext,
             use_openai_batch=getattr(args, "openai_batch", None),
             allow_mass_deletion=getattr(args, "allow_mass_deletion", False),
@@ -1217,6 +1218,8 @@ def build_parser() -> argparse.ArgumentParser:
     dbu = db_sub.add_parser("update")
     dbu.add_argument("--force-rebuild", action="store_true")
     dbu.add_argument("--limit", type=int)
+    dbu.add_argument("--item-key", dest="item_keys", action="append", metavar="KEY",
+                     help="Refresh exactly this live parent item; repeat for multiple keys")
     dbu.add_argument("--fulltext", action="store_true")
     dbu.add_argument("--allow-mass-deletion", action="store_true")
     dbu.add_argument("--config-path")

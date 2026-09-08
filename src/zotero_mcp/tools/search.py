@@ -1587,6 +1587,9 @@ def semantic_search(
         "force_rebuild=True re-embeds ALL items from scratch (slow; use "
         "when changing the embedding model or recovering from corruption). "
         "limit: optional cap on items processed (useful for smoke-testing). "
+        "item_keys: optional exact live parent-item keys to refresh; repeatable "
+        "keys are retained independently and bypass DOI/title deduplication. "
+        "Exact-item refreshes do not advance the library sync watermark. "
         "Progress is reported via the MCP context; on large libraries an "
         "incremental update is seconds, a full rebuild can take minutes. "
         "Requires the [semantic] optional dependency and a configured "
@@ -1600,6 +1603,7 @@ def semantic_search(
 def update_semantic_index(
     force_rebuild: bool = False,
     limit: int | None = None,
+    item_keys: list[str] | str | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1609,6 +1613,8 @@ def update_semantic_index(
     Args:
         force_rebuild: Whether to rebuild the entire database from scratch
         limit: Limit number of items to process (useful for testing)
+        item_keys: Exact live parent-item keys to refresh without global
+            DOI/title deduplication or watermark advancement.
         ctx: MCP context
 
     Returns:
@@ -1665,6 +1671,7 @@ def update_semantic_index(
         stats = search.update_database(
             force_full_rebuild=force_rebuild,
             limit=limit,
+            item_keys=item_keys,
             extract_fulltext=_utils.is_local_mode()
         )
 

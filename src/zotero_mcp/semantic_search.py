@@ -167,6 +167,31 @@ def _force_update_requested() -> bool:
     return os.getenv("ZOTERO_MCP_FORCE_UPDATE", "").strip().lower() in {"1", "true", "yes"}
 
 
+def _normalize_item_keys(item_keys: list[str] | tuple[str, ...] | str | None) -> list[str] | None:
+    """Normalize an explicit item update scope without deduplicating identities.
+
+    Global indexing deliberately collapses DOI/title equivalents. An explicit
+    item scope is different: every requested Zotero key is an independent
+    target, even when two keys represent preprint/journal versions of one work.
+    Reject repeated keys so a caller cannot accidentally process one target
+    twice while preserving the order in which distinct keys were requested.
+    """
+    if item_keys is None:
+        return None
+    raw_keys = item_keys.split(",") if isinstance(item_keys, str) else item_keys
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_keys:
+        key = str(raw).strip().upper()
+        if not key:
+            continue
+        if key in seen:
+            raise ValueError(f"Duplicate explicit item key: {key}")
+        seen.add(key)
+        normalized.append(key)
+    return normalized
+
+
 @contextlib.contextmanager
 def _acquire_update_lock(lock_path: Path):
     """Non-blocking exclusive flock over an update-database run.
@@ -1595,6 +1620,7 @@ class ZoteroSemanticSearch:
         chroma_client: ChromaClient | None = None,
         force_rebuild: bool = False,
         include_fulltext_via_api: bool = False,
+        item_keys: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get items from either local database or API.
@@ -1615,6 +1641,9 @@ class ZoteroSemanticSearch:
             chroma_client: ChromaDB client to check for existing documents (None to skip checks)
             force_rebuild: Whether to force extraction even if item exists
             include_fulltext_via_api: Fetch fulltext via the Zotero web API
+            item_keys: Optional exact parent-item keys. When set, every
+                requested key is retained and global DOI/title deduplication
+                is bypassed.
 
         Returns:
             List of items in API-compatible format
@@ -1626,10 +1655,18 @@ class ZoteroSemanticSearch:
                     "Set ZOTERO_LOCAL=true or run 'zotero-mcp setup' to enable local mode."
                 )
             return self._get_items_from_local_db(
-                limit, extract_fulltext=extract_fulltext, chroma_client=chroma_client, force_rebuild=force_rebuild
+                limit,
+                extract_fulltext=extract_fulltext,
+                chroma_client=chroma_client,
+                force_rebuild=force_rebuild,
+                item_keys=item_keys,
             )
         else:
-            return self._get_items_from_api(limit, include_fulltext=include_fulltext_via_api)
+            return self._get_items_from_api(
+                limit,
+                include_fulltext=include_fulltext_via_api,
+                item_keys=item_keys,
+            )
 
     def _get_items_from_local_db(
         self,
@@ -1637,6 +1674,7 @@ class ZoteroSemanticSearch:
         extract_fulltext: bool = False,
         chroma_client: ChromaClient | None = None,
         force_rebuild: bool = False,
+        item_keys: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get items from local Zotero database.
@@ -1646,6 +1684,8 @@ class ZoteroSemanticSearch:
             extract_fulltext: Whether to extract fulltext content
             chroma_client: ChromaDB client to check for existing documents (None to skip checks)
             force_rebuild: Whether to force extraction even if item exists
+            item_keys: Optional exact parent-item keys. When set, DOI/title
+                deduplication is bypassed and existing targets are refreshed.
 
         Returns:
             List of items in API-compatible format
@@ -1715,7 +1755,12 @@ class ZoteroSemanticSearch:
                 sys.stderr.write("Scanning local Zotero database for items...\n")
                 if collection_keys:
                     sys.stderr.write(f"Filtering to collections: {collection_keys}\n")
-                local_items = reader.get_items_with_text(limit=limit, include_fulltext=False, collection_keys=collection_keys)
+                local_items = reader.get_items_with_text(
+                    limit=limit if item_keys is None else None,
+                    include_fulltext=False,
+                    key_filter=item_keys,
+                    collection_keys=collection_keys,
+                )
                 if excluded_keys:
                     local_items = [it for it in local_items if it.key not in excluded_keys]
                 candidate_count = len(local_items)
@@ -1754,7 +1799,7 @@ class ZoteroSemanticSearch:
                 filtered_items = []
                 for it in local_items:
                     # If there is a journalArticle alternative for same DOI or title, and this is preprint, drop
-                    if getattr(it, "item_type", None) == "preprint":
+                    if item_keys is None and getattr(it, "item_type", None) == "preprint":
                         k_doi = ("doi", norm(getattr(it, "doi", None))) if getattr(it, "doi", None) else None
                         k_title = ("title", norm(getattr(it, "title", None))) if getattr(it, "title", None) else None
                         drop = False
@@ -1873,7 +1918,7 @@ class ZoteroSemanticSearch:
                         it._attachment_priority = priority_tag
 
                         # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
-                        if chroma_client and not force_rebuild:
+                        if chroma_client and not force_rebuild and item_keys is None:
                             # With passage-chunking the stored ids are
                             # "<key>#<n>"; get_document_metadata falls back to
                             # chunk 0 so chunked items are still recognized.
@@ -2044,7 +2089,7 @@ class ZoteroSemanticSearch:
         except Exception as e:
             logger.error(f"Error reading from local database: {e}")
             logger.info("Falling back to API...")
-            return self._get_items_from_api(limit)
+            return self._get_items_from_api(limit, item_keys=item_keys)
 
     def _parse_creators_string(self, creators_str: str) -> list[dict[str, str]]:
         """
@@ -2185,7 +2230,12 @@ class ZoteroSemanticSearch:
         for item in items:
             item.setdefault("data", {})["group_id"] = group_id
 
-    def _get_items_from_api(self, limit: int | None = None, include_fulltext: bool = False) -> list[dict[str, Any]]:
+    def _get_items_from_api(
+        self,
+        limit: int | None = None,
+        include_fulltext: bool = False,
+        item_keys: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Get items from Zotero API (original implementation).
 
@@ -2195,11 +2245,32 @@ class ZoteroSemanticSearch:
                 via pyzotero's fulltext_item endpoint for each returned
                 top-level item. Enables full-text semantic indexing without
                 requiring local Zotero mode.
+            item_keys: Optional exact parent-item keys. When set, fetch only
+                those keys and preserve every requested version independently.
 
         Returns:
             List of items from API
         """
         logger.info("Fetching items from Zotero API...")
+
+        if item_keys is not None:
+            # Explicit item scopes must not use the paginated library scan:
+            # every requested key is an independent target, even when a
+            # preprint and journal article share a DOI or title.
+            all_items = []
+            for key in item_keys:
+                item = self.zotero_client.item(key)
+                if not item:
+                    continue
+                item_type = item.get("data", {}).get("itemType")
+                if item_type in {"attachment", "note", "annotation"}:
+                    continue
+                all_items.append(item)
+            if include_fulltext:
+                self._attach_web_fulltext(all_items)
+            self._tag_group_id(all_items)
+            logger.info("Retrieved %d explicitly requested items from API", len(all_items))
+            return all_items
 
         # Fetch items in batches to handle large libraries
         batch_size = 100
@@ -2499,6 +2570,7 @@ class ZoteroSemanticSearch:
         auto_loop: bool = False,
         batch_poll_interval: int = 60,
         allow_mass_deletion: bool = False,
+        item_keys: list[str] | tuple[str, ...] | str | None = None,
     ) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
@@ -2506,6 +2578,11 @@ class ZoteroSemanticSearch:
         Args:
             force_full_rebuild: Whether to rebuild the entire database
             limit: Limit number of items to process (for testing)
+            item_keys: Optional exact parent-item keys to refresh. Every
+                requested key is retained, DOI/title deduplication is bypassed,
+                and the global sync watermark/deletion pass is left untouched.
+                Exact-item updates cannot be combined with ``limit``,
+                ``force_full_rebuild``, or Batch API indexing.
             extract_fulltext: Whether to extract fulltext content from the
                 local Zotero sqlite database (requires ZOTERO_LOCAL=true)
             include_fulltext: Whether to fetch server-side extracted
@@ -2557,6 +2634,35 @@ class ZoteroSemanticSearch:
             "start_time": start_time.isoformat(),
             "duration": None,
         }
+        try:
+            requested_item_keys = _normalize_item_keys(item_keys)
+        except ValueError as e:
+            stats["error"] = str(e)
+            end_time = datetime.now()
+            stats["duration"] = str(end_time - start_time)
+            stats["end_time"] = end_time.isoformat()
+            return stats
+        if requested_item_keys == []:
+            stats["error"] = "item_keys must contain at least one non-empty Zotero item key"
+            end_time = datetime.now()
+            stats["duration"] = str(end_time - start_time)
+            stats["end_time"] = end_time.isoformat()
+            return stats
+        if requested_item_keys and limit is not None:
+            stats["error"] = "Exact item updates cannot be combined with --limit"
+            end_time = datetime.now()
+            stats["duration"] = str(end_time - start_time)
+            stats["end_time"] = end_time.isoformat()
+            return stats
+        if requested_item_keys and force_full_rebuild:
+            stats["error"] = (
+                "Exact item updates cannot be combined with --force-rebuild; "
+                "an explicit item scope never resets the global collection"
+            )
+            end_time = datetime.now()
+            stats["duration"] = str(end_time - start_time)
+            stats["end_time"] = end_time.isoformat()
+            return stats
 
         # Guard against concurrent rebuilds: the MCP server auto-launches
         # update_database on startup while the user may also run
@@ -2683,6 +2789,15 @@ class ZoteroSemanticSearch:
                 use_openai_batch=use_openai_batch,
                 use_gemini_batch=use_gemini_batch,
             )
+            if requested_item_keys and batch_enabled:
+                stats["error"] = (
+                    "Exact item updates require realtime indexing; rerun with "
+                    "--no-batch (or use_batch=False)"
+                )
+                end_time = datetime.now()
+                stats["duration"] = str(end_time - start_time)
+                stats["end_time"] = end_time.isoformat()
+                return stats
             throttle = self._load_batch_throttle_config(active_batch_provider)
             if batch_max_tokens is not None:
                 throttle["batch_max_enqueued_tokens"] = batch_max_tokens
@@ -2709,9 +2824,17 @@ class ZoteroSemanticSearch:
             # Incremental requires: not a forced rebuild, not a local-extraction
             # run (incremental path covers web-API metadata and optionally
             # fulltext only), not a test limit, and a known prior sync version.
-            last_sync_version = self._load_last_sync_version() if not force_full_rebuild else 0
+            last_sync_version = (
+                self._load_last_sync_version()
+                if not force_full_rebuild and not requested_item_keys
+                else 0
+            )
             use_incremental = (
-                not force_full_rebuild and not extract_fulltext and limit is None and last_sync_version > 0
+                not requested_item_keys
+                and not force_full_rebuild
+                and not extract_fulltext
+                and limit is None
+                and last_sync_version > 0
             )
 
             # When a collection filter is configured, skip the API-based
@@ -2870,25 +2993,52 @@ class ZoteroSemanticSearch:
                 # incremental run would miss items that haven't changed
                 # since the old watermark (because they were just deleted
                 # along with the collection).
-                try:
-                    target_sync_version = self.zotero_client.last_modified_version()
-                except Exception as e:
-                    logger.warning(f"last_modified_version() failed: {e}")
-                    target_sync_version = None
+                if not requested_item_keys:
+                    try:
+                        target_sync_version = self.zotero_client.last_modified_version()
+                    except Exception as e:
+                        logger.warning(f"last_modified_version() failed: {e}")
+                        target_sync_version = None
                 all_items = self._get_items_from_source(
                     limit=limit,
                     extract_fulltext=extract_fulltext,
                     chroma_client=self.chroma_client if not force_full_rebuild else None,
                     force_rebuild=force_full_rebuild,
                     include_fulltext_via_api=include_fulltext_via_api,
+                    item_keys=requested_item_keys,
                 )
-                # The local-extraction scan may lag behind the API version
-                # captured above (immutable sqlite reads skip WAL contents);
-                # only promote the watermark if the snapshot was complete.
-                if extract_fulltext and target_sync_version is not None:
-                    target_sync_version = self._verify_local_snapshot_version(
-                        target_sync_version
+                if requested_item_keys:
+                    found_keys = [
+                        str(item.get("key", "")).strip().upper()
+                        for item in all_items
+                    ]
+                    requested_key_set = set(requested_item_keys)
+                    found_key_set = set(found_keys)
+                    missing_keys = [key for key in requested_item_keys if key not in found_key_set]
+                    unexpected_keys = sorted(found_key_set - requested_key_set)
+                    duplicate_keys = sorted(
+                        key for key in found_key_set if found_keys.count(key) > 1
                     )
+                    if missing_keys or unexpected_keys or duplicate_keys:
+                        details = []
+                        if missing_keys:
+                            details.append(f"missing: {', '.join(missing_keys)}")
+                        if unexpected_keys:
+                            details.append(f"unexpected: {', '.join(unexpected_keys)}")
+                        if duplicate_keys:
+                            details.append(f"duplicated: {', '.join(duplicate_keys)}")
+                        raise ValueError(
+                            "Explicit item scope did not resolve exactly the requested "
+                            f"live parent items ({'; '.join(details)})"
+                        )
+                else:
+                    # The local-extraction scan may lag behind the API version
+                    # captured above (immutable sqlite reads skip WAL contents);
+                    # only promote the watermark if the snapshot was complete.
+                    if extract_fulltext and target_sync_version is not None:
+                        target_sync_version = self._verify_local_snapshot_version(
+                            target_sync_version
+                        )
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
@@ -3089,7 +3239,10 @@ class ZoteroSemanticSearch:
             # re-enter deletion detection, so the documented rerun with
             # --allow-mass-deletion would silently do nothing.
             self.update_config["last_update"] = datetime.now().isoformat()
-            if stats.get("deletion_skipped_reason"):
+            if requested_item_keys or stats.get("deletion_skipped_reason"):
+                # An exact-item refresh is intentionally not a library sync:
+                # never advance the global watermark or make a partial scope
+                # look complete to the next incremental run.
                 self._save_update_config()
             else:
                 self._save_update_config(

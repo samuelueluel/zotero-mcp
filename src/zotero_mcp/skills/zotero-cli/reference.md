@@ -268,6 +268,7 @@ Every command also accepts `--json` (machine-readable envelope on stdout) and
 
  - `--force-rebuild`
  - `--limit`
+ - `--item-key` -- Refresh exactly this live parent item; repeat for multiple keys
  - `--fulltext`
  - `--allow-mass-deletion`
  - `--config-path`

@@ -491,6 +491,14 @@ def main():
                                  help="Force complete rebuild of the database")
     update_db_parser.add_argument("--limit", type=int,
                                  help="Limit number of items to process (for testing)")
+    update_db_parser.add_argument(
+        "--item-key",
+        dest="item_keys",
+        action="append",
+        metavar="KEY",
+        help="Refresh exactly this live parent item; repeat for multiple keys "
+             "(bypasses DOI/title deduplication)",
+    )
     update_db_parser.add_argument("--fulltext", action="store_true",
                                  help="Extract fulltext content from local Zotero database (slower but more comprehensive)")
     update_db_parser.add_argument("--allow-mass-deletion", action="store_true",
@@ -859,6 +867,7 @@ def main():
             stats = search.update_database(
                 force_full_rebuild=args.force_rebuild,
                 limit=args.limit,
+                item_keys=args.item_keys,
                 extract_fulltext=args.fulltext,
                 use_openai_batch=args.openai_batch,
                 use_gemini_batch=args.gemini_batch,
