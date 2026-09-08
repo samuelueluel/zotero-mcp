@@ -2,6 +2,7 @@
 
 from zotero_mcp.tools import (  # noqa: F401
     annotations,
+    claim_audit,
     connectors,
     discovery,
     item_parent,

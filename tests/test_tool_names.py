@@ -10,6 +10,7 @@ from zotero_mcp.toolsets import apply_toolsets
 EXPECTED_TOOL_NAMES = {
     "add_item",
     "add_item_relation",
+    "audit_claims",
     "attach_file",
     "audit_pdf_coverage",
     "batch_edit_tags_and_extra",
@@ -77,7 +78,7 @@ def test_complete_public_tool_name_contract():
         apply_toolsets(mcp, raw="all", transport="streamable-http")
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
         assert names == EXPECTED_TOOL_NAMES
-        assert len(names) == 60
+        assert len(names) == 61
         assert not any(name.startswith("zotero_") for name in names)
     finally:
         apply_toolsets(mcp, raw="all", transport="streamable-http")

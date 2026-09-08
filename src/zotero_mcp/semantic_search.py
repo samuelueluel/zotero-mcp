@@ -4331,6 +4331,105 @@ class ZoteroSemanticSearch:
             "distances": [[dists_by_id[doc_id] for doc_id in fused_ids]],
         }
 
+    def search_evidence_hits(
+        self,
+        query: str,
+        item_key: str,
+        limit: int = 12,
+        group_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return raw, ungrouped hits for bounded claim auditing.
+
+        Unlike :meth:`search`, this intentionally does not hydrate or collapse
+        passage hits to distinct parent items.  The audit tool needs the exact
+        chunk identifier, source text, provenance metadata, and raw reranker
+        logit for one already-known item.  The exact key is applied to both
+        dense and sparse legs, and the returned key is checked defensively by
+        the audit service as well.
+        """
+        key = str(item_key or "").strip().upper()
+        if not key or not str(query or "").strip():
+            return []
+        limit = max(1, min(int(limit), 12))
+        reranker = self._get_reranker()
+        fetch_limit = limit
+        if self._chunking_enabled:
+            fetch_limit = max(fetch_limit, limit * 4)
+        if reranker:
+            multiplier = int(self._reranker_config.get("candidate_multiplier", 3) or 3)
+            fetch_limit = max(fetch_limit, limit * multiplier)
+
+        # This is deliberately narrower than the public filter parser: audit
+        # input has exactly one parent key and cannot name a collection or a
+        # title/DOI surrogate.  `_hybrid_search` receives the same key set so
+        # BM25 cannot broaden the dense exact-key scope.
+        where: dict[str, Any] = {"item_key": key}
+        if group_id is not None:
+            where = {"$and": [where, {"group_id": int(group_id)}]}
+        sparse_idx = self._get_sparse_index()
+        if sparse_idx is not None:
+            raw = self._hybrid_search(
+                str(query),
+                fetch_limit,
+                where,
+                sparse_idx,
+                allowed_item_keys={key},
+            )
+        else:
+            raw = self.chroma_client.search(
+                query_texts=[str(query)], n_results=fetch_limit, where=where
+            )
+
+        ids = (raw.get("ids") or [[]])[0]
+        documents = (raw.get("documents") or [[]])[0]
+        metadatas = (raw.get("metadatas") or [[]])[0]
+        distances = (raw.get("distances") or [[]])[0]
+        scores: dict[int, float] = {}
+        if reranker and documents:
+            for index, score in reranker.rerank_with_scores(
+                str(query), documents, top_k=len(documents)
+            ):
+                scores[int(index)] = float(score)
+
+        hits: list[dict[str, Any]] = []
+        for index, raw_id in enumerate(ids):
+            chunk_id = str(raw_id or "")
+            returned_key = chunk_id.split("#", 1)[0].upper()
+            if returned_key != key:
+                # Do not leak a foreign hit if a backend ignores its where
+                # clause or a stale sparse index returns an out-of-scope row.
+                continue
+            document = str(documents[index] if index < len(documents) else "")
+            metadata = metadatas[index] if index < len(metadatas) else {}
+            metadata = metadata if isinstance(metadata, dict) else {}
+            passage, passage_offset = best_snippet(str(query), document)
+            hit: dict[str, Any] = {
+                "item_key": key,
+                "chunk_id": chunk_id,
+                "document": document,
+                "matched_text": document,
+                "matched_passage": passage,
+                "metadata": metadata,
+                "is_reference": is_bibliography_chunk(document),
+                "rerank_score": scores.get(index),
+            }
+            if index < len(distances):
+                hit["distance"] = distances[index]
+            for metadata_key in (
+                "chunk_index",
+                "n_chunks",
+                "char_start",
+                "char_end",
+                "page",
+                "index_generation",
+            ):
+                if metadata_key in metadata:
+                    hit[metadata_key] = metadata[metadata_key]
+            if "char_start" not in hit and passage_offset:
+                hit["passage_offset"] = passage_offset
+            hits.append(hit)
+        return hits
+
     def search(self,
                query: str,
                limit: int = 10,

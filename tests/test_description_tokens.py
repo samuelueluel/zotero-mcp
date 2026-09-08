@@ -47,7 +47,8 @@ TOOL_BUDGETS = {
     "find_duplicate_items":          (234, 450),
     "merge_duplicate_items":         (295, 450),
     "attach_file":              (190, 430),
-    # tools/search.py
+    # tools/claim_audit.py and tools/search.py
+    "audit_claims":             (130, 295),
     "search_items":             (175, 400),
     "search_items_by_tag":            (115, 265),
     "find_item_by_citation_key":   (125, 280),

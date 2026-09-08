@@ -48,6 +48,7 @@ from zotero_mcp.tools._helpers import (  # noqa: F401
     _try_semantic_scholar,
     _try_unpaywall,
 )
+from zotero_mcp.tools.claim_audit import audit_claims  # noqa: F401
 from zotero_mcp.tools.annotations import (  # noqa: F401
     _batch_resolve_parent_titles,
     _format_search_results,
