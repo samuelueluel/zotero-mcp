@@ -255,9 +255,10 @@ class AuditDependencies:
 
 
 # Quote matching is intentionally conservative. It normalizes Unicode and
-# whitespace and permits two interpretations of a hyphen at an actual PDF line
-# break: lexical (``cost-effective``) or discretionary (``property`` emitted as
-# ``prop-\nerty``). It does not do fuzzy or semantic matching.
+# whitespace and permits two interpretations of a hyphen at a PDF line break
+# (including extractors that flatten it to spaces): lexical (``cost-effective``)
+# or discretionary (``property`` emitted as ``prop-\nerty`` or ``prop- erty``).
+# It does not do fuzzy or semantic matching.
 def _normalized_text_with_offsets(
     value: str,
     *,
@@ -278,14 +279,14 @@ def _normalized_text_with_offsets(
         character, origin = chars[index]
         if character in hyphens and index > 0:
             next_index = index + 1
-            saw_newline = False
+            saw_separator_whitespace = False
             while next_index < len(chars) and chars[next_index][0].isspace():
-                saw_newline = saw_newline or chars[next_index][0] == "\n"
+                saw_separator_whitespace = True
                 next_index += 1
             previous_character = chars[index - 1][0]
             next_character = chars[next_index][0] if next_index < len(chars) else ""
             if (
-                saw_newline
+                saw_separator_whitespace
                 and previous_character.isalpha()
                 and next_character.isalpha()
             ):

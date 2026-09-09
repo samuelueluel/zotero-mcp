@@ -92,6 +92,7 @@ def _positive_hit(key=ITEM, quote="The treatment reduced emissions by 5%.", **ex
 def test_quote_matching_tolerates_line_hyphenation_but_not_fuzzy_text():
     assert quote_contained("cost-effective policy", "The cost-\neffective policy worked.")
     assert quote_contained("property crimes", "The prop-\nerty crimes fell.")
+    assert quote_contained("property crimes", "The prop- erty crimes fell.")
     assert not quote_contained("cost effective policy", "The policy worked.")
     assert not quote_contained("cost effective policy", "The cost-\neffective policy worked.")
 
@@ -102,7 +103,7 @@ def test_excerpt_uses_original_offsets_after_compatibility_normalization():
     assert quote_contained("Quoted phrase.", excerpt)
 
 
-@pytest.mark.parametrize("line_break", ["\n", "\r\n"])
+@pytest.mark.parametrize("line_break", ["\n", "\r\n", " "])
 def test_excerpt_centers_a_dehyphenated_quote_on_the_original_text(line_break):
     split_word = f"prop-{line_break}erty crimes"
     source = "context " * 80 + f"The {split_word} fell." + " tail" * 80
