@@ -21,8 +21,10 @@ from zotero_mcp.tools import _helpers
 
 
 # [exact resolver patch] These are intentionally conservative.  The resolver
-# accepts punctuation/whitespace/case variation in titles, but never accepts a
-# substring or semantic-neighbour match as an exact title.
+# accepts punctuation/whitespace/case variation in titles, plus a single
+# leading-article difference (the/a/an -- e.g. "American Community Survey"
+# matches "The American Community Survey"), but never accepts a substring
+# or semantic-neighbour match as an exact title.
 _KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
 _DOI_SCAN_RE = re.compile(r"10\.\d{4,9}/[^\s<>\"]+", re.IGNORECASE)
 _YEAR_RE = re.compile(r"\b(?:18|19|20|21)\d{2}\b")
@@ -37,6 +39,22 @@ def _fold(value: Any) -> str:
     # Punctuation is a formatting difference for title identity, not a word.
     text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
     return re.sub(r"\s+", " ", text).strip()
+
+
+_LEADING_ARTICLE_RE = re.compile(r"^(?:the|a|an)\s+")
+
+
+def _fold_title(value: Any) -> str:
+    """Fold a title for comparison, ignoring a single leading article.
+
+    Applied symmetrically to the query and the record, so the only newly
+    accepted pairs are titles that differ by nothing but a leading
+    the/a/an.  Returns the plain fold when nothing (or nothing
+    meaningful) remains after stripping, so the strict comparison governs.
+    """
+    folded = _fold(value)
+    stripped = _LEADING_ARTICLE_RE.sub("", folded)
+    return stripped or folded
 
 
 def _clean_optional(value: str | None) -> str | None:
@@ -469,15 +487,29 @@ def _citekey_matches(data: dict[str, Any], requested: str) -> bool:
 
 def _identity_checks(
     item: dict[str, Any], fields: dict[str, str | None]
-) -> tuple[list[str], list[str]]:
-    """Return (satisfied fields, mismatched fields) for one metadata record."""
+) -> tuple[list[str], list[str], bool]:
+    """Return (satisfied fields, mismatched fields, title article-relaxed).
+
+    The third element is True only when the title matched solely because a
+    leading article was ignored; callers surface it in `match_basis` so the
+    relaxation stays auditable instead of silent.
+    """
     data = item.get("data", {})
     satisfied: list[str] = []
     mismatched: list[str] = []
+    title_article_relaxed = False
     if fields.get("item_key"):
         (satisfied if str(item.get("key")) == fields["item_key"] else mismatched).append("item_key")
     if fields.get("title"):
-        (satisfied if _fold(_item_title(data)) == _fold(fields["title"]) else mismatched).append("title")
+        record_title = _fold(_item_title(data))
+        wanted_title = _fold(fields["title"])
+        if record_title == wanted_title:
+            satisfied.append("title")
+        elif _fold_title(_item_title(data)) == _fold_title(fields["title"]):
+            satisfied.append("title")
+            title_article_relaxed = True
+        else:
+            mismatched.append("title")
     if fields.get("author"):
         (satisfied if _creator_matches(data, fields["author"]) else mismatched).append("author")
     if fields.get("year"):
@@ -487,7 +519,7 @@ def _identity_checks(
         (satisfied if record_doi and record_doi.casefold() == str(fields["doi"]).casefold() else mismatched).append("doi")
     if fields.get("citation_key"):
         (satisfied if _citekey_matches(data, fields["citation_key"]) else mismatched).append("citation_key")
-    return satisfied, mismatched
+    return satisfied, mismatched, title_article_relaxed
 
 
 def _relaxed_title_queries(title: str) -> list[str]:
@@ -683,7 +715,7 @@ def resolve_exact_source(
 
         records: list[dict[str, Any]] = []
         for item in candidates.values():
-            satisfied, mismatched = _identity_checks(item, fields)
+            satisfied, mismatched, title_article_relaxed = _identity_checks(item, fields)
             key = str(item.get("key") or item.get("data", {}).get("key") or "")
             in_scope = scope_item_keys is None or key in scope_item_keys
             records.append(
@@ -691,6 +723,7 @@ def resolve_exact_source(
                     "item": item,
                     "satisfied": satisfied,
                     "mismatched": mismatched,
+                    "title_article_relaxed": title_article_relaxed,
                     "all_metadata": bool(satisfied) and not mismatched and len(satisfied) == sum(bool(v) for v in fields.values()),
                     "in_scope": in_scope,
                 }
@@ -774,6 +807,8 @@ def resolve_exact_source(
                 for field, value in fields.items()
                 if value
             ]
+            if exact_records[0].get("title_article_relaxed"):
+                match_basis.append("title matched ignoring a leading article (the/a/an)")
             if scope_item_keys is not None:
                 match_basis.append("collection membership verified")
         elif len(exact_records) > 1:
