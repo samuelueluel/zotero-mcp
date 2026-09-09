@@ -18,13 +18,12 @@ from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.claim_audit import (
-    MAX_CHECKER_WINDOW_CHARS,
     MAX_CLAIM_CHARS,
+    MAX_EVIDENCE_WINDOW_CHARS,
     MAX_QUOTE_CHARS,
     AuditDependencies,
     AuditService,
     ClaimInput,
-    LocalOpenAIClaimChecker,
     MineruSidecarEvidenceRef,
     parse_claims,
 )
@@ -160,7 +159,7 @@ def _line_window(text: str, start_line: int, end_line: int | None) -> tuple[str,
 def _char_window(text: str, start: int, end: int | None) -> tuple[str, str]:
     if start < 0 or start >= len(text):
         return "", f"chars {start}-{end or start}"
-    actual_end = min(end or start + MAX_CHECKER_WINDOW_CHARS, start + MAX_CHECKER_WINDOW_CHARS, len(text))
+    actual_end = min(end or start + MAX_EVIDENCE_WINDOW_CHARS, start + MAX_EVIDENCE_WINDOW_CHARS, len(text))
     return text[start:actual_end], f"chars {start}-{actual_end}"
 
 
@@ -205,13 +204,13 @@ def _read_sidecar_window(item_key: str, ref: MineruSidecarEvidenceRef) -> dict[s
             text, locator = _char_window(
                 full_text,
                 start,
-                start + MAX_CHECKER_WINDOW_CHARS,
+                start + MAX_EVIDENCE_WINDOW_CHARS,
             )
     else:  # guarded by MineruSidecarEvidenceRef, retained for defensive callers
         return {"error_code": "SIDECAR_LOCATOR_REQUIRED"}
 
-    if len(text) > MAX_CHECKER_WINDOW_CHARS:
-        text = text[:MAX_CHECKER_WINDOW_CHARS]
+    if len(text) > MAX_EVIDENCE_WINDOW_CHARS:
+        text = text[:MAX_EVIDENCE_WINDOW_CHARS]
     return {
         "text": text,
         "locator": locator,
@@ -234,7 +233,7 @@ def _search_sidecar(item_key: str, query: str) -> dict[str, Any] | None:
     positions = [position for position in positions if position >= 0]
     position = min(positions) if positions else 0
     start = max(0, position - 600)
-    text = full_text[start : start + MAX_CHECKER_WINDOW_CHARS]
+    text = full_text[start : start + MAX_EVIDENCE_WINDOW_CHARS]
     if not text:
         return None
     return {
@@ -271,7 +270,6 @@ def _build_dependencies(ctx: Context) -> AuditDependencies:
         sidecar_reader=_read_sidecar_window,
         sidecar_search=_search_sidecar,
         metadata_resolver=_resolve_item_metadata,
-        checker=LocalOpenAIClaimChecker.from_environment(),
     )
 
 
@@ -284,18 +282,15 @@ def _build_dependencies(ctx: Context) -> AuditDependencies:
         "and caller-supplied rerank scores are rejected. Semantic evidence is re-retrieved "
         "for that exact item and requires fresh raw Rerank > 0 plus quote containment. "
         "Numeric claims require direct PDF-page confirmation, or a clearly weaker MinerU "
-        "sidecar fallback after a failed page route. check_mode='rules_and_model' uses an "
-        "optional loopback OpenAI-compatible checker configured with "
-        "ZOTERO_AUDIT_CHECKER_URL and ZOTERO_AUDIT_CHECKER_MODEL; failures are reported "
-        "as insufficient rather than raising. escalation='bounded' permits at most three "
-        "exact-item follow-ups. Returns compact JSON statuses: supported, revise, "
-        "unsupported, or insufficient. Does not synthesize answers or adjudicate "
-        "zotero-extract packets."
+        "sidecar fallback after a failed page route. The audit performs deterministic "
+        "evidence validation only; `supported` means the evidence contract passed and "
+        "does not replace agent review of claim wording. escalation='bounded' permits "
+        "at most three exact-item follow-ups. Returns compact JSON with evidence-gate "
+        "statuses and does not synthesize answers or adjudicate zotero-extract packets."
     ),
 )
 def audit_claims(
     claims: list[ClaimInput] | str,
-    check_mode: str = "rules_and_model",
     escalation: str = "none",
     *,
     ctx: Context,
@@ -303,8 +298,6 @@ def audit_claims(
     """Audit claims while keeping all source access bounded and provenance-preserving."""
 
     try:
-        if check_mode not in {"rules_and_model", "rules_only"}:
-            raise ValueError("check_mode must be 'rules_and_model' or 'rules_only'")
         if escalation not in {"none", "bounded"}:
             raise ValueError("escalation must be 'none' or 'bounded'")
         # Parse here so direct function calls and clients that send a JSON
@@ -312,12 +305,11 @@ def audit_claims(
         parsed = parse_claims(claims)
         response = AuditService(_build_dependencies(ctx)).audit(
             parsed,
-            check_mode=check_mode,  # type: ignore[arg-type]
             escalation=escalation,  # type: ignore[arg-type]
         )
         return json.dumps(response, ensure_ascii=False, sort_keys=True)
     except Exception as exc:
-        # Validation and checker failures are data, not process-level failures.
+        # Validation failures are data, not process-level failures.
         # Keep this error bounded and do not echo arbitrary source payloads.
         if isinstance(exc, ValidationError):
             message = "claim input failed schema validation"

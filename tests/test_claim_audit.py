@@ -13,9 +13,7 @@ from pydantic import ValidationError
 from zotero_mcp.claim_audit import (
     AuditDependencies,
     AuditService,
-    CheckerResult,
-    EvidenceRecord,
-    LocalOpenAIClaimChecker,
+    _excerpt_around,
     parse_claims,
     quote_contained,
 )
@@ -23,19 +21,6 @@ from zotero_mcp.tools import claim_audit as claim_audit_tool
 
 ITEM = "ITEM0001"
 OTHER_ITEM = "ITEM0002"
-
-
-class FakeChecker:
-    def __init__(self, result="supported"):
-        self.result = result
-        self.calls = []
-
-    def metadata(self):
-        return {"configured": True, "model_id": "fake-checker", "prompt_version": "test"}
-
-    def check(self, claim, evidence):
-        self.calls.append((claim, list(evidence)))
-        return CheckerResult(self.result, "fake rationale", "add the limitation" if self.result == "revise" else None)
 
 
 def _metadata(key=ITEM):
@@ -81,14 +66,13 @@ def _claim(evidence, text="The treatment reduced emissions by 5%.", tags=None, c
     }
 
 
-def _deps(*, checker=None, retriever=None, page_reader=None, sidecar_reader=None, sidecar_search=None):
+def _deps(*, retriever=None, page_reader=None, sidecar_reader=None, sidecar_search=None):
     return AuditDependencies(
         retriever=retriever,
         page_reader=page_reader,
         sidecar_reader=sidecar_reader,
         sidecar_search=sidecar_search,
         metadata_resolver=lambda key: _metadata(key),
-        checker=checker,
     )
 
 
@@ -108,6 +92,12 @@ def test_quote_matching_tolerates_line_hyphenation_but_not_fuzzy_text():
     assert not quote_contained("cost effective policy", "The policy worked.")
 
 
+def test_excerpt_uses_original_offsets_after_compatibility_normalization():
+    source = "ﬁ" * 180 + " Quoted phrase. " + "context " * 20
+    excerpt = _excerpt_around(source, "Quoted phrase.", limit=200)
+    assert quote_contained("Quoted phrase.", excerpt)
+
+
 def test_strict_input_rejects_paths_content_and_caller_scores():
     for forbidden in ("path", "source_text", "content", "rerank_score"):
         with pytest.raises(ValidationError):
@@ -124,11 +114,9 @@ def test_input_bounds_are_enforced():
 
 
 def test_positive_semantic_evidence_can_be_verified():
-    checker = FakeChecker()
     quote = "The treatment reduced emissions."
     service = AuditService(
         _deps(
-            checker=checker,
             retriever=lambda query, key: [_positive_hit(key, quote=quote)],
         )
     )
@@ -139,12 +127,36 @@ def test_positive_semantic_evidence_can_be_verified():
 
     row = result["results"][0]
     assert row["verified"] is True
+    assert row["evidence_verified"] is True
     assert row["status"] == "supported"
-    assert row["checker_status"] == "supported"
     assert row["evidence"][0]["item_key"] == ITEM
     assert row["evidence"][0]["route"] == "zotero_semantic_search"
     assert row["evidence"][0]["raw_rerank"] == pytest.approx(1.25)
-    assert len(checker.calls) == 1
+    assert quote_contained(quote, row["evidence"][0]["excerpt"])
+
+
+def test_rejected_candidate_failures_do_not_leak_after_valid_hit():
+    quote = "Candidate text."
+    hits = [
+        _positive_hit(quote="Different text.", rerank_score=1.0),
+        _positive_hit(quote=quote, rerank_score=1.25),
+    ]
+    result = AuditService(_deps(retriever=lambda q, k: hits)).audit(
+        [_claim([_semantic_ref(quote=quote)], text="The policy worked.")]
+    )
+    row = result["results"][0]
+    assert row["status"] == "supported"
+    assert "QUOTE_NOT_FOUND" not in row["reason_codes"]
+    assert "NONPOSITIVE_RERANK" not in row["reason_codes"]
+
+
+def test_missing_requested_chunk_is_reported():
+    result = AuditService(
+        _deps(retriever=lambda q, k: [_positive_hit()])
+    ).audit([_claim([_semantic_ref(chunk_id=f"{ITEM}#missing")])])
+    row = result["results"][0]
+    assert row["status"] == "insufficient"
+    assert "CHUNK_NOT_FOUND" in row["reason_codes"]
 
 
 @pytest.mark.parametrize(
@@ -152,17 +164,15 @@ def test_positive_semantic_evidence_can_be_verified():
     [(None, "RERANK_MISSING"), (0.0, "NONPOSITIVE_RERANK"), (-1.0, "NONPOSITIVE_RERANK")],
 )
 def test_semantic_evidence_requires_a_positive_raw_rerank(score, code):
-    checker = FakeChecker()
     hit = _positive_hit()
     hit["rerank_score"] = score
-    result = AuditService(_deps(checker=checker, retriever=lambda q, k: [hit])).audit(
+    result = AuditService(_deps(retriever=lambda q, k: [hit])).audit(
         [_claim([_semantic_ref()], text="The policy worked.")]
     )
     row = result["results"][0]
     assert row["verified"] is False
     assert row["status"] == "insufficient"
     assert code in row["reason_codes"]
-    assert not checker.calls
 
 
 def test_reference_hit_is_not_substantive_evidence():
@@ -185,34 +195,28 @@ def test_foreign_hit_is_rejected_even_when_quote_and_score_are_good():
     assert "ITEM_MISMATCH" in row["reason_codes"]
 
 
-def test_quote_mismatch_is_a_deterministic_failure_and_checker_cannot_override_it():
-    checker = FakeChecker()
+def test_quote_mismatch_is_a_deterministic_failure():
     result = AuditService(
-        _deps(checker=checker, retriever=lambda q, k: [_positive_hit(quote="Different text.")])
+        _deps(retriever=lambda q, k: [_positive_hit(quote="Different text.")])
     ).audit([_claim([_semantic_ref(quote="Candidate text.")], text="The policy worked.")])
     row = result["results"][0]
     assert row["verified"] is False
     assert "QUOTE_NOT_FOUND" in row["reason_codes"]
-    assert not checker.calls
 
 
 def test_numeric_claim_requires_direct_evidence():
-    checker = FakeChecker()
     result = AuditService(
-        _deps(checker=checker, retriever=lambda q, k: [_positive_hit()])
+        _deps(retriever=lambda q, k: [_positive_hit()])
     ).audit([_claim([_semantic_ref()])])
     row = result["results"][0]
     assert row["verified"] is False
     assert "NEEDS_DIRECT_EVIDENCE" in row["reason_codes"]
-    assert not checker.calls
 
 
 def test_numeric_claim_can_use_pdf_page_evidence():
-    checker = FakeChecker()
     page_text = "Results. The treatment reduced emissions by 5%."
     result = AuditService(
         _deps(
-            checker=checker,
             page_reader=lambda *args: {"text": page_text, "needs_ocr": False},
         )
     ).audit([_claim([_pdf_ref()])])
@@ -223,26 +227,21 @@ def test_numeric_claim_can_use_pdf_page_evidence():
 
 
 def test_sidecar_without_failed_page_is_not_a_numeric_verification():
-    checker = FakeChecker()
     sidecar_text = "Results. The treatment reduced emissions by 5%."
     result = AuditService(
         _deps(
-            checker=checker,
             sidecar_reader=lambda *args: {"text": sidecar_text},
         )
     ).audit([_claim([_sidecar_ref()])])
     row = result["results"][0]
     assert row["verified"] is False
     assert "SIDECAR_FALLBACK_REQUIRES_PAGE_FAILURE" in row["reason_codes"]
-    assert not checker.calls
 
 
 def test_sidecar_can_rescue_a_scanned_pdf_page_as_weaker_evidence():
-    checker = FakeChecker()
     sidecar_text = "Results. The treatment reduced emissions by 5%."
     result = AuditService(
         _deps(
-            checker=checker,
             page_reader=lambda *args: {"text": "", "needs_ocr": True},
             sidecar_reader=lambda *args: {"text": sidecar_text},
         )
@@ -255,37 +254,17 @@ def test_sidecar_can_rescue_a_scanned_pdf_page_as_weaker_evidence():
 
 
 def test_stale_content_hash_is_rejected():
-    checker = FakeChecker()
     result = AuditService(
         _deps(
-            checker=checker,
             page_reader=lambda *args: {"text": "The policy worked.", "needs_ocr": False},
         )
     ).audit([_claim([_pdf_ref(quote="The policy worked.", content_hash="0" * 64)], text="The policy worked.")])
     assert "STALE_EVIDENCE" in result["results"][0]["reason_codes"]
-    assert not checker.calls
-
-
-def test_rules_only_never_claims_semantic_support():
-    checker = FakeChecker()
-    result = AuditService(
-        _deps(checker=checker, retriever=lambda q, k: [_positive_hit()])
-    ).audit(
-        [_claim([_semantic_ref()], text="The policy worked.")],
-        check_mode="rules_only",
-    )
-    row = result["results"][0]
-    assert row["verified"] is False
-    assert row["checker_status"] == "skipped"
-    assert "CHECKER_SKIPPED" in row["reason_codes"]
-    assert not checker.calls
 
 
 def test_comparison_claim_requires_two_distinct_validated_item_keys():
-    checker = FakeChecker()
     one_key = AuditService(
         _deps(
-            checker=checker,
             retriever=lambda q, k: [_positive_hit(k, quote="The study found an effect.")],
         )
     ).audit(
@@ -299,7 +278,6 @@ def test_comparison_claim_requires_two_distinct_validated_item_keys():
     )
     assert one_key["results"][0]["status"] == "insufficient"
     assert "COMPARATOR_EVIDENCE_MISSING" in one_key["results"][0]["reason_codes"]
-    assert not checker.calls
 
     second_ref = {
         "route": "semantic",
@@ -309,7 +287,6 @@ def test_comparison_claim_requires_two_distinct_validated_item_keys():
     }
     two_keys = AuditService(
         _deps(
-            checker=checker,
             retriever=lambda q, k: [_positive_hit(k, quote="The study found an effect.")],
         )
     ).audit(
@@ -332,7 +309,6 @@ def test_comparison_claim_requires_two_distinct_validated_item_keys():
     }
     rejected = AuditService(
         _deps(
-            checker=checker,
             retriever=lambda q, k: [_positive_hit(k, quote="The study found an effect.")]
             if k == ITEM
             else [_positive_hit(ITEM, quote="The study found an effect.")],
@@ -352,22 +328,6 @@ def test_comparison_claim_requires_two_distinct_validated_item_keys():
     assert "COMPARATOR_EVIDENCE_MISSING" in rejected["results"][0]["reason_codes"]
 
 
-def test_checker_contradicted_is_normalized_to_public_unsupported():
-    checker = FakeChecker("contradicted")
-    result = AuditService(
-        _deps(
-            checker=checker,
-            retriever=lambda q, k: [_positive_hit(quote="The study found an effect.")],
-        )
-    ).audit(
-        [_claim([_semantic_ref(quote="The study found an effect.")], text="The study found an effect.")]
-    )
-    row = result["results"][0]
-    assert row["status"] == "unsupported"
-    assert row["verdict"] == "unsupported"
-    assert row["checker_status"] == "unsupported"
-
-
 def test_empty_metadata_is_not_treated_as_a_resolved_item():
     result = AuditService(
         AuditDependencies(
@@ -378,19 +338,7 @@ def test_empty_metadata_is_not_treated_as_a_resolved_item():
     assert "ITEM_NOT_FOUND" in result["results"][0]["reason_codes"]
 
 
-def test_checker_revise_status_is_returned_without_verified_true():
-    checker = FakeChecker("revise")
-    result = AuditService(
-        _deps(checker=checker, retriever=lambda q, k: [_positive_hit()])
-    ).audit([_claim([_semantic_ref()], text="The policy worked.")])
-    row = result["results"][0]
-    assert row["verified"] is False
-    assert row["status"] == "revise"
-    assert row["missing_qualification"] == "add the limitation"
-
-
 def test_bounded_escalation_uses_same_item_and_reads_a_page_for_numeric_claim():
-    checker = FakeChecker()
     calls = []
     page_calls = []
 
@@ -404,7 +352,6 @@ def test_bounded_escalation_uses_same_item_and_reads_a_page_for_numeric_claim():
 
     result = AuditService(
         _deps(
-            checker=checker,
             retriever=retrieve,
             page_reader=read_page,
         )
@@ -437,7 +384,7 @@ def test_bounded_escalation_attempts_targeted_sidecar_without_a_hit():
         [_claim([_semantic_ref(quote="The policy worked.")], text="The policy worked.")],
         escalation="bounded",
     )
-    assert result["results"][0]["verified"] is False  # no checker configured
+    assert result["results"][0]["verified"] is True
     assert sidecar_calls == [(ITEM, "The policy worked.")]
     assert result["results"][0]["evidence"][0]["route"] == "mineru_sidecar"
 
@@ -456,113 +403,6 @@ def test_bounded_escalation_is_capped_at_three_claims():
     result = AuditService(_deps(retriever=retrieve)).audit(claims, escalation="bounded")
     assert [row["escalation"]["performed"] for row in result["results"]] == [True, True, True, False]
     assert len(calls) == 7  # four initial calls plus one bounded retry for three claims
-
-
-def test_checker_requires_loopback_configuration():
-    assert LocalOpenAIClaimChecker.from_environment() is None
-    assert not LocalOpenAIClaimChecker.is_loopback_url("https://example.com/v1")
-    assert LocalOpenAIClaimChecker.is_loopback_url("http://127.0.0.1:1234/v1")
-
-
-def test_local_checker_rejects_redirects_without_parsing_the_body():
-    calls = {}
-
-    class Response:
-        status_code = 302
-
-    def post(*args, **kwargs):
-        calls.update(kwargs)
-        return Response()
-
-    checker = LocalOpenAIClaimChecker(
-        "http://127.0.0.1:1234/v1",
-        "checker-model",
-        post=post,
-    )
-    claim = parse_claims([_claim([_semantic_ref()], text="The policy worked.")])[0]
-    record = EvidenceRecord(
-        evidence_id="e1",
-        item_key=ITEM,
-        route="zotero_semantic_search",
-        locator="ITEM0001#0",
-        quote="The policy worked.",
-        excerpt="The policy worked.",
-        source_text="The policy worked.",
-        raw_rerank=1.0,
-    )
-    checked = checker.check(claim, [record])
-    assert checked.status == "insufficient"
-    assert calls["allow_redirects"] is False
-
-
-def test_local_checker_disables_environment_proxy(monkeypatch):
-    import requests
-
-    sessions = []
-
-    class Response:
-        status_code = 302
-
-    class Session:
-        def __init__(self):
-            self.trust_env = True
-            sessions.append(self)
-
-        def post(self, *args, **kwargs):
-            return Response()
-
-        def close(self):
-            return None
-
-    monkeypatch.setattr(requests, "Session", Session)
-    checker = LocalOpenAIClaimChecker("http://127.0.0.1:1234/v1", "checker-model")
-    claim = parse_claims([_claim([_semantic_ref()], text="The policy worked.")])[0]
-    record = EvidenceRecord(
-        evidence_id="e1",
-        item_key=ITEM,
-        route="zotero_semantic_search",
-        locator="ITEM0001#0",
-        quote="The policy worked.",
-        excerpt="The policy worked.",
-        source_text="The policy worked.",
-        raw_rerank=1.0,
-    )
-    assert checker.check(claim, [record]).status == "insufficient"
-    assert sessions and sessions[0].trust_env is False
-
-
-def test_local_checker_parses_bounded_openai_json():
-    class Response:
-        status_code = 200
-
-        def json(self):
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "verdict": "supported",
-                                    "rationale": "The passage entails the claim.",
-                                }
-                            )
-                        }
-                    }
-                ]
-            }
-
-    checker = LocalOpenAIClaimChecker(
-        "http://127.0.0.1:1234/v1",
-        "checker-model",
-        post=lambda *args, **kwargs: Response(),
-    )
-    claim = parse_claims([_claim([_semantic_ref()], text="The policy worked.")])[0]
-    service = AuditService(
-        _deps(retriever=lambda q, k: [_positive_hit()])
-    )
-    audit_result = service._materialize_claim(claim)[0]
-    checked = checker.check(claim, audit_result)
-    assert checked.status == "supported"
 
 
 def test_tool_returns_bounded_invalid_input_json_without_calling_sources():
