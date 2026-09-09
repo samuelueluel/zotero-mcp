@@ -43,6 +43,7 @@ RiskTag = Literal[
     "quotation",
     "causal",
     "comparison",
+    "within_item_comparison",
     "attribution",
     "other",
 ]
@@ -154,6 +155,21 @@ class ClaimInput(_StrictModel):
         max_length=MAX_EVIDENCE_REFS,
     )
 
+    @model_validator(mode="after")
+    def _valid_comparison_scope(self) -> ClaimInput:
+        tags = set(self.risk_tags)
+        if {"comparison", "within_item_comparison"} <= tags:
+            raise ValueError(
+                "comparison and within_item_comparison are mutually exclusive"
+            )
+        if "within_item_comparison" in tags:
+            item_keys = {ref.item_key.upper() for ref in self.evidence}
+            if len(item_keys) != 1:
+                raise ValueError(
+                    "within_item_comparison evidence must use exactly one item_key"
+                )
+        return self
+
 
 def parse_claims(value: Sequence[ClaimInput | Mapping[str, Any]] | str) -> list[ClaimInput]:
     """Parse the public claim input, including clients that JSON-stringify arrays."""
@@ -238,37 +254,16 @@ class AuditDependencies:
     metadata_resolver: Callable[[str], Mapping[str, Any] | None] | None = None
 
 
-# Quote matching is intentionally conservative.  It tolerates Unicode
-# compatibility forms, whitespace, and a line-ending hyphen, but does not do
-# fuzzy semantic matching.
-def normalize_quote_text(value: str) -> str:
-    value = unicodedata.normalize("NFKC", value or "")
-    value = value.replace("\u00ad", "")
-    # Preserve a hyphen that was split at a line ending. This lets a copied
-    # candidate such as ``cost-effective`` match PDF text emitted as
-    # ``cost-\\neffective`` without making ordinary hyphenated and
-    # unhyphenated phrases interchangeable.
-    value = re.sub(r"[-‐‑‒–—]\s*\n\s*", "-", value)
-    value = value.replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"\s+", " ", value).casefold().strip()
-
-
-def quote_contained(quote: str, source_text: str) -> bool:
-    """Return true only when the candidate quote occurs in authoritative text."""
-
-    normalized_quote = normalize_quote_text(quote)
-    normalized_source = normalize_quote_text(source_text)
-    return bool(normalized_quote) and normalized_quote in normalized_source
-
-
-def _normalized_text_with_offsets(value: str) -> tuple[str, list[int]]:
-    """Normalize text while retaining offsets into the original string.
-
-    Quote matching intentionally uses a normalized representation, but evidence
-    windows must be sliced from the original text. Keeping an origin offset for
-    each normalized character prevents compatibility characters, line-ending
-    hyphens, and collapsed whitespace from moving the window to unrelated text.
-    """
+# Quote matching is intentionally conservative. It normalizes Unicode and
+# whitespace and permits two interpretations of a hyphen at an actual PDF line
+# break: lexical (``cost-effective``) or discretionary (``property`` emitted as
+# ``prop-\nerty``). It does not do fuzzy or semantic matching.
+def _normalized_text_with_offsets(
+    value: str,
+    *,
+    drop_linebreak_hyphens: bool = False,
+) -> tuple[str, list[int]]:
+    """Normalize text while retaining offsets into the original string."""
 
     chars: list[tuple[str, int]] = []
     for original_index, character in enumerate(value or ""):
@@ -281,14 +276,21 @@ def _normalized_text_with_offsets(value: str) -> tuple[str, list[int]]:
     hyphens = "-‐‑‒–—"
     while index < len(chars):
         character, origin = chars[index]
-        if character in hyphens:
+        if character in hyphens and index > 0:
             next_index = index + 1
             saw_newline = False
             while next_index < len(chars) and chars[next_index][0].isspace():
                 saw_newline = saw_newline or chars[next_index][0] == "\n"
                 next_index += 1
-            if saw_newline:
-                collapsed.append(("-", origin))
+            previous_character = chars[index - 1][0]
+            next_character = chars[next_index][0] if next_index < len(chars) else ""
+            if (
+                saw_newline
+                and previous_character.isalpha()
+                and next_character.isalpha()
+            ):
+                if not drop_linebreak_hyphens:
+                    collapsed.append(("-", origin))
                 index = next_index
                 continue
         collapsed.append((character, origin))
@@ -304,7 +306,9 @@ def _normalized_text_with_offsets(value: str) -> tuple[str, list[int]]:
 
     folded: list[tuple[str, int]] = []
     for character, origin in whitespace_normalized:
-        folded.extend((folded_character, origin) for folded_character in character.casefold())
+        folded.extend(
+            (folded_character, origin) for folded_character in character.casefold()
+        )
 
     start = 0
     end = len(folded)
@@ -313,35 +317,76 @@ def _normalized_text_with_offsets(value: str) -> tuple[str, list[int]]:
     while end > start and folded[end - 1][0].isspace():
         end -= 1
     trimmed = folded[start:end]
-    return "".join(character for character, _origin in trimmed), [origin for _character, origin in trimmed]
+    return "".join(character for character, _origin in trimmed), [
+        origin for _character, origin in trimmed
+    ]
 
 
-def _excerpt_around(source_text: str, quote: str, limit: int = MAX_EVIDENCE_WINDOW_CHARS) -> str:
+def _normalized_text_variants(value: str) -> tuple[str, ...]:
+    variants: list[str] = []
+    for drop_linebreak_hyphens in (False, True):
+        normalized, _offsets = _normalized_text_with_offsets(
+            value,
+            drop_linebreak_hyphens=drop_linebreak_hyphens,
+        )
+        if normalized and normalized not in variants:
+            variants.append(normalized)
+    return tuple(variants)
+
+
+def normalize_quote_text(value: str) -> str:
+    """Return the primary normalized form retained for API compatibility."""
+
+    variants = _normalized_text_variants(value)
+    return variants[0] if variants else ""
+
+
+def quote_contained(quote: str, source_text: str) -> bool:
+    """Return true only when a bounded normalized quote occurs in source text."""
+
+    quote_variants = _normalized_text_variants(quote)
+    source_variants = _normalized_text_variants(source_text)
+    return any(
+        normalized_quote in normalized_source
+        for normalized_quote in quote_variants
+        for normalized_source in source_variants
+    )
+
+
+def _excerpt_around(
+    source_text: str,
+    quote: str,
+    limit: int = MAX_EVIDENCE_WINDOW_CHARS,
+) -> str:
     """Return a bounded original-text window that contains the quote."""
 
     if not source_text:
         return ""
-    normalized_quote = normalize_quote_text(quote)
-    if not normalized_quote:
-        return source_text[:limit]
 
-    normalized_source, offsets = _normalized_text_with_offsets(source_text)
-    position = normalized_source.find(normalized_quote)
-    if position < 0 or not offsets:
-        return source_text[:limit]
+    for normalized_quote in _normalized_text_variants(quote):
+        for drop_linebreak_hyphens in (False, True):
+            normalized_source, offsets = _normalized_text_with_offsets(
+                source_text,
+                drop_linebreak_hyphens=drop_linebreak_hyphens,
+            )
+            position = normalized_source.find(normalized_quote)
+            if position < 0 or not offsets:
+                continue
 
-    quote_end = min(position + len(normalized_quote) - 1, len(offsets) - 1)
-    quote_start_original = offsets[position]
-    quote_end_original = offsets[quote_end] + 1
-    quote_length = max(0, quote_end_original - quote_start_original)
-    if quote_length >= limit:
-        return source_text[quote_start_original : quote_start_original + limit]
+            quote_end = min(position + len(normalized_quote) - 1, len(offsets) - 1)
+            quote_start_original = offsets[position]
+            quote_end_original = offsets[quote_end] + 1
+            quote_length = max(0, quote_end_original - quote_start_original)
+            if quote_length >= limit:
+                return source_text[quote_start_original : quote_start_original + limit]
 
-    half = max(80, (limit - quote_length) // 2)
-    start = max(0, quote_start_original - half)
-    end = min(len(source_text), start + limit)
-    start = max(0, end - limit)
-    return source_text[start:end]
+            half = max(80, (limit - quote_length) // 2)
+            start = max(0, quote_start_original - half)
+            end = min(len(source_text), start + limit)
+            start = max(0, end - limit)
+            return source_text[start:end]
+
+    return source_text[:limit]
 
 
 def _sha256_text(value: str) -> str:
@@ -415,30 +460,77 @@ def _is_reference_hit(hit: Mapping[str, Any]) -> bool:
     )
 
 
-def _numeric_signatures(text: str) -> set[tuple[Decimal, str]]:
-    """Extract conservative number/unit signatures for deterministic checking."""
+_NUMBER_TOKEN = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_UNIT_TOKEN = (
+    r"(?:percentage\s+points?|basis\s+points?|per\s+cent|"
+    r"percent(?:age)?|%|pp|bps?|million|billion|thousand)"
+)
+_RANGE_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9_.,])"
+    rf"(?P<left>[+-]?{_NUMBER_TOKEN})(?![\d,])"
+    rf"(?:\s*(?P<left_unit>{_UNIT_TOKEN}))?\s*"
+    rf"(?:to|[-‐‑‒–—])\s*"
+    rf"(?P<right>[+-]?{_NUMBER_TOKEN})(?![\d,])"
+    rf"(?:\s*(?P<right_unit>{_UNIT_TOKEN}))?"
+    rf"(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_SCALAR_PATTERN = re.compile(
+    rf"(?<![A-Za-z0-9_.,])"
+    rf"(?P<number>[+-]?{_NUMBER_TOKEN})(?![\d,])"
+    rf"(?:\s*(?P<unit>{_UNIT_TOKEN}))?"
+    rf"(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 
-    normalized = unicodedata.normalize("NFKC", text or "")
-    normalized = normalized.replace("−", "-").replace("–", "-").replace("—", "-")
-    pattern = re.compile(
-        r"(?<![A-Za-z])([+-]?\d+(?:[.,]\d+)?)(?:\s*(%|percent(?:age)?|pp|percentage\s+points?|bps?|basis\s+points?|million|billion|thousand))?\b",
-        re.IGNORECASE,
-    )
+
+def _canonical_numeric_unit(value: str | None) -> str:
+    unit = re.sub(r"\s+", " ", (value or "").casefold()).strip()
+    if unit in {"%", "percent", "percentage", "per cent"}:
+        return "%"
+    if unit in {"pp", "percentage point", "percentage points"}:
+        return "pp"
+    if unit in {"bp", "bps", "basis point", "basis points"}:
+        return "bps"
+    return unit
+
+
+def _decimal_number(value: str) -> Decimal | None:
+    try:
+        return Decimal(value.replace(",", "")).normalize()
+    except InvalidOperation:
+        return None
+
+
+def _numeric_signatures(text: str) -> set[tuple[Decimal, str]]:
+    """Extract conservative scalar and range signatures with canonical units."""
+
+    normalized = unicodedata.normalize("NFKC", text or "").replace("−", "-")
     signatures: set[tuple[Decimal, str]] = set()
-    for match in pattern.finditer(normalized):
-        raw_number = match.group(1).replace(",", "")
-        try:
-            number = Decimal(raw_number)
-        except InvalidOperation:
-            continue
-        unit = (match.group(2) or "").casefold().replace("  ", " ")
-        if unit in {"percent", "percentage"}:
-            unit = "%"
-        elif unit in {"percentage points", "percentage  points"}:
-            unit = "pp"
-        elif unit in {"basis points", "basis  points"}:
-            unit = "bps"
-        signatures.add((number.normalize(), unit))
+    remaining = list(normalized)
+
+    # Parse ranges first so a separator is never mistaken for the sign of the
+    # right endpoint. A unit written on only one endpoint applies to both.
+    for match in _RANGE_PATTERN.finditer(normalized):
+        left = _decimal_number(match.group("left"))
+        right = _decimal_number(match.group("right"))
+        left_unit = _canonical_numeric_unit(match.group("left_unit"))
+        right_unit = _canonical_numeric_unit(match.group("right_unit"))
+        left_unit = left_unit or right_unit
+        right_unit = right_unit or left_unit
+        if left is not None:
+            signatures.add((left, left_unit))
+        if right is not None:
+            signatures.add((right, right_unit))
+        remaining[match.start() : match.end()] = " " * (match.end() - match.start())
+
+    # Remove consumed range spans before parsing ordinary signed scalars.
+    for match in _SCALAR_PATTERN.finditer("".join(remaining)):
+        number = _decimal_number(match.group("number"))
+        if number is not None:
+            signatures.add(
+                (number, _canonical_numeric_unit(match.group("unit")))
+            )
     return signatures
 
 
@@ -1014,16 +1106,26 @@ class AuditService:
                 )
             else:
                 claim_numbers = _numeric_signatures(claim.text)
-                source_numbers = _numeric_signatures("\n".join(record.source_text for record in direct_records))
-                if not claim_numbers.issubset(source_numbers):
-                    same_values = {number for number, _unit in claim_numbers} & {
-                        number for number, _unit in source_numbers
-                    }
-                    code = "UNIT_MISMATCH" if same_values else "NUMBER_MISMATCH"
+                # A number elsewhere on the page is not evidence for the claim.
+                # Only signatures inside caller-supplied quotes that passed
+                # containment may satisfy the deterministic numeric gate.
+                source_numbers = _numeric_signatures(
+                    "\n".join(record.quote for record in direct_records)
+                )
+                missing = claim_numbers - source_numbers
+                source_values = {number for number, _unit in source_numbers}
+                if any(number not in source_values for number, _unit in missing):
                     failures.append(
                         GateFailure(
-                            code,
-                            "numeric values or units in the claim were not confirmed by direct evidence",
+                            "NUMBER_MISMATCH",
+                            "numeric values in the claim were not confirmed by direct evidence quotes",
+                        )
+                    )
+                if any(number in source_values for number, _unit in missing):
+                    failures.append(
+                        GateFailure(
+                            "UNIT_MISMATCH",
+                            "numeric units in the claim were not confirmed by direct evidence quotes",
                         )
                     )
 

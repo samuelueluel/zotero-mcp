@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from zotero_mcp.claim_audit import (
     AuditDependencies,
     AuditService,
     _excerpt_around,
+    _numeric_signatures,
     parse_claims,
     quote_contained,
 )
@@ -89,13 +91,59 @@ def _positive_hit(key=ITEM, quote="The treatment reduced emissions by 5%.", **ex
 
 def test_quote_matching_tolerates_line_hyphenation_but_not_fuzzy_text():
     assert quote_contained("cost-effective policy", "The cost-\neffective policy worked.")
+    assert quote_contained("property crimes", "The prop-\nerty crimes fell.")
     assert not quote_contained("cost effective policy", "The policy worked.")
+    assert not quote_contained("cost effective policy", "The cost-\neffective policy worked.")
 
 
 def test_excerpt_uses_original_offsets_after_compatibility_normalization():
     source = "ﬁ" * 180 + " Quoted phrase. " + "context " * 20
     excerpt = _excerpt_around(source, "Quoted phrase.", limit=200)
     assert quote_contained("Quoted phrase.", excerpt)
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n"])
+def test_excerpt_centers_a_dehyphenated_quote_on_the_original_text(line_break):
+    split_word = f"prop-{line_break}erty crimes"
+    source = "context " * 80 + f"The {split_word} fell." + " tail" * 80
+    excerpt = _excerpt_around(source, "property crimes", limit=200)
+    assert split_word in excerpt
+    assert quote_contained("property crimes", excerpt)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("8%", {(Decimal("8"), "%")}),
+        ("8 percent", {(Decimal("8"), "%")}),
+        ("8 per cent", {(Decimal("8"), "%")}),
+        ("2 percentage points", {(Decimal("2"), "pp")}),
+        ("15 basis points", {(Decimal("15"), "bps")}),
+        ("9,398", {(Decimal("9398"), "")}),
+        ("9,38", set()),
+    ],
+)
+def test_numeric_signatures_canonicalize_units_and_thousands(text, expected):
+    assert _numeric_signatures(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "95% CI [7%, 15%]",
+            {(Decimal("95"), "%"), (Decimal("7"), "%"), (Decimal("15"), "%")},
+        ),
+        (
+            "95 percent CI 7–15%",
+            {(Decimal("95"), "%"), (Decimal("7"), "%"), (Decimal("15"), "%")},
+        ),
+        ("2010-2014", {(Decimal("2010"), ""), (Decimal("2014"), "")}),
+        ("-15–-7%", {(Decimal("-15"), "%"), (Decimal("-7"), "%")}),
+    ],
+)
+def test_numeric_signatures_parse_ranges_before_signed_scalars(text, expected):
+    assert _numeric_signatures(text) == expected
 
 
 def test_strict_input_rejects_paths_content_and_caller_scores():
@@ -226,6 +274,56 @@ def test_numeric_claim_can_use_pdf_page_evidence():
     assert "raw_rerank" not in row["evidence"][0]
 
 
+def test_numeric_claim_matches_symbol_and_spelled_percent_units():
+    page_text = "Results. Crime fell by 8%."
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote="Crime fell by 8%")],
+                text="Crime fell by 8 percent.",
+                tags=["numeric"],
+            )
+        ]
+    )
+    assert result["results"][0]["status"] == "supported"
+
+
+def test_numeric_claim_matches_range_notation_with_endpoint_units():
+    page_text = "The estimated effect had a 95% CI [7%, 15%]."
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote=page_text)],
+                text="The estimated effect had a 95 percent CI of 7–15%.",
+                tags=["numeric"],
+            )
+        ]
+    )
+    assert result["results"][0]["status"] == "supported"
+
+
+def test_unrelated_page_number_cannot_satisfy_numeric_coverage():
+    page_text = "The policy was discussed. An unrelated baseline was 11%."
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote="The policy was discussed.")],
+                text="The policy reduced crime by 11%.",
+                tags=["numeric"],
+            )
+        ]
+    )
+    row = result["results"][0]
+    assert row["status"] == "unsupported"
+    assert "NUMBER_MISMATCH" in row["reason_codes"]
+
+
 def test_sidecar_without_failed_page_is_not_a_numeric_verification():
     sidecar_text = "Results. The treatment reduced emissions by 5%."
     result = AuditService(
@@ -260,6 +358,56 @@ def test_stale_content_hash_is_rejected():
         )
     ).audit([_claim([_pdf_ref(quote="The policy worked.", content_hash="0" * 64)], text="The policy worked.")])
     assert "STALE_EVIDENCE" in result["results"][0]["reason_codes"]
+
+
+def test_comparison_and_within_item_comparison_are_mutually_exclusive():
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        parse_claims(
+            [
+                _claim(
+                    [_semantic_ref(quote="The study found an effect.")],
+                    text="Group A improved more than Group B.",
+                    tags=["comparison", "within_item_comparison"],
+                )
+            ]
+        )
+
+
+def test_within_item_comparison_accepts_one_validated_item():
+    quote = "The local reduction outweighed the destination increase."
+    result = AuditService(
+        _deps(retriever=lambda q, k: [_positive_hit(k, quote=quote)])
+    ).audit(
+        [
+            _claim(
+                [_semantic_ref(quote=quote)],
+                text="The local reduction outweighed the destination increase.",
+                tags=["within_item_comparison"],
+            )
+        ]
+    )
+    row = result["results"][0]
+    assert row["status"] == "supported"
+    assert "COMPARATOR_EVIDENCE_MISSING" not in row["reason_codes"]
+
+
+def test_within_item_comparison_rejects_multiple_requested_items():
+    second_ref = {
+        "route": "semantic",
+        "item_key": OTHER_ITEM,
+        "query": "study effect",
+        "quote": "The study found an effect.",
+    }
+    with pytest.raises(ValidationError, match="exactly one item_key"):
+        parse_claims(
+            [
+                _claim(
+                    [_semantic_ref(), second_ref],
+                    text="Group A improved more than Group B.",
+                    tags=["within_item_comparison"],
+                )
+            ]
+        )
 
 
 def test_comparison_claim_requires_two_distinct_validated_item_keys():
