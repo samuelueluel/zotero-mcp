@@ -4649,13 +4649,21 @@ class ZoteroSemanticSearch:
             document = documents[i] if i < len(documents) else ""
             meta = metadatas[i] if i < len(metadatas) else {}
 
-            passage, passage_offset = best_snippet(query, document)
+            from zotero_mcp.passage_context import evidence_id, source_preview, text_hash
+
+            passage, passage_offset = source_preview(query, document)
 
             enriched_result: dict[str, Any] = {
                 "item_key": item_key,
                 "similarity_score": (1 - distance) if distance is not None else 0,
                 "matched_text": document,
                 "matched_passage": passage,
+                "preview_truncated": passage != document,
+                "preview_char_start": passage_offset,
+                "preview_char_end": passage_offset + len(passage),
+                "chunk_id": raw_id,
+                "content_hash": text_hash(document),
+                "evidence_id": evidence_id(raw_id, document, meta if isinstance(meta, dict) else {}),
                 "metadata": meta if isinstance(meta, dict) else {},
                 "query": query,
             }

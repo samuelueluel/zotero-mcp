@@ -1356,14 +1356,16 @@ def search_items_advanced(
     description=(
         "Search Zotero passages by semantic similarity using AI embeddings. "
         "Use this for topic discovery and substantive findings; results include "
-        "grounded passages, locations, relevance, and reranker scores. Searches "
+        "bounded previews, locations, relevance, and reranker scores. One best passage "
+        "per distinct item: limit counts items, not passages. Use read_passage with the "
+        "returned evidence_id to expand the stored chunk; use find_in_item for literal "
+        "source-text lookup. Previews can be incomplete and are not whole passages. Searches "
         "the active library by default. Optional library_id, collection (key or "
         "exact name, including subcollections), search_all_libraries (requires "
         "the SQLite backend), and metadata filters for item types, source groups, "
         "tags, or exact parent item keys are supported; filters combine with AND. "
-        "Requires a populated semantic database: run "
-        "update_semantic_index and check "
-        "get_semantic_index_status. Example: "
+        "Requires a populated semantic database; report an unavailable index rather "
+        "than rebuilding automatically. Example: "
         "semantic_search(query='mindfulness-based cognitive therapy for "
         "depression', limit=5)."
     )
@@ -1501,16 +1503,28 @@ def semantic_search(
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")
+        output.append("*Previews may be incomplete. Expand an Evidence ID with read_passage; use find_in_item for literal lookup. Indexed passage numbers/offsets are not verified PDF pages.*")
+        output.append("")
 
         for i, result in enumerate(search_results, 1):
             similarity_score = result.get("similarity_score", 0)
             zotero_item = result.get("zotero_item", {})
 
-            # Prefer the grounded passage — the window of the document that
-            # actually overlaps the query — over a blind head-truncation, so
-            # the agent gets a citable quote rather than the abstract's opening.
+            # Display a bounded preview, explicitly separated from source expansion.
+            # The internal hit retains the full indexed text; never imply that a
+            # clipped display is the full passage the reranker evaluated.
             passage = result.get("matched_passage") or result.get("matched_text", "")
-            snippet = passage[:400] + "..." if len(passage) > 400 else passage
+            snippet = passage[:600]
+            truncated = bool(result.get("preview_truncated", passage != result.get("matched_text", passage))) or len(passage) > 600
+            context_fields = {"Preview truncated": "yes" if truncated else "no"}
+            if result.get("chunk_id"):
+                context_fields["Chunk ID"] = result["chunk_id"]
+            if result.get("content_hash"):
+                context_fields["Content hash"] = result["content_hash"]
+            if result.get("evidence_id"):
+                context_fields["Evidence ID"] = result["evidence_id"]
+            else:
+                context_fields["Expand"] = "No scoped evidence ID available; use find_in_item with this item key."
 
             # Provenance for citing: page (when the index carries page breaks),
             # else which passage of how many, else an approximate char offset.
@@ -1536,7 +1550,8 @@ def semantic_search(
                 if loc_bits:
                     extra["Location"] = ", ".join(loc_bits)
                 if snippet:
-                    extra["Matched Passage"] = snippet
+                    extra["Preview"] = snippet
+                extra.update(context_fields)
                 zotero_item.setdefault("key", result.get("item_key", ""))
                 output.extend(
                     _utils.format_item_result(
@@ -1562,7 +1577,8 @@ def semantic_search(
                 if loc_bits:
                     output.append(f"**Location:** {', '.join(loc_bits)}")
                 if snippet:
-                    output.append(f"**Matched Passage:** {snippet}")
+                    output.append(f"**Preview:** {snippet}")
+                output.extend(f"**{label}:** {value}" for label, value in context_fields.items())
                 if error := result.get("error"):
                     output.append(f"**Error:** {error}")
                 output.append("")

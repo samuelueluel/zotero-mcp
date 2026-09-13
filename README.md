@@ -893,7 +893,7 @@ Example (Claude Desktop / Claude Code):
 > [Tool Groups](#-tool-groups) above.
 
 ### 🧠 Semantic Search Tools
-- `semantic_search`: AI-powered similarity search with embedding models
+- `semantic_search`: AI-powered discovery with bounded previews and evidence IDs; one best passage per distinct item
 - `update_semantic_index`: Manually update the semantic search database
 - `get_semantic_index_status`: Check database status and configuration
 
@@ -909,7 +909,11 @@ Example (Claude Desktop / Claude Code):
 ### 📚 Content Tools
 - `get_item_metadata`: Get detailed metadata (supports `format="markdown"`, `format="json"` for complete raw Zotero metadata, and `format="bibtex"`)
 - `get_item_fulltext`: Get full text content
+- `read_passage`: Expand a search evidence ID into bounded indexed context, without another search or embedding call
+- `find_in_item`: Literal lookup or line/character-window reading in an existing personal-library MinerU sidecar
 - `list_item_children`: Get attachments and notes for one item or many (pass an array of keys)
+
+For discovery → expansion examples, source provenance, limits, and failure behavior, see [Bounded source context](docs/bounded-context.md).
 
 ### 📝 Annotation & Notes Tools
 - `get_annotations`: Get annotations (including direct PDF extraction); use `format="json"` for normalized records suitable for scripts and other MCP tools
@@ -947,7 +951,7 @@ Example (Claude Desktop / Claude Code):
 - `rebuild_citation_graph`, `rebuild_reference_index`, `get_reference_index_status`: Maintain and inspect citation/reference data.
 - `list_related_items`, `add_item_relation`, `remove_item_relation`: Read or edit Zotero's explicit Related Items links, which are separate from citation edges.
 
-For the exhaustive 60-tool old-to-new mapping—including inactive toolsets and the fixed-name ChatGPT connector—see [Tool-name migration](docs/tool-name-migration.md).
+For the exhaustive tool-name mapping and subsequent additions—including inactive toolsets and the fixed-name ChatGPT connector—see [Tool-name migration](docs/tool-name-migration.md).
 
 ## 🧪 Testing
 
