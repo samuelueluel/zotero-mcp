@@ -49,6 +49,9 @@ dependencies = [
     "httpx>=0.27",
     "unidecode>=1.3.0",
     "bibtexparser>=1.4,<2",
+    # Citation-graph tools are imported with the core tool registry, so this
+    # must be installed even when semantic extras are disabled.
+    "networkx>=3.0",
 ]
 
 [project.optional-dependencies]
