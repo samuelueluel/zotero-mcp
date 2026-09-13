@@ -173,7 +173,7 @@ def test_read_limits_reject_not_silently_clamp(monkeypatch, tmp_path, kwargs):
 def test_literal_find_has_exact_locators(monkeypatch, tmp_path):
     setup_tool(monkeypatch, tmp_path)
     text = "# Results\n\nEstimate: -0.072 (SE 0.02).\nTable notes: quarterly count.\n"
-    (tmp_path / f"{KEY}.md").write_text(text)
+    (tmp_path / f"{KEY}.md").write_bytes(text.encode("utf-8"))
     result = call_find(query="ESTIMATE", context_lines=1)
     assert result["ok"] and result["route"] == "mineru_sidecar"
     assert result["source_hash"] == text_hash(text)
@@ -202,7 +202,7 @@ def test_match_windows_coalesce_and_budget_is_total():
 def test_long_table_line_retains_match_and_allows_char_continuation(monkeypatch, tmp_path):
     setup_tool(monkeypatch, tmp_path)
     text = "<table>" + "a " * 2000 + "estimate -0.072" + " b" * 2000 + "</table>"
-    (tmp_path / f"{KEY}.md").write_text(text)
+    (tmp_path / f"{KEY}.md").write_bytes(text.encode("utf-8"))
     result = call_find(query="estimate", max_chars=256)
     assert "estimate -0.072" in result["windows"][0]["text"]
     assert result["windows"][0]["starts_mid_line"]
@@ -214,10 +214,10 @@ def test_long_table_line_retains_match_and_allows_char_continuation(monkeypatch,
 def test_sidecar_line_read_and_changed_source(monkeypatch, tmp_path):
     setup_tool(monkeypatch, tmp_path)
     path = tmp_path / f"{KEY}.md"
-    path.write_text("one\ntwo\nthree\nfour\n")
+    path.write_bytes(b"one\ntwo\nthree\nfour\n")
     result = call_find(start_line=2, end_line=3)
     assert result["windows"][0]["text"] == "two\nthree\n"
-    path.write_text("changed\n")
+    path.write_bytes(b"changed\n")
     assert call_find(expected_hash=result["source_hash"])["error"]["code"] == "STALE_EVIDENCE"
 
 
@@ -272,7 +272,7 @@ def test_find_argument_limits(kwargs):
 def test_sidecar_source_io_is_bounded(monkeypatch, tmp_path):
     setup_tool(monkeypatch, tmp_path)
     monkeypatch.setattr(tools, "MAX_SIDECAR_BYTES", 20)
-    (tmp_path / f"{KEY}.md").write_text("x" * 21)
+    (tmp_path / f"{KEY}.md").write_bytes(b"x" * 21)
     assert call_find()["error"]["code"] == "SOURCE_TOO_LARGE"
 
 
