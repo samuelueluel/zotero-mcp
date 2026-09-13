@@ -633,6 +633,32 @@ class _NoEmbeddingFunction(EmbeddingFunction):
         return "default"
 
 
+def read_index_documents(ids: list[str], config_path: str | None = None) -> dict[str, Any]:
+    """Fetch at most five existing chunks without constructing an embedder.
+
+    Never creates/replaces a collection or performs a semantic query. Callers
+    validate IDs, provenance and library scope before exposing source text.
+    """
+    if not 1 <= len(ids) <= 5:
+        raise ValueError("A bounded context read requires one to five chunk IDs.")
+    collection_name = "zotero_library"
+    if config_path and os.path.exists(config_path):
+        with open(config_path) as stream:
+            collection_name = json.load(stream).get("semantic_search", {}).get("collection_name", collection_name)
+    # Same storage location as create_chroma_client, without its model setup or
+    # automatic collection creation/model-mismatch recovery side effects.
+    directory = Path.home() / ".config" / "zotero-mcp" / "chroma_db"
+    if not (directory / "chroma.sqlite3").is_file():
+        raise FileNotFoundError("No existing semantic index.")
+    with suppress_stdout():
+        client = chromadb.PersistentClient(
+            path=str(directory),
+            settings=Settings(anonymized_telemetry=False, allow_reset=True),
+        )
+        collection = client.get_collection(name=collection_name, embedding_function=_NoEmbeddingFunction())
+        return collection.get(ids=ids, include=["documents", "metadatas"])
+
+
 def read_collection_status(
     config_path: str | None = None,
     *,

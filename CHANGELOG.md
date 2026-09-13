@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bounded source expansion (Samuel fork):** core `read_passage` expands a search evidence ID into the stored chunk and optional same-item neighbors, with source hashes, stale-evidence rejection, library checks, a total text budget, and continuation offsets. Core `find_in_item` provides literal lookup and line/character-window reading over existing personal-library MinerU sidecars. Neither tool runs embeddings, reranking, OCR, downloads, or index recovery. See [bounded context](docs/bounded-context.md) for limits and provenance.
+
 ### Changed
+
+- **Search previews are explicit and expandable:** `semantic_search` now labels its bounded text as `Preview`, reports truncation, and exposes chunk/content identity and an expansion ID when indexed library provenance exists. Previews prefer sentence/paragraph boundaries and avoid injected breadcrumb starts. Search still returns one best passage per distinct paper; its signature, embedding model, chunking, index schema, and ranking are unchanged. Clients parsing the old Markdown `Matched Passage` label must update.
 
 - **The citation-neighbor and collection-discovery surfaces now fail honestly and have one canonical route.** `get_citation_neighbors` retains its compatibility `depth` parameter but rejects every value except `1`; multi-hop traversal is not implemented and is no longer silently treated as a direct-neighbor query. The redundant static `zotero://collections` resource was removed because gateways exposed it as an extra `zotero_read_zotero_collections` callable beside `zotero_list_collections`. Parameterized item and collection-item resources remain available.
 

@@ -4,6 +4,7 @@ from zotero_mcp.tools import (  # noqa: F401
     annotations,
     claim_audit,
     connectors,
+    context,
     discovery,
     item_parent,
     read_pdf,
