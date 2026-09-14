@@ -14,6 +14,7 @@ EXPECTED_TOOL_NAMES = {
     "attach_file",
     "audit_pdf_coverage",
     "batch_edit_tags_and_extra",
+    "batch_get_item_metadata",
     "compile_annotation_digest",
     "create_annotation",
     "create_collection",
@@ -80,7 +81,7 @@ def test_complete_public_tool_name_contract():
         apply_toolsets(mcp, raw="all", transport="streamable-http")
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
         assert names == EXPECTED_TOOL_NAMES
-        assert len(names) == 63
+        assert len(names) == 64
         assert not any(name.startswith("zotero_") for name in names)
     finally:
         apply_toolsets(mcp, raw="all", transport="streamable-http")

@@ -79,8 +79,9 @@ This fork intentionally makes a breaking MCP API change. Ordinary raw tool names
 | `audit_claims` | `zotero_audit_claims` | Explicit bounded evidence-contract audit |
 | `read_passage` | `zotero_read_passage` | Expand a search evidence ID without another search |
 | `find_in_item` | `zotero_find_in_item` | Bounded literal lookup and source-window reading |
+| `batch_get_item_metadata` | `zotero_batch_get_item_metadata` | Metadata fan-out for shortlist screening in one call |
 
 See [bounded source context](bounded-context.md) for expansion contracts and the
 search display change from `Matched Passage` to `Preview`. These tools do not
 change embedding/index schemas. The complete registry is locked by
-`tests/test_tool_names.py` (63 registered tools).
+`tests/test_tool_names.py` (64 registered tools).
