@@ -112,6 +112,123 @@ def get_item_metadata(
         return f"Error fetching item metadata: {str(e)}"
 
 
+#: Upper bound on keys per batch metadata call. Metadata fan-outs are for
+#: shortlist screening, not library dumps — list_collection_items covers bulk
+#: enumeration with paging. The cap keeps a single response comfortably inside
+#: the output guard even with abstracts included.
+BATCH_METADATA_MAX_ITEMS = 50
+
+
+@mcp.tool(
+    name="batch_get_item_metadata",
+    description=(
+        "Fetch metadata for MULTIPLE Zotero items in one call — shortlist and "
+        "candidate screening without N separate get_item_metadata round-trips. "
+        "item_keys: list of 8-character Zotero item keys (NOT DOIs or titles); "
+        "duplicates collapse to the first occurrence and malformed keys are "
+        "reported, never aborting the batch. Capped at 50 keys per call; larger "
+        "lists are rejected with an instruction to split the request instead of "
+        "being silently truncated. "
+        "include_abstract=True (default) includes the abstractNote in each "
+        "markdown block. "
+        "Returns one markdown document: a summary line with fetched/failed "
+        "counts, then each item rendered exactly as get_item_metadata renders "
+        "it, separated by horizontal rules in request order, then a 'Failed "
+        "keys' section giving each unfetchable key with its reason (missing "
+        "item or fetch error). "
+        "Use it for abstract triage across a resolved shortlist or collection "
+        "inventory; use semantic_search or search_items for discovery, and "
+        "get_item_fulltext for full-paper reads (one item's full text is 10K+ "
+        "tokens — never batch that here)."
+    ),
+)
+@with_zotero_api_lock
+def batch_get_item_metadata(
+    item_keys: list[str],
+    include_abstract: bool = True,
+    *,
+    ctx: Context
+) -> str:
+    """
+    Fetch metadata for multiple Zotero items in one call.
+
+    Args:
+        item_keys: Zotero item keys to fetch (8-character keys, NOT DOIs or
+            titles). Duplicates collapse to the first occurrence.
+        include_abstract: Whether to include the abstract in each item's
+            markdown block.
+        ctx: MCP context
+
+    Returns:
+        One markdown document: a summary line, each fetched item rendered
+        exactly as ``get_item_metadata`` renders it (horizontal-rule
+        separated, request order), and a ``Failed keys`` section listing any
+        unfetchable key with its reason. Per-key failures never abort the
+        batch.
+    """
+    _ret_logger = _logging.getLogger("zotero_mcp.retrieval")
+
+    seen: set[str] = set()
+    keys: list[str] = []
+    malformed: list[str] = []
+    for raw in item_keys or []:
+        key = str(raw).strip()
+        if len(key) != 8 or not key.isalnum():
+            malformed.append(key)
+            continue
+        if key not in seen:
+            seen.add(key)
+            keys.append(key)
+
+    if not keys and not malformed:
+        return (
+            "Error: batch_get_item_metadata requires a non-empty item_keys "
+            "list of 8-character Zotero item keys."
+        )
+    if len(keys) > BATCH_METADATA_MAX_ITEMS:
+        return (
+            f"Error: {len(keys)} valid keys requested; "
+            f"batch_get_item_metadata is capped at {BATCH_METADATA_MAX_ITEMS} "
+            "items per call. Split the request into smaller batches."
+        )
+
+    ctx.info(f"Fetching metadata for {len(keys)} items (batch)")
+    zot = _client.get_zotero_client()
+
+    t0 = _time.monotonic()
+    blocks: list[str] = []
+    failed: list[str] = []
+    for key in keys:
+        try:
+            item = zot.item(key)
+            if not item:
+                failed.append(f"- {key}: no item found with this key")
+                continue
+            blocks.append(_client.format_item_metadata(item, include_abstract))
+        except Exception as e:
+            _ret_logger.debug(f"[METADATA] batch item {key} failed: {e}")
+            failed.append(f"- {key}: {e}")
+    _ret_logger.debug(
+        f"[METADATA] batch of {len(keys)} keys: {_time.monotonic() - t0:.2f}s"
+    )
+
+    lines: list[str] = [
+        f"# Batch item metadata: {len(blocks)} fetched, {len(failed)} failed"
+    ]
+    if malformed:
+        quoted = ", ".join(f"`{k}`" for k in malformed)
+        lines.append(
+            "Malformed keys ignored (must be 8 alphanumeric characters): "
+            + quoted
+        )
+    if blocks:
+        lines.append("\n\n---\n\n".join(blocks))
+    if failed:
+        lines.append("## Failed keys")
+        lines.extend(failed)
+    return "\n\n".join(lines)
+
+
 @mcp.tool(
     name="get_item_fulltext",
     description=(
