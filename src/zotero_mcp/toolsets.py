@@ -106,6 +106,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
         {
             "detect_pdf_regions",
             "get_pdf_outline",
+            "render_pdf_page",
         }
     ),
     # The ChatGPT deep-research connector contract, which requires tools named

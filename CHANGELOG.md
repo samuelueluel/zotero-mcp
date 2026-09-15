@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Bounded PDF evidence (Samuel fork):** core `find_in_pdf` searches the authoritative PDF text layer with literal, case-insensitive matching, one-based PDF-page provenance, exact match accounting, verbatim bounded windows, and explicit complete/partial/no-usable-text coverage. The default-on `render_pdf_page` tool returns one actual PNG image block for a full page or normalized region, with matching provenance and explicit DPI/pixel/encoded-size limits. Both accept parent or attachment keys, avoid sidecars and indexes, and preserve local Zotero files. See [bounded context](docs/bounded-context.md) for the escalation path and contracts.
+
 - **Bounded source expansion (Samuel fork):** core `read_passage` expands a search evidence ID into the stored chunk and optional same-item neighbors, with source hashes, stale-evidence rejection, library checks, a total text budget, and continuation offsets. Core `find_in_item` provides literal lookup and line/character-window reading over existing personal-library MinerU sidecars. Neither tool runs embeddings, reranking, OCR, downloads, or index recovery. See [bounded context](docs/bounded-context.md) for limits and provenance.
 
 ### Changed

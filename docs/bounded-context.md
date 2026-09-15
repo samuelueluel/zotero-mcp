@@ -104,7 +104,23 @@ This is the MCP equivalent of bounded known-item `grep`/`sed`, not corpus search
 
 A successful literal lookup is direct extracted-source evidence, not a new
 positive reranker score. Cite its line range, not a fabricated PDF page. For exact
-visual/table verification, use the existing PDF-page reader with a known locator.
+text verification, use the PDF-page reader with a known locator; for visual/table
+verification, use `render_pdf_page` with that locator.
+
+## Locate exact PDF text and inspect visual evidence
+
+Use the narrowest route that answers the evidence question:
+
+1. Discover a candidate passage with `semantic_search` or another bounded lookup.
+2. For a known item's PDF, call `find_in_pdf` when the exact phrase, table label, or heading needs a verified PDF-page locator.
+3. Call `read_pdf_pages` for the targeted one-based PDF page when the extracted page text is the evidence needed.
+4. Call `render_pdf_page` only when unresolved visual ambiguity remains—for example column alignment, a missing sign, a table layout, or a figure. It returns one actual PNG image block plus provenance; coordinates, extracted text, and generated descriptions are not image inspection.
+
+`find_in_pdf` accepts a parent item key or PDF attachment key. It uses only the authoritative `extract_pdf` text layer: matching is literal and case-insensitive, query whitespace spans source whitespace, and no fuzzy, semantic, OCR, sidecar, or neighboring-page substitution occurs. It searches the complete requested one-based PDF range even when output is capped. Results report the extraction engine, page basis, exact total and returned counts, `has_more_matches`, and verbatim page-text windows. The coverage state is `complete`, `partial_text_coverage`, or `no_usable_text`; a no-match on an incomplete text layer is not evidence of absence.
+
+`render_pdf_page` accepts the same key forms, a one-based PDF page, and an optional normalized `[x, y, width, height]` region compatible with `detect_pdf_regions`. It returns a FastMCP `ToolResult` containing one provenance text block, one `image/png` `ImageContent` block, and matching structured provenance. It renders in memory, enforces page/DPI/pixel/PNG bounds, rejects invalid coordinates rather than repairing them, and never changes a local Zotero attachment.
+
+All three PDF routes are read-only. They do not create sidecars, alter chunking or indexes, run OCR, or infer printed page labels from PDF page indices. Keep the actual PDF-page locator attached to any source claim; sidecar lines, indexed offsets, and printed labels remain distinct locations.
 
 ## Errors and compatibility
 

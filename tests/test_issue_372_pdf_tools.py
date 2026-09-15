@@ -15,6 +15,7 @@ segfault cannot be caught in-process — it takes the server down with it,
 so the call now runs in a child process that is allowed to die.
 """
 
+import json
 import sqlite3
 import sys
 import types
@@ -218,6 +219,23 @@ class TestReadPdfPagesWithAttachmentKey:
 
         assert "No PDF attachment found" not in result
         assert "Attachment page one." in result
+
+    def test_find_in_pdf_reads_attachment_key(self, monkeypatch, tmp_path, fake_zot):
+        db_path, _ = make_library(tmp_path)
+        use_local_library(monkeypatch, db_path, fake_zot)
+        patch_extract(monkeypatch, text="Attachment needle.")
+
+        result = json.loads(
+            server.find_in_pdf(
+                item_key=ATTACHMENT_KEY,
+                query="needle",
+                ctx=DummyContext(),
+            )
+        )
+
+        assert result["ok"] is True
+        assert result["matches"][0]["page"] == 1
+        assert result["matches"][0]["match_text"] == "needle"
 
     def test_web_mode_downloads_the_attachment_itself(self, monkeypatch, tmp_path):
         """Web-API fallback: an attachment key downloads that attachment."""

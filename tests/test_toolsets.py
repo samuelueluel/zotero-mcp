@@ -140,6 +140,24 @@ class TestApplyToolsets:
         finally:
             apply_toolsets(mcp, raw="all", transport="streamable-http")
 
+    def test_pdf_evidence_tool_visibility(self):
+        from zotero_mcp.server import mcp
+
+        def listed() -> set[str]:
+            return {t.name for t in asyncio.run(mcp.list_tools())}
+
+        try:
+            apply_toolsets(mcp, raw="none", transport="stdio")
+            core_only = listed()
+            assert "find_in_pdf" in core_only
+            assert "render_pdf_page" not in core_only
+
+            apply_toolsets(mcp, raw=None, transport="stdio")
+            default = listed()
+            assert {"find_in_pdf", "render_pdf_page"} <= default
+        finally:
+            apply_toolsets(mcp, raw="all", transport="streamable-http")
+
     def test_default_profile_is_smaller_than_full_surface(self):
         from zotero_mcp.server import mcp
 

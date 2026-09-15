@@ -83,7 +83,7 @@ selected explicitly by the pinned installation configuration.
 - Extract and search PDF annotations with page numbers
 - Access Zotero's native annotations
 - Create and update notes and annotations
-- Extract PDF table of contents / outlines (requires `[pdf]` extra)
+- Extract PDF table of contents / outlines, find literal text on verified PDF pages, and render one page or normalized region as an actual image (requires `[pdf]` extra)
 
 ### ✏️ Write Operations
 - **Add papers by DOI** with auto-fetched metadata and open-access PDF cascade (Unpaywall, arXiv, Semantic Scholar, PMC)
@@ -121,11 +121,11 @@ Why it matters: an MCP server sends **every tool's schema on every request**, be
 
 | Route | In context | Paid |
 |---|---:|---|
-| MCP server, default profile (38 tools) | **13,448** | every request |
+| MCP server, default profile (51 tools) | **19,742** | every request |
 | Agent skill, frontmatter only | **98** | always |
-| Agent skill, body loaded | 1,368 | when it fires |
+| Agent skill, body loaded | 1,413 | when it fires |
 
-~137x cheaper before either is used, ~10x once the skill has fired. Re-measure any time with `python scripts/measure_context_cost.py`. This is the fixed context cost only — it does not measure task success or round trips, and a cheaper surface that gets the answer wrong is not cheaper. [Details below](#-agent-skill-one-command-for-any-harness).
+~201x cheaper before either is used, ~14x once the skill has fired. Re-measure any time with `python scripts/measure_context_cost.py`. This is the fixed context cost only — it does not measure task success or round trips, and a cheaper surface that gets the answer wrong is not cheaper. [Details below](#-agent-skill-one-command-for-any-harness).
 
 Both routes work, and they share one config. Use the MCP server when your client speaks MCP but has no shell (Claude Desktop, ChatGPT); use the skill when it has a shell.
 
@@ -631,12 +631,12 @@ The MCP server sends every enabled tool's name, description and JSON parameter s
 
 | Route | Tokens in context | When it is paid |
 |---|---:|---|
-| MCP, default profile (38 tools) | 13,448 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=none` (32 tools) | 11,761 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=all` (50 tools) | 17,414 | every request |
+| MCP, default profile (51 tools) | 19,742 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=none` (44 tools) | 17,658 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=all` (63 tools) | 23,789 | every request |
 | CLI skill, frontmatter only | 98 | always |
-| CLI skill, body loaded | 1,368 | once the skill fires |
-| CLI skill + full command reference | 4,389 | worst case |
+| CLI skill, body loaded | 1,413 | once the skill fires |
+| CLI skill + full command reference | 4,595 | worst case |
 
 That is the *fixed* cost only. It does not measure task success, output size, or how many round trips each route takes to finish a job — a cheaper surface that gets the answer wrong is not cheaper. Numbers are `cl100k_base` tokens and are re-measured, not estimated; `tests/test_context_cost_claim.py` fails if the relationship stops holding.
 

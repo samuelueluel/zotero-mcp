@@ -1,5 +1,6 @@
-"""Tests for read_pdf_pages tool."""
+"""Tests for bounded PDF tools."""
 
+import json
 import tempfile
 
 import pytest
@@ -241,6 +242,48 @@ class TestEdgeCases:
 
         assert "[No extractable text on this page]" in result
         assert "has text" in result
+
+
+class TestFindInPdf:
+    """The literal PDF lookup stays on the direct extraction seam."""
+
+    def test_search_returns_one_based_pages_and_exact_counts(self, monkeypatch, dummy_ctx, fake_zot):
+        _patch_extract(monkeypatch, ["before Needle after", "needle again"], total=2)
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", False),
+        )
+
+        result = json.loads(
+            server.find_in_pdf(
+                item_key="ITEM01",
+                query="needle",
+                start_page=1,
+                end_page=2,
+                max_matches=1,
+                context_chars=0,
+                ctx=dummy_ctx,
+            )
+        )
+
+        assert result["route"] == "pdf_extraction"
+        assert result["page_range"] == {"start": 1, "end": 2}
+        assert result["total_matches"] == 2
+        assert result["returned_matches"] == 1
+        assert result["has_more_matches"] is True
+        assert result["matches"][0]["page"] == 1
+
+    def test_invalid_query_is_rejected_before_source_lookup(self, monkeypatch, dummy_ctx):
+        called = []
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda *_args: called.append(True),
+        )
+        result = json.loads(
+            server.find_in_pdf(item_key="ITEM01", query="  ", ctx=dummy_ctx)
+        )
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+        assert called == []
 
 
 class TestCleanupPathSafety:

@@ -38,6 +38,7 @@ This fork intentionally makes a breaking MCP API change. Ordinary raw tool names
 | `core` | `zotero_manage_note` | `manage_note` | `zotero_manage_note` |
 | `core` | `zotero_get_collection_hubs` | `rank_works_by_inbound_citations` | `zotero_rank_works_by_inbound_citations` |
 | `core` | `zotero_read_pdf_pages` | `read_pdf_pages` | `zotero_read_pdf_pages` |
+| `core` | `zotero_find_in_pdf` | `find_in_pdf` | `zotero_find_in_pdf` |
 | `core` | `zotero_rebuild_citation_graph` | `rebuild_citation_graph` | `zotero_rebuild_citation_graph` |
 | `core` | `zotero_rebuild_reference_index` | `rebuild_reference_index` | `zotero_rebuild_reference_index` |
 | `core` | `zotero_resolve_exact_source` | `resolve_exact_source` | `zotero_resolve_exact_source` |
@@ -57,6 +58,7 @@ This fork intentionally makes a breaking MCP API change. Ordinary raw tool names
 | `search-admin` | `zotero_update_search_database` | `update_semantic_index` | `zotero_update_semantic_index` |
 | `pdf-geometry` | `zotero_get_page_layout` | `detect_pdf_regions` | `zotero_detect_pdf_regions` |
 | `pdf-geometry` | `zotero_get_pdf_outline` | `get_pdf_outline` | `zotero_get_pdf_outline` |
+| `pdf-geometry` | `zotero_render_pdf_page` | `render_pdf_page` | `zotero_render_pdf_page` |
 | `discovery` | `zotero_library_coverage` | `audit_pdf_coverage` | `zotero_audit_pdf_coverage` |
 | `discovery` | `zotero_find_related_papers` | `discover_citing_and_referenced_works` | `zotero_discover_citing_and_referenced_works` |
 | `duplicates` | `zotero_find_duplicates` | `find_duplicate_items` | `zotero_find_duplicate_items` |
@@ -83,4 +85,4 @@ This fork intentionally makes a breaking MCP API change. Ordinary raw tool names
 See [bounded source context](bounded-context.md) for expansion contracts and the
 search display change from `Matched Passage` to `Preview`. These tools do not
 change embedding/index schemas. The complete registry is locked by
-`tests/test_tool_names.py` (63 registered tools).
+`tests/test_tool_names.py` (65 registered tools).

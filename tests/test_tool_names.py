@@ -27,6 +27,7 @@ EXPECTED_TOOL_NAMES = {
     "find_bibliographically_coupled_papers",
     "find_duplicate_items",
     "find_in_item",
+    "find_in_pdf",
     "find_item_by_citation_key",
     "get_annotations",
     "get_attachment_paths",
@@ -51,6 +52,7 @@ EXPECTED_TOOL_NAMES = {
     "rank_works_by_inbound_citations",
     "read_pdf_pages",
     "read_passage",
+    "render_pdf_page",
     "rebuild_citation_graph",
     "rebuild_reference_index",
     "remove_item_relation",
@@ -80,7 +82,7 @@ def test_complete_public_tool_name_contract():
         apply_toolsets(mcp, raw="all", transport="streamable-http")
         names = {tool.name for tool in asyncio.run(mcp.list_tools())}
         assert names == EXPECTED_TOOL_NAMES
-        assert len(names) == 63
+        assert len(names) == 65
         assert not any(name.startswith("zotero_") for name in names)
     finally:
         apply_toolsets(mcp, raw="all", transport="streamable-http")

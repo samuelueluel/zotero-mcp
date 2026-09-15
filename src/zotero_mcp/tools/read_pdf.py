@@ -1,15 +1,42 @@
-"""Tool for reading specific page ranges from PDF attachments."""
+"""Tools for bounded PDF text evidence and page-image rendering."""
 
+from __future__ import annotations
+
+import base64
+import json
 import os
 import tempfile
+from typing import Any
 
 from fastmcp import Context
+from fastmcp.tools.base import ToolResult
+from mcp.types import ImageContent, TextContent
 
 from zotero_mcp import client as _client
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
+from zotero_mcp.client import ZoteroApiBusyError, zotero_api_lock
 from zotero_mcp.config import load_config
 from zotero_mcp.extract import extract_pdf, pdf_page_count
+from zotero_mcp.pdf_evidence import (
+    DEFAULT_PDF_MATCH_CONTEXT_CHARS,
+    DEFAULT_PDF_RENDER_DPI,
+    DEFAULT_PDF_SEARCH_MAX_CHARS,
+    DEFAULT_PDF_SEARCH_MAX_MATCHES,
+    MAX_PDF_SEARCH_MAX_CHARS,
+    MAX_PDF_SEARCH_MAX_MATCHES,
+    MAX_PDF_SEARCH_PAGES,
+    MIN_PDF_SEARCH_MAX_CHARS,
+    PdfEvidenceInputError,
+    PdfEvidenceLimitError,
+    classify_text_coverage,
+    compile_literal_pattern,
+    find_literal_matches,
+    render_page_to_png,
+    validate_normalized_region,
+    validate_region_padding,
+    validate_render_dpi,
+)
 from zotero_mcp.tools import _helpers
 
 _TMPDIR_PREFIX = "zotero_pdf_"
@@ -137,6 +164,316 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
 
     _cleanup_path(probe)
     return None
+
+
+def _pdf_json_error(code: str, message: str) -> str:
+    """Return the bounded error envelope used by the source lookup tools."""
+    return json.dumps(
+        {"ok": False, "error": {"code": code, "message": message}},
+        ensure_ascii=False,
+    )
+
+
+def _validate_search_page_range(
+    start_page: Any,
+    end_page: Any,
+    total_pages: int,
+) -> tuple[int, int]:
+    """Validate a one-based, contiguous PDF page range without truncation."""
+    if isinstance(start_page, bool) or not isinstance(start_page, int):
+        raise PdfEvidenceInputError(
+            "start_page must be a positive 1-indexed PDF page number."
+        )
+    if start_page < 1 or start_page > total_pages:
+        raise PdfEvidenceInputError(
+            f"start_page {start_page} is out of range; PDF has {total_pages} pages."
+        )
+    if end_page is None:
+        actual_end = total_pages
+    else:
+        if isinstance(end_page, bool) or not isinstance(end_page, int):
+            raise PdfEvidenceInputError(
+                "end_page must be a positive 1-indexed PDF page number."
+            )
+        if end_page < start_page:
+            raise PdfEvidenceInputError(
+                "end_page must be greater than or equal to start_page."
+            )
+        if end_page > total_pages:
+            raise PdfEvidenceInputError(
+                f"end_page {end_page} is out of range; PDF has {total_pages} pages."
+            )
+        actual_end = end_page
+
+    span = actual_end - start_page + 1
+    if span > MAX_PDF_SEARCH_PAGES:
+        raise PdfEvidenceLimitError(
+            f"requested page range contains {span} pages; the limit is "
+            f"{MAX_PDF_SEARCH_PAGES}. Narrow the page range."
+        )
+    return start_page, actual_end
+
+
+def _pdf_source_route(is_temp: bool) -> str:
+    """Describe how the resolved PDF reached the read-only processing path."""
+    return "downloaded_pdf" if is_temp else "local_storage_pdf"
+
+
+def _parse_region_argument(region: list[float] | str | None) -> list[float] | None:
+    """Accept arrays and JSON-stringified arrays from MCP clients."""
+    if isinstance(region, str):
+        try:
+            region = json.loads(region)
+        except json.JSONDecodeError as exc:
+            raise PdfEvidenceInputError(
+                "region must be a JSON array [x, y, width, height]."
+            ) from exc
+    if region is not None and not isinstance(region, list):
+        raise PdfEvidenceInputError(
+            "region must be null or [x, y, width, height]."
+        )
+    return region
+
+
+@mcp.tool(
+    name="find_in_pdf",
+    description=(
+        "Find a literal, case-insensitive phrase in the PDF text layer for a Zotero item or PDF "
+        "attachment and return bounded verbatim windows. Parent and attachment keys both work. "
+        "Whitespace in the query spans source whitespace; special characters are literal — no regex, "
+        "fuzzy, semantic, OCR, sidecar, or neighboring-page search. Pages are one-based PDF pages, "
+        "not printed labels or indexed offsets. Searches the complete requested range and reports exact "
+        "match accounting plus complete/partial/no-usable-text coverage. max_matches is 1–10; "
+        "max_chars is 256–16000; a range over 50 pages is rejected."
+    ),
+)
+def find_in_pdf(
+    item_key: str,
+    query: str,
+    start_page: int = 1,
+    end_page: int | None = None,
+    max_matches: int = DEFAULT_PDF_SEARCH_MAX_MATCHES,
+    max_chars: int = DEFAULT_PDF_SEARCH_MAX_CHARS,
+    context_chars: int = DEFAULT_PDF_MATCH_CONTEXT_CHARS,
+    *,
+    ctx: Context,
+) -> str:
+    """Search a bounded PDF page range using the authoritative text extractor."""
+    pdf_path: str | None = None
+    is_temp = False
+    try:
+        if not isinstance(item_key, str) or not item_key.strip():
+            return _pdf_json_error("INVALID_ARGUMENT", "item_key cannot be empty.")
+
+        # Validate limits before touching Zotero so bad requests do not cause
+        # an unnecessary API/download operation.
+        if isinstance(max_matches, bool) or not isinstance(max_matches, int):
+            raise PdfEvidenceInputError("max_matches must be an integer between 1 and 10.")
+        if not 1 <= max_matches <= MAX_PDF_SEARCH_MAX_MATCHES:
+            raise PdfEvidenceLimitError(
+                f"max_matches must be between 1 and {MAX_PDF_SEARCH_MAX_MATCHES}."
+            )
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int):
+            raise PdfEvidenceInputError(
+                f"max_chars must be an integer between {MIN_PDF_SEARCH_MAX_CHARS} and "
+                f"{MAX_PDF_SEARCH_MAX_CHARS}."
+            )
+        if not MIN_PDF_SEARCH_MAX_CHARS <= max_chars <= MAX_PDF_SEARCH_MAX_CHARS:
+            raise PdfEvidenceLimitError(
+                f"max_chars must be between {MIN_PDF_SEARCH_MAX_CHARS} and "
+                f"{MAX_PDF_SEARCH_MAX_CHARS}."
+            )
+        if isinstance(context_chars, bool) or not isinstance(context_chars, int):
+            raise PdfEvidenceInputError("context_chars must be an integer.")
+
+        compile_literal_pattern(query)
+        ctx.info(f"Searching PDF text for item {item_key}")
+
+        # Only source resolution/download uses the API lock. Extraction and
+        # matching happen after it is released.
+        with zotero_api_lock():
+            result = _get_pdf_path(item_key, ctx)
+        if result is None:
+            return _pdf_json_error(
+                "PDF_NOT_FOUND", f"No PDF attachment found for item: {item_key}"
+            )
+        pdf_path, title, is_temp = result
+        source_is_temp = is_temp
+
+        try:
+            total_pages = pdf_page_count(pdf_path)
+            start, end = _validate_search_page_range(
+                start_page, end_page, total_pages
+            )
+            doc = extract_pdf(pdf_path, pages=list(range(start - 1, end)))
+            evidence = find_literal_matches(
+                doc,
+                query,
+                max_matches=max_matches,
+                max_chars=max_chars,
+                context_chars=context_chars,
+            )
+            coverage = classify_text_coverage(doc)
+        finally:
+            if is_temp:
+                _cleanup_path(pdf_path)
+                is_temp = False
+
+        total_matches = evidence["total_matches"]
+        payload = {
+            "ok": True,
+            "item_key": item_key,
+            "title": str(title or ""),
+            "query": query,
+            "route": "pdf_extraction",
+            "source_route": _pdf_source_route(source_is_temp),
+            "extraction_route": "direct_pdf_text",
+            "extraction_engine": "pdf-inspector",
+            "page_basis": (
+                "one-based PDF pages; distinct from printed labels, MinerU sidecar lines, "
+                "and indexed offsets"
+            ),
+            "page_range": {"start": start, "end": end},
+            "searched_page_range": [start, end],
+            "total_pages": total_pages,
+            "coverage": coverage["state"],
+            "text_layer_coverage": coverage,
+            "total_matches": total_matches,
+            "returned_matches": evidence["returned_matches"],
+            "has_more_matches": evidence["has_more_matches"],
+            "matches": evidence["matches"],
+            "offset_basis": "zero-based characters within each extracted PDF page; end exclusive",
+            "returned_excerpt_chars": evidence["source_chars_returned"],
+        }
+        if total_matches == 0:
+            if coverage["state"] == "complete":
+                payload["message"] = (
+                    "No literal matches found in the extracted text for the requested pages."
+                )
+            else:
+                payload["message"] = (
+                    "No literal matches found in usable extracted text; the requested pages have "
+                    f"{coverage['state']} and absence cannot be established for pages without usable text."
+                )
+        return json.dumps(payload, ensure_ascii=False)
+
+    except ZoteroApiBusyError:
+        raise
+    except (PdfEvidenceInputError, PdfEvidenceLimitError) as exc:
+        if is_temp and pdf_path:
+            _cleanup_path(pdf_path)
+        return _pdf_json_error("INVALID_ARGUMENT", str(exc))
+    except Exception as exc:
+        if is_temp and pdf_path:
+            _cleanup_path(pdf_path)
+        ctx.error(f"Bounded PDF lookup failed: {exc}")
+        return _pdf_json_error("SOURCE_UNAVAILABLE", f"Could not search the PDF text: {exc}")
+
+
+@mcp.tool(
+    name="render_pdf_page",
+    description=(
+        "Render exactly one PDF page or one normalized region as actual PNG image content for "
+        "visual evidence inspection. Parent and PDF attachment keys both work. page is a one-based "
+        "PDF page, distinct from printed labels and indexed offsets; region is [x, y, width, height] "
+        "in [0, 1] using the visible page and detect_pdf_regions coordinate system. Optional padding "
+        "is normalized page-relative and bounded. dpi, pixel, and PNG-size limits are explicit: "
+        "oversized requests fail rather than being silently downscaled. Requires PyMuPDF."
+    ),
+)
+def render_pdf_page(
+    item_key: str,
+    page: int,
+    region: list[float] | str | None = None,
+    padding: float = 0,
+    dpi: int = DEFAULT_PDF_RENDER_DPI,
+    *,
+    ctx: Context,
+) -> Any:
+    """Render one page or normalized region and return a FastMCP image result."""
+    pdf_path: str | None = None
+    is_temp = False
+    try:
+        if not isinstance(item_key, str) or not item_key.strip():
+            return "Error: item_key cannot be empty."
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            return "Error: page must be a positive 1-indexed PDF page number."
+        region = _parse_region_argument(region)
+        validate_normalized_region(region)
+        validate_region_padding(padding)
+        validate_render_dpi(dpi)
+        ctx.info(f"Rendering PDF page {page} for item {item_key}")
+
+        # Resolve/download while the API lock is held, then release it before
+        # PyMuPDF opens or rasterizes the file.
+        with zotero_api_lock():
+            result = _get_pdf_path(item_key, ctx)
+        if result is None:
+            return f"Error: No PDF attachment found for item: {item_key}"
+        pdf_path, title, is_temp = result
+        source_is_temp = is_temp
+
+        try:
+            rendered = render_page_to_png(
+                pdf_path,
+                page,
+                region=region,
+                padding=padding,
+                dpi=dpi,
+            )
+        finally:
+            if is_temp:
+                _cleanup_path(pdf_path)
+                is_temp = False
+
+        provenance = {
+            "ok": True,
+            "item_key": item_key,
+            "title": str(title or ""),
+            "route": "pdf_rendering",
+            "source_route": _pdf_source_route(source_is_temp),
+            "page_basis": (
+                "one-based PDF pages; distinct from printed labels, MinerU sidecar lines, "
+                "and indexed offsets"
+            ),
+            "page": rendered.page,
+            "dpi": rendered.dpi,
+            "requested_region": rendered.requested_region,
+            "rendered_region": rendered.rendered_region,
+            "padding": float(padding),
+            "width": rendered.width,
+            "height": rendered.height,
+            "image_width": rendered.width,
+            "image_height": rendered.height,
+            "pixels": rendered.pixels,
+            "mime_type": "image/png",
+            "encoded_bytes": len(rendered.png),
+        }
+        text = "PDF image provenance:\n" + json.dumps(
+            provenance, ensure_ascii=False, sort_keys=True
+        )
+        return ToolResult(
+            content=[
+                TextContent(type="text", text=text),
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(rendered.png).decode("ascii"),
+                    mimeType="image/png",
+                ),
+            ],
+            structured_content=provenance,
+        )
+    except ZoteroApiBusyError:
+        raise
+    except (PdfEvidenceInputError, PdfEvidenceLimitError) as exc:
+        if is_temp and pdf_path:
+            _cleanup_path(pdf_path)
+        return f"Error: {exc}"
+    except Exception as exc:
+        if is_temp and pdf_path:
+            _cleanup_path(pdf_path)
+        ctx.error(f"PDF image rendering failed: {exc}")
+        return f"Error rendering PDF page: {exc}"
 
 
 @mcp.tool(

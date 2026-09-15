@@ -72,7 +72,9 @@ from zotero_mcp.tools.connectors import (  # noqa: F401
     connector_fetch,
 )
 from zotero_mcp.tools.read_pdf import (  # noqa: F401
+    find_in_pdf,
     read_pdf_pages,
+    render_pdf_page,
 )
 from zotero_mcp.tools.retrieval import (  # noqa: F401
     get_collection_items,
