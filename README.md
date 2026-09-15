@@ -121,11 +121,11 @@ Why it matters: an MCP server sends **every tool's schema on every request**, be
 
 | Route | In context | Paid |
 |---|---:|---|
-| MCP server, default profile (51 tools) | **19,742** | every request |
+| MCP server, default profile (54 tools) | **21,662** | every request |
 | Agent skill, frontmatter only | **98** | always |
 | Agent skill, body loaded | 1,413 | when it fires |
 
-~201x cheaper before either is used, ~14x once the skill has fired. Re-measure any time with `python scripts/measure_context_cost.py`. This is the fixed context cost only — it does not measure task success or round trips, and a cheaper surface that gets the answer wrong is not cheaper. [Details below](#-agent-skill-one-command-for-any-harness).
+~221x cheaper before either is used, ~14x once the skill has fired. Re-measure any time with `python scripts/measure_context_cost.py`. This is the fixed context cost only — it does not measure task success or round trips, and a cheaper surface that gets the answer wrong is not cheaper. [Details below](#-agent-skill-one-command-for-any-harness).
 
 Both routes work, and they share one config. Use the MCP server when your client speaks MCP but has no shell (Claude Desktop, ChatGPT); use the skill when it has a shell.
 
@@ -631,9 +631,9 @@ The MCP server sends every enabled tool's name, description and JSON parameter s
 
 | Route | Tokens in context | When it is paid |
 |---|---:|---|
-| MCP, default profile (51 tools) | 19,742 | every request |
+| MCP, default profile (54 tools) | 21,662 | every request |
 | MCP, `ZOTERO_MCP_TOOLSETS=none` (44 tools) | 17,658 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=all` (63 tools) | 23,789 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=all` (66 tools) | 25,709 | every request |
 | CLI skill, frontmatter only | 98 | always |
 | CLI skill, body loaded | 1,413 | once the skill fires |
 | CLI skill + full command reference | 4,595 | worst case |

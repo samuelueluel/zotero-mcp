@@ -8,6 +8,7 @@ from zotero_mcp.tools import (  # noqa: F401
     discovery,
     item_parent,
     read_pdf,
+    research,
     retrieval,
     search,
     synthesis,

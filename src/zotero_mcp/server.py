@@ -48,7 +48,6 @@ from zotero_mcp.tools._helpers import (  # noqa: F401
     _try_semantic_scholar,
     _try_unpaywall,
 )
-from zotero_mcp.tools.claim_audit import audit_claims  # noqa: F401
 from zotero_mcp.tools.annotations import (  # noqa: F401
     _batch_resolve_parent_titles,
     _format_search_results,
@@ -58,15 +57,16 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     create_note,
     delete_annotation,
     delete_note,
+    detect_pdf_regions,
     get_annotations,
     get_notes,
     get_notes_tool,
-    detect_pdf_regions,
     manage_note,
     search_notes,
     update_annotation,
     update_note,
 )
+from zotero_mcp.tools.claim_audit import audit_claims  # noqa: F401
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,
     connector_fetch,
@@ -76,6 +76,11 @@ from zotero_mcp.tools.read_pdf import (  # noqa: F401
     read_pdf_pages,
     render_pdf_page,
 )
+from zotero_mcp.tools.research import (  # noqa: F401
+    build_candidate_scope,
+    collect_result_evidence,
+    validate_evidence_bundle,
+)
 from zotero_mcp.tools.retrieval import (  # noqa: F401
     get_collection_items,
     get_collections,
@@ -83,22 +88,22 @@ from zotero_mcp.tools.retrieval import (  # noqa: F401
     get_item_children,
     get_item_fulltext,
     get_item_metadata,
-    list_related_items,
-    list_recent_items,
     get_tags,
     list_feeds,
     list_libraries,
+    list_recent_items,
+    list_related_items,
     switch_library,
     validate_library_switch,
 )
 
 # -- Re-export tool functions (used by tests as server.func_name) -----------
 from zotero_mcp.tools.search import (  # noqa: F401
-    search_items_advanced,
-    get_semantic_index_status,
     find_item_by_citation_key,
-    search_items_by_tag,
+    get_semantic_index_status,
     search_items,
+    search_items_advanced,
+    search_items_by_tag,
     semantic_search,
     update_semantic_index,
 )
@@ -120,13 +125,12 @@ from zotero_mcp.tools.write import (  # noqa: F401
     delete_item,
     find_duplicate_items,
     get_pdf_outline,
-    set_item_collections,
     merge_duplicate_items,
     remove_item_relation,
     search_collections,
+    set_item_collections,
     update_item,
 )
-
 from zotero_mcp.toolsets import apply_toolsets
 from zotero_mcp.utils import (  # noqa: F401
     clean_html,

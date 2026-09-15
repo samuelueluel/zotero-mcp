@@ -92,6 +92,15 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "switch_library",
         }
     ),
+    # Bounded multi-step research helpers. These preserve the raw evidence
+    # routes while reducing repeated discovery, lookup, and bookkeeping calls.
+    "research-workflows": frozenset(
+        {
+            "build_candidate_scope",
+            "collect_result_evidence",
+            "validate_evidence_bundle",
+        }
+    ),
     # Semantic-index administration. The same operations are available from
     # the CLI (``zotero-mcp update-db``), so agent access is a convenience.
     "search-admin": frozenset(
@@ -125,6 +134,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
 DEFAULT_ON: frozenset[str] = frozenset(
     {
         "libraries",
+        "research-workflows",
         "search-admin",
         "pdf-geometry",
     }
