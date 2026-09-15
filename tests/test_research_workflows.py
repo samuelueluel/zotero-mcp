@@ -58,10 +58,12 @@ def _hit(key: str, title: str, *, rerank: float | None, chunk: int, reference: b
 
 
 def _inventory():
+    first = _item(ITEM, "First")
+    first["has_pdf"] = True
     return {
         "collection_name": "Project",
         "collection_keys": [COLLECTION, "SUBC0001"],
-        "items": [_item(ITEM, "First"), _item(OTHER, "Second")],
+        "items": [first, _item(OTHER, "Second")],
     }
 
 
@@ -92,6 +94,7 @@ def test_candidate_scope_deduplicates_retains_facets_and_sorts_by_positive_reran
     assert [row["item_key"] for row in result["candidates"]] == [ITEM, OTHER]
     leader = result["candidates"][0]
     assert leader["facet_count"] == 2
+    assert leader["has_pdf"] is True
     assert leader["max_positive_rerank"] == pytest.approx(3.0)
     assert len(leader["hits"]) == 2
     assert all(hit["evidence_id"].startswith("zr1:") for hit in leader["hits"])

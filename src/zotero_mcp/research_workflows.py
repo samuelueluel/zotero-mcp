@@ -104,11 +104,17 @@ def _candidate_metadata(
     inventory_by_key: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     key = _item_key(result.get("item_key"))
+    inventory = dict(inventory_by_key.get(key) or {"item_key": key})
     zotero_item = result.get("zotero_item")
     if isinstance(zotero_item, Mapping):
-        compact = compact_inventory_item(zotero_item)
+        hydrated = compact_inventory_item(zotero_item)
+        compact = {**inventory, **hydrated}
+        # Attachment/note flags come from the complete collection inventory;
+        # semantic result hydration returns only the parent metadata record.
+        compact["has_pdf"] = bool(inventory.get("has_pdf"))
+        compact["has_notes"] = bool(inventory.get("has_notes"))
     else:
-        compact = dict(inventory_by_key.get(key) or {"item_key": key})
+        compact = inventory
     compact["item_key"] = key
     source_group = result.get("source_group")
     if source_group:
