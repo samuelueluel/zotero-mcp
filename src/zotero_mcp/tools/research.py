@@ -286,10 +286,11 @@ def _read_sidecar_record(
 ) -> dict[str, Any]:
     from zotero_mcp.tools.context import find_in_item
 
+    context_lines = 10 if query and "table" in query.casefold() else 3
     raw = find_in_item(
         item_key=item_key,
         query=query,
-        context_lines=1,
+        context_lines=context_lines,
         max_matches=3,
         max_chars=max_chars,
         expected_hash=expected_hash,

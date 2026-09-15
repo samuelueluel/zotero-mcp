@@ -452,7 +452,16 @@ def _conflict_flags(
                     "conflicts": sign_conflicts,
                 }
             )
-        star_keys = set(side_sig["stars"]).union(pdf_sig["stars"])
+        # Significance markers are meaningful only when both route windows
+        # contain the same estimate-like numeric magnitude. Restrict this to
+        # decimals or explicit statistical units so Markdown bold around
+        # headings such as **Table 5** or page numbers cannot trigger review.
+        star_keys = {
+            magnitude
+            for magnitude in shared
+            if "." in magnitude
+            or any(unit in magnitude for unit in ("%", "percent", "pp", "bps"))
+        }
         star_conflicts = {
             magnitude: {
                 "sidecar": side_sig["stars"].get(magnitude, []),

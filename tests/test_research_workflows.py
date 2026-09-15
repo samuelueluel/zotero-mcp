@@ -296,6 +296,26 @@ def test_result_evidence_flags_numeric_and_star_conflicts_without_repair():
     assert row["requires_visual_review"] is True
 
 
+def test_result_evidence_ignores_markdown_bold_around_table_numbers():
+    dependencies, _ = _result_dependencies(
+        sidecar_text="Results refer to Table 5.",
+        pdf_text="**TABLE 5** Results.",
+    )
+    row = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[
+                {
+                    "item_key": ITEM,
+                    "sidecar_queries": ["Table 5"],
+                    "pdf_queries": ["Table 5"],
+                }
+            ]
+        )
+    )["items"][0]
+    assert row["conflict_flags"] == []
+    assert row["requires_visual_review"] is False
+
+
 def test_result_evidence_flags_no_match_on_incomplete_pdf_text():
     dependencies, _ = _result_dependencies(pdf_text="", pdf_coverage="partial_text_coverage")
     result = ResultEvidenceService(dependencies).collect(
