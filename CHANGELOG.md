@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Audit unit gate no longer false-fails unit-less expected values (Samuel fork):** an `expected_values` entry without a `unit` (for example `{"role": "se", "value": "10.66"}`) now matches evidence printed with a unit token such as `(10.66%)`; the unit gate applies only when a unit is explicitly asserted, which must still be confirmed by the quote. Each audit result now also carries a `gate_failures` payload with per-failure code, message (including expected-vs-quoted token details), and blocking flag, so `UNIT_MISMATCH`/`NUMBER_MISMATCH` verdicts are debuggable without re-reading excerpts.
+
+- **Comparison manifests reject fabricated evidence IDs (Samuel fork):** `validate_comparison_manifest` now requires each result-card `evidence_ids` entry to be a route-prefixed retained-evidence ID or locator (`zr1:...`, `pdf:KEY:p12:label`, `mineru:KEY:line250`, and similar); bare item keys, titles, and free prose are rejected with a listing of the offending values.
+
+- **`find_in_pdf` no longer repeats identical clamped windows (Samuel fork):** matches whose window is identical to one already returned keep their match accounting and locators but carry an empty excerpt and `duplicate_window: true`, so short pages no longer spend the character budget on duplicate text.
+
+### Changed
+
+- **PDF routes are attachment-aware (Samuel fork):** `find_in_pdf`, `read_pdf_pages`, and `render_pdf_page` accept an optional `attachment_key` that pins one specific PDF attachment of the item (validated to be a PDF child of the item; mismatches fail with a bounded input error). Responses and page-read headers echo the resolved `attachment_key` and whether selection was explicit or default, so multi-PDF items no longer leave page locators ambiguous.
+
+- **`build_candidate_scope` inventory is opt-in (Samuel fork):** the response omits the `inventory` array unless `include_inventory=true`; `scope.inventory_*` coverage fields are unchanged. Default responses stay compact for large collections.
+
+- **`semantic_search` reports pinned items without passages (Samuel fork):** when `filters.item_keys`/`item_key` pins exact items, keys that produced no matching passage are listed in the response instead of disappearing silently.
+
 ### Added
 
 - **Bounded research workflow tools (Samuel fork):** the default-on `research-workflows` toolset adds `build_candidate_scope`, `collect_result_evidence`, `validate_comparison_manifest`, and `validate_evidence_bundle`. Candidate scope verifies and inventories a collection, executes at most four caller-supplied semantic facets, deduplicates parent items, preserves evidence handles, and rejects scope leaks. Result evidence collects indexed, MinerU-sidecar, and PDF-text representations for exact items, chains sidecar hashes, keeps routes separate, flags sign or significance-marker conflicts without repair, and warns when source prose references a result table that was not read. Comparison-manifest validation checks frozen-set coverage, primary and maximum-substantive results, declared eligibility policy, numerical versus substantive winner status, and final top-k scope without reading sources or judging estimates. Evidence-bundle validation checks claim-to-evidence structure, optional allowed-item final scope, numeric context, comparator coverage, calculation labels, PDF-page provenance, and unresolved ambiguity without claiming substantive support. See [research workflow tools](docs/research-workflow-tools.md).

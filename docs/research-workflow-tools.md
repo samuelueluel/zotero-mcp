@@ -18,6 +18,8 @@ Build one collection-scoped discovery artifact from a bounded set of agent-suppl
 - `include_subcollections`: Include descendant collections; default true.
 - `filters`: Optional semantic metadata filters, supplied as an object or JSON string.
 - `inventory_limit`: Maximum inventory rows returned; 1–500, default 250. The tool still scans the complete collection scope internally.
+- `include_inventory`: Include the full compact inventory array in the response; default false. The `scope.inventory_*` fields always describe inventory coverage, so the default response stays compact for large collections. Pass true when the caller needs row-level identity metadata.
+- `filters`: Optional semantic metadata filters, supplied as an object or JSON string.
 
 ### Deterministic behavior
 
@@ -116,7 +118,7 @@ Validate the result-level coverage and reporting scope of a comparison over a fr
   - `selected_item_keys`: Paper-level winners or requested top-k set.
   - optional `reported_item_keys`: Items actually analyzed in a draft answer.
 
-Each result card has `status` `eligible`, `no_eligible_result`, or `unresolved`. Eligible cards must contain result records with a `result_class` plus outcome, estimate, scale, uncertainty, treatment, dose, denominator, population, geography, horizon, specification, and evidence IDs. They also require `primary_result_id`, `maximum_substantive_result_id`, `selected_result_id`, and exact `inventory_locators`. A no-result card requires a reason and no result records.
+Each result card has `status` `eligible`, `no_eligible_result`, or `unresolved`. Eligible cards must contain result records with a `result_class` plus outcome, estimate, scale, uncertainty, treatment, dose, denominator, population, geography, horizon, specification, and evidence IDs. They also require `primary_result_id`, `maximum_substantive_result_id`, `selected_result_id`, and exact `inventory_locators`. A no-result card requires a reason and no result records. Each `evidence_ids` entry must be a route-prefixed retained-evidence ID or locator — `zr1:0:KEY#25:<hash>` for semantic anchors, or `pdf:KEY:p12:label` / `mineru:KEY:line250` when the evidence came from a PDF or sidecar read; bare item keys, titles, and free prose are rejected because they identify a paper, not evidence.
 
 ### Deterministic checks
 
@@ -180,7 +182,7 @@ An evidence record contains:
 
 ### Output
 
-Return one status per claim, stable reason codes, aggregate `ready`, and bounded warnings. Passing means only that the structural contract is complete. It does not establish substantive support and must never be cited as evidence.
+Return one status per claim, stable reason codes, a `gate_failures` payload carrying each deterministic failure's code, message (including expected-vs-quoted token details for `NUMBER_MISMATCH` and `UNIT_MISMATCH`), and blocking flag, aggregate `ready`, and bounded warnings. Passing means only that the structural contract is complete. It does not establish substantive support and must never be cited as evidence.
 
 ## Compatibility and safety
 

@@ -202,7 +202,7 @@ class TestFindInPdfWrapper:
         monkeypatch.setattr(
             read_pdf_tools,
             "_get_pdf_path",
-            lambda _key, _ctx: ("/tmp/paper.pdf", "Paper", False),
+            lambda _key, _ctx, _a=None: ("/tmp/paper.pdf", "Paper", False, "ATTACH01"),
         )
         monkeypatch.setattr(read_pdf_tools, "pdf_page_count", lambda _path: 2)
         monkeypatch.setattr(
@@ -226,7 +226,7 @@ class TestFindInPdfWrapper:
         monkeypatch.setattr(
             read_pdf_tools,
             "_get_pdf_path",
-            lambda _key, _ctx: ("/tmp/paper.pdf", "Paper", False),
+            lambda _key, _ctx, _a=None: ("/tmp/paper.pdf", "Paper", False, "ATTACH01"),
         )
         monkeypatch.setattr(read_pdf_tools, "pdf_page_count", lambda _path: 3)
         monkeypatch.setattr(
@@ -255,7 +255,7 @@ class TestFindInPdfWrapper:
         monkeypatch.setattr(
             read_pdf_tools,
             "_get_pdf_path",
-            lambda _key, _ctx: ("/tmp/paper.pdf", "Paper", False),
+            lambda _key, _ctx, _a=None: ("/tmp/paper.pdf", "Paper", False, "ATTACH01"),
         )
         monkeypatch.setattr(read_pdf_tools, "pdf_page_count", lambda _path: MAX_PDF_SEARCH_PAGES + 1)
         result = json.loads(
@@ -270,7 +270,7 @@ class TestFindInPdfWrapper:
         monkeypatch.setattr(
             read_pdf_tools,
             "_get_pdf_path",
-            lambda _key, _ctx: ("/tmp/paper.pdf", "Paper", False),
+            lambda _key, _ctx, _a=None: ("/tmp/paper.pdf", "Paper", False, "ATTACH01"),
         )
         monkeypatch.setattr(read_pdf_tools, "pdf_page_count", lambda _path: 2)
         monkeypatch.setattr(
@@ -292,7 +292,7 @@ class TestFindInPdfWrapper:
         monkeypatch.setattr(
             read_pdf_tools,
             "_get_pdf_path",
-            lambda _key, _ctx: (str(pdf), "Paper", True),
+            lambda _key, _ctx, _a=None: (str(pdf), "Paper", True, "ATTACH01"),
         )
         monkeypatch.setattr(read_pdf_tools, "_cleanup_path", removed.append)
         monkeypatch.setattr(
@@ -324,7 +324,7 @@ class TestRenderWrapper:
         monkeypatch.setattr(
             read_pdf_tools,
             "_get_pdf_path",
-            lambda _key, _ctx: ("/tmp/paper.pdf", "Paper", False),
+            lambda _key, _ctx, _a=None: ("/tmp/paper.pdf", "Paper", False, "ATTACH01"),
         )
         monkeypatch.setattr(read_pdf_tools, "render_page_to_png", lambda *_a, **_k: rendered)
         result = read_pdf_tools.render_pdf_page(
@@ -348,7 +348,7 @@ class TestRenderWrapper:
                 "width": 10, "height": 10, "pixels": 100, "png": b"png",
             }
         )()
-        monkeypatch.setattr(read_pdf_tools, "_get_pdf_path", lambda *_a: ("/library/paper.pdf", "P", False))
+        monkeypatch.setattr(read_pdf_tools, "_get_pdf_path", lambda *_a: ("/library/paper.pdf", "P", False, "ATTACH01"))
         monkeypatch.setattr(read_pdf_tools, "render_page_to_png", lambda *_a, **_k: rendered)
         read_pdf_tools.render_pdf_page("ITEM", 1, ctx=DummyContext())
         assert removed == []
@@ -360,7 +360,7 @@ class TestRenderWrapper:
         monkeypatch.setattr(
             read_pdf_tools,
             "_get_pdf_path",
-            lambda _key, _ctx: (str(pdf), "Paper", True),
+            lambda _key, _ctx, _a=None: (str(pdf), "Paper", True, "ATTACH01"),
         )
         monkeypatch.setattr(read_pdf_tools, "_cleanup_path", removed.append)
         monkeypatch.setattr(
@@ -377,7 +377,7 @@ class TestRenderWrapper:
         monkeypatch.setattr(
             read_pdf_tools,
             "_get_pdf_path",
-            lambda _key, _ctx: (str(path), "Paper", False),
+            lambda _key, _ctx, _a=None: (str(path), "Paper", False, "ATTACH01"),
         )
 
         async def call():
@@ -393,3 +393,31 @@ class TestRenderWrapper:
         assert base64.b64decode(image.data).startswith(b"\x89PNG\r\n\x1a\n")
         assert result.structuredContent["page"] == 1
         assert result.structuredContent["width"] == 200
+
+
+def test_find_literal_matches_deduplicates_identical_clamped_windows():
+    """Regression (2026-09-15 Detroit run): several matches clamped to the same
+    short-page window each returned the full excerpt. Later matches in an
+    already-returned window now carry an empty excerpt plus a marker while
+    per-match accounting stays complete."""
+    page = "alpha NEEDLE beta NEEDLE gamma NEEDLE delta"
+    result = find_literal_matches(
+        [page],
+        "needle",
+        page_numbers=[0],
+        needs_ocr=[],
+        max_matches=10,
+        max_chars=4096,
+        context_chars=0,
+    )
+    assert result["total_matches"] == 3
+    assert result["returned_matches"] == 3
+    first = result["matches"][0]
+    assert first["text"] and not first.get("duplicate_window")
+    windows = {(m["excerpt_char_start"], m["excerpt_char_end"]) for m in result["matches"]}
+    assert len(windows) == 1
+    for duplicate in result["matches"][1:]:
+        assert duplicate["text"] == ""
+        assert duplicate["excerpt"] == ""
+        assert duplicate["duplicate_window"] is True
+    assert result["source_chars_returned"] == len(first["text"])

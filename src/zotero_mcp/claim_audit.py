@@ -1225,17 +1225,34 @@ class AuditService:
                 # containment may satisfy the deterministic numeric gate.
                 accepted_quotes = "\n".join(record.quote for record in direct_records)
                 source_numbers = _numeric_signatures(accepted_quotes)
-                missing = claim_numbers - source_numbers
                 source_values = {number for number, _unit in source_numbers}
-                missing_numbers = sorted(missing, key=lambda value: (value[0], value[1]))
+                # A signature with no canonical unit ("") asserts only the
+                # value, so it matches any source unit for that number. An
+                # explicitly asserted unit must still be confirmed by the
+                # quotes, per the documented contract that quotes contain the
+                # stated value AND unit. This keeps a unit-less expected SE
+                # such as (10.66, "") from false-failing against evidence
+                # printed as "(10.66%)".
+                missing_numbers: list[tuple[Decimal, str]] = []
+                mismatched_units: list[tuple[Decimal, str]] = []
+                for number, unit in sorted(
+                    claim_numbers, key=lambda pair: (pair[0], pair[1])
+                ):
+                    if number not in source_values:
+                        missing_numbers.append((number, unit))
+                    elif unit and (number, unit) not in source_numbers:
+                        mismatched_units.append((number, unit))
                 quoted_numbers = sorted(source_numbers, key=lambda value: (value[0], value[1]))
                 missing_detail = ", ".join(
                     f"{number}{unit}" for number, unit in missing_numbers
                 )
+                unit_detail = ", ".join(
+                    f"{number}{unit}" for number, unit in mismatched_units
+                )
                 quoted_detail = ", ".join(
                     f"{number}{unit}" for number, unit in quoted_numbers
                 )
-                if any(number not in source_values for number, _unit in missing):
+                if missing_numbers:
                     failures.append(
                         GateFailure(
                             "NUMBER_MISMATCH",
@@ -1243,12 +1260,12 @@ class AuditService:
                             f"missing={missing_detail}; quoted={quoted_detail}",
                         )
                     )
-                if any(number in source_values for number, _unit in missing):
+                if mismatched_units:
                     failures.append(
                         GateFailure(
                             "UNIT_MISMATCH",
-                            "numeric units in the claim were not confirmed by direct evidence quotes; "
-                            f"missing={missing_detail}; quoted={quoted_detail}",
+                            "numeric units asserted in the claim were not confirmed by direct evidence quotes; "
+                            f"mismatched={unit_detail}; quoted={quoted_detail}",
                         )
                     )
                 if claim.expected_values:
@@ -1298,6 +1315,18 @@ class AuditService:
             verified = True
 
         codes = _unique_codes(failures)
+        # Surface the deterministic gate diagnostics alongside the codes so a
+        # UNIT_MISMATCH or NUMBER_MISMATCH can be debugged without re-reading
+        # every excerpt by hand. Messages are bounded upstream by construction.
+        seen_gate_codes: set[str] = set()
+        gate_failures: list[dict[str, Any]] = []
+        for failure in failures:
+            if failure.code in seen_gate_codes:
+                continue
+            seen_gate_codes.add(failure.code)
+            gate_failures.append(
+                {"code": failure.code, "message": failure.message, "blocking": failure.blocking}
+            )
         return {
             "claim_id": claim.claim_id,
             "claim": claim.text,
@@ -1308,6 +1337,7 @@ class AuditService:
             "verdict": status,
             "reason_codes": codes,
             "gate_failure_codes": codes,
+            "gate_failures": gate_failures,
             "escalation": {"performed": escalation_performed},
             "evidence": [record.public() for record in eligible_records],
         }

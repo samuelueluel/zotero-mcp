@@ -1351,6 +1351,21 @@ def search_items_advanced(
         return f"Error in advanced search: {str(e)}"
 
 
+def _filters_item_key_scope(filters: dict[str, Any] | None) -> list[str]:
+    """Extract the exact parent-item keys pinned by a filters dict, if any."""
+    if not isinstance(filters, dict):
+        return []
+    raw = filters.get("item_keys", filters.get("item_key"))
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",")]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    normalized = [str(key).strip().upper() for key in raw if str(key).strip()]
+    return list(dict.fromkeys(normalized))
+
+
 @mcp.tool(
     name="semantic_search",
     description=(
@@ -1490,8 +1505,28 @@ def semantic_search(
 
         search_results = results.get("results", [])
 
+        # When the caller pinned exact item keys, report the ones that produced
+        # no passage so a silent absence cannot be mistaken for a complete hit
+        # set during adjudication.
+        requested_item_keys = _filters_item_key_scope(filters)
+        returned_item_keys = {
+            str(result.get("item_key") or "").strip().upper()
+            for result in search_results
+            if isinstance(result, dict)
+        }
+        missing_item_keys = [
+            key for key in requested_item_keys if key not in returned_item_keys
+        ]
+
         if not search_results:
-            return f"No semantically similar items found for query: '{query}'"
+            message = f"No semantically similar items found for query: '{query}'"
+            if missing_item_keys:
+                message += (
+                    "\n\n*Requested item keys with no matching passage: "
+                    + ", ".join(missing_item_keys)
+                    + ".*"
+                )
+            return message
 
         # Format results as markdown
         output = [f"# Semantic Search Results for '{query}'", ""]
@@ -1502,6 +1537,13 @@ def semantic_search(
             output.append(f"*Collection scope: `{collection}` (subcollections included).*")
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
+        if missing_item_keys:
+            output.append("")
+            output.append(
+                "*Requested item keys with no matching passage: "
+                + ", ".join(missing_item_keys)
+                + ". A no-hit does not establish absence in the source.*"
+            )
         output.append("")
         output.append("*Previews may be incomplete. Expand an Evidence ID with read_passage; use find_in_item for literal lookup. Indexed passage numbers/offsets are not verified PDF pages.*")
         output.append("")

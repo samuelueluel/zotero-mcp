@@ -216,6 +216,7 @@ def build_candidate_scope(
     include_subcollections: bool = True,
     filters: dict[str, Any] | str | None = None,
     inventory_limit: int = 250,
+    include_inventory: bool = False,
     *,
     ctx: Context,
 ) -> str:
@@ -229,6 +230,7 @@ def build_candidate_scope(
             include_subcollections=include_subcollections,
             filters=_parse_filters(filters),
             inventory_limit=inventory_limit,
+            include_inventory=include_inventory,
         )
         response = CandidateScopeService(
             CandidateScopeDependencies(
@@ -342,7 +344,7 @@ def _read_pdf_queries(
                 "ok": False,
                 "error": {"code": "PDF_NOT_FOUND", "message": "No PDF attachment was found."},
             }
-        pdf_path, title, is_temp = resolved
+        pdf_path, title, is_temp, resolved_attachment_key = resolved
         source_is_temp = is_temp
         total_pages = pdf_page_count(pdf_path)
         start = start_page or 1
@@ -428,6 +430,7 @@ def _read_pdf_queries(
             "ok": True,
             "item_key": item_key,
             "title": str(title or "")[:500],
+            "attachment_key": resolved_attachment_key,
             "route": "pdf_extraction",
             "source_route": _pdf_source_route(source_is_temp),
             "extraction_route": "direct_pdf_text",

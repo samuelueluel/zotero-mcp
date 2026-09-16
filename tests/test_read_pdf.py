@@ -81,7 +81,7 @@ class TestHappyPath:
         _patch_extract(monkeypatch, ["Page 1 content."] * 10, total=10)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Test Paper", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=3, ctx=dummy_ctx)
@@ -99,7 +99,7 @@ class TestHappyPath:
         ])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Test Paper", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=4, ctx=dummy_ctx)
@@ -117,7 +117,7 @@ class TestHappyPath:
         _patch_extract(monkeypatch, ["hello"])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "My Paper Title", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "My Paper Title", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="KEY123", start_page=1, ctx=dummy_ctx)
@@ -145,7 +145,7 @@ class TestErrors:
     def test_no_pdf_attachment(self, monkeypatch, dummy_ctx, fake_zot):
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: None,
+            lambda _k, _c, _a=None: None,
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
@@ -156,7 +156,7 @@ class TestErrors:
         _patch_extract(monkeypatch, ["p1"], total=1)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Paper", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=5, ctx=dummy_ctx)
@@ -168,7 +168,7 @@ class TestErrors:
         _patch_extract(monkeypatch, ["p1"] * 3, total=3)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Paper", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=10, ctx=dummy_ctx)
@@ -180,7 +180,7 @@ class TestErrors:
         _patch_extract(monkeypatch, ["p"] * 100, total=100)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Paper", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=55, ctx=dummy_ctx)
@@ -192,7 +192,7 @@ class TestErrors:
         than an empty page range."""
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Paper", True, "ATTACH01"),
         )
         _patch_extract_failure(monkeypatch, ValueError("Not a PDF: file is empty"))
 
@@ -210,7 +210,7 @@ class TestEdgeCases:
         _patch_extract(monkeypatch, ["p1", "p2", "p3"])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Test Paper", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, end_page=2, ctx=dummy_ctx)
@@ -223,7 +223,7 @@ class TestEdgeCases:
         _patch_extract(monkeypatch, ["first", "last"])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Paper", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=2, ctx=dummy_ctx)
@@ -235,7 +235,7 @@ class TestEdgeCases:
         _patch_extract(monkeypatch, ["", "has text", ""])
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Paper", True),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Paper", True, "ATTACH01"),
         )
 
         result = server.read_pdf_pages(item_key="ITEM01", start_page=1, end_page=3, ctx=dummy_ctx)
@@ -251,7 +251,7 @@ class TestFindInPdf:
         _patch_extract(monkeypatch, ["before Needle after", "needle again"], total=2)
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/tmp/test.pdf", "Test Paper", False),
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Test Paper", False, "ATTACH01"),
         )
 
         result = json.loads(
@@ -338,9 +338,67 @@ class TestCleanupPathSafety:
         )
         monkeypatch.setattr(
             "zotero_mcp.tools.read_pdf._get_pdf_path",
-            lambda _k, _c: ("/home/me/Zotero/storage/ABCD/paper.pdf", "Paper", False),
+            lambda _k, _c, _a=None: ("/home/me/Zotero/storage/ABCD/paper.pdf", "Paper", False, "ATTACH01"),
         )
 
         server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
 
         assert removed == []
+
+
+class TestAttachmentProvenance:
+    """Multi-PDF items must name which attachment served the read."""
+
+    def test_find_in_pdf_echoes_default_attachment_selection(self, monkeypatch, dummy_ctx, fake_zot):
+        _patch_extract(monkeypatch, ["before Needle after"], total=1)
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Test Paper", False, "ATTACH01"),
+        )
+        result = json.loads(
+            server.find_in_pdf(item_key="ITEM01", query="needle", ctx=dummy_ctx)
+        )
+        assert result["attachment_key"] == "ATTACH01"
+        assert result["attachment_selection"] == "default"
+
+    def test_find_in_pdf_echoes_explicit_attachment_selection(self, monkeypatch, dummy_ctx, fake_zot):
+        _patch_extract(monkeypatch, ["before Needle after"], total=1)
+        captured = {}
+
+        def _fake_resolver(item_key, ctx, attachment_key=None):
+            captured["key"] = attachment_key
+            return ("/tmp/test.pdf", "Test Paper", False, "ATTACH02")
+
+        monkeypatch.setattr("zotero_mcp.tools.read_pdf._get_pdf_path", _fake_resolver)
+        result = json.loads(
+            server.find_in_pdf(
+                item_key="ITEM01", query="needle", attachment_key="ATTACH02", ctx=dummy_ctx
+            )
+        )
+        assert captured["key"] == "ATTACH02"
+        assert result["attachment_key"] == "ATTACH02"
+        assert result["attachment_selection"] == "explicit"
+
+    def test_read_pdf_pages_marks_resolved_attachment(self, monkeypatch, dummy_ctx, fake_zot):
+        _patch_extract(monkeypatch, ["Page 1 content."], total=1)
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Test Paper", False, "ATTACH01"),
+        )
+        result = server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
+        assert "**Attachment:** ATTACH01" in result
+
+    def test_explicit_attachment_mismatch_is_a_bounded_input_error(self, monkeypatch, dummy_ctx, fake_zot):
+        def _raise(_key, _ctx, _attachment=None):
+            raise read_pdf_tools.PdfEvidenceInputError(
+                "attachment ATTACH09 is not a PDF child of item ITEM01; "
+                "pass the key of one of the item's PDF attachments or omit "
+                "attachment_key to use the default PDF"
+            )
+
+        monkeypatch.setattr("zotero_mcp.tools.read_pdf._get_pdf_path", _raise)
+        result = json.loads(
+            server.find_in_pdf(item_key="ITEM01", query="needle", ctx=dummy_ctx)
+        )
+        assert result["error"]["code"] == "INVALID_ARGUMENT"
+        assert "ATTACH09" in result["error"]["message"]

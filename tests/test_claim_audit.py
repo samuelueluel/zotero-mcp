@@ -680,7 +680,7 @@ def test_pdf_adapter_uses_shared_pdf_resolver_and_bounds_pages(monkeypatch):
     monkeypatch.setattr(
         read_pdf,
         "_get_pdf_path",
-        lambda item_key, ctx: ("/tmp/shared-resolver.pdf", "Paper", False),
+        lambda item_key, ctx: ("/tmp/shared-resolver.pdf", "Paper", False, "ATTACH01"),
     )
     monkeypatch.setattr(extract, "pdf_page_count", lambda path: 10)
     monkeypatch.setattr(extract, "extract_pdf", lambda path, pages: doc)
@@ -744,3 +744,81 @@ def test_content_hash_fixture_is_sha256_shaped():
     # Keep this small assertion close to the tests that use hash gates; it
     # documents that the accepted hash shape is the source-text digest.
     assert len(hashlib.sha256(b"source").hexdigest()) == 64
+
+
+def test_unitless_expected_se_matches_unit_bearing_quote():
+    """Regression (2026-09-15 Detroit run): a unit-less expected SE must match
+    evidence printed as '(10.66%)'. The unit gate only applies when a unit is
+    explicitly asserted in expected_values or the claim text."""
+    page_text = "|Local Direct|63.10%|86.05%|65.26%|\n|K|(15.26%)|(10.66%)|(6.95%)|"
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote=page_text)],
+                text=(
+                    "Aliprantis and Hartley report an 86.05% reduction in shots fired "
+                    "with a reported standard error of 10.66."
+                ),
+                tags=["numeric"],
+                expected_values=[
+                    {"role": "estimate", "value": "86.05", "unit": "percent"},
+                    {"role": "se", "value": "10.66"},
+                ],
+            )
+        ]
+    )
+    assert result["results"][0]["status"] == "supported"
+
+
+def test_explicit_unit_conflict_still_fails_unit_gate():
+    """An explicitly asserted unit that the quote does not confirm stays a
+    deterministic mismatch: 'percentage points' is not what the source prints."""
+    page_text = "The estimate was 86.05% (10.66%)."
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote=page_text)],
+                text="The reduction was 86.05% with an SE of 10.66 percentage points.",
+                tags=["numeric"],
+                expected_values=[
+                    {"role": "estimate", "value": "86.05", "unit": "percent"},
+                    {"role": "se", "value": "10.66", "unit": "pp"},
+                ],
+            )
+        ]
+    )
+    row = result["results"][0]
+    assert row["status"] == "unsupported"
+    assert "UNIT_MISMATCH" in row["reason_codes"]
+
+
+def test_gate_failures_surface_expected_and_found_tokens():
+    """Reason codes ship with the deterministic expected/found detail so a
+    mismatch can be debugged without re-reading every excerpt by hand."""
+    page_text = "The estimate was 86.05% (10.66%)."
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote=page_text)],
+                text="The reduction was 86.05% with an SE of 10.66 percentage points.",
+                tags=["numeric"],
+                expected_values=[
+                    {"role": "estimate", "value": "86.05", "unit": "percent"},
+                    {"role": "se", "value": "10.66", "unit": "pp"},
+                ],
+            )
+        ]
+    )
+    row = result["results"][0]
+    gates = {entry["code"]: entry for entry in row["gate_failures"]}
+    assert set(row["gate_failure_codes"]) == set(gates)
+    unit_gate = gates["UNIT_MISMATCH"]
+    assert "10.66pp" in unit_gate["message"]
+    assert "10.66%" in unit_gate["message"]
+    assert unit_gate["blocking"] is True

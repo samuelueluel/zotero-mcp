@@ -413,3 +413,29 @@ def test_get_items_by_keys_with_no_keys_does_not_query(tmp_path):
         assert reader.get_items_by_keys([]) == {}
     finally:
         reader.close()
+
+
+def test_semantic_search_reports_pinned_items_without_passages(monkeypatch, tmp_path):
+    """Regression (2026-09-15 Detroit run): pinned item keys without a passage
+    used to vanish silently; the response now names them so a no-hit cannot be
+    mistaken for a complete hit set."""
+    sem = _RecordingSemanticSearch(
+        results=[
+            {
+                "item_key": GROUP_ID and "AAAAAAAA",
+                "matched_passage": "Quantum results.",
+                "rerank_score": 1.5,
+                "zotero_item": {"key": "AAAAAAAA"},
+            }
+        ]
+    )
+    _semantic_env(monkeypatch, tmp_path, sem, active_group=GROUP_ID)
+
+    output = search_module.semantic_search(
+        query="quantum",
+        filters={"item_keys": ["AAAAAAAA", "BBBBBBBB"]},
+        ctx=DummyContext(),
+    )
+
+    assert "BBBBBBBB" in output
+    assert "no matching passage" in output

@@ -84,11 +84,20 @@ def _cleanup_path(file_path: str) -> None:
         pass
 
 
-def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
-    """Resolve a PDF attachment and return ``(file_path, title, is_temp)``.
+def _get_pdf_path(
+    item_key: str,
+    ctx: Context,
+    attachment_key: str | None = None,
+) -> tuple[str, str, bool, str | None] | None:
+    """Resolve a PDF attachment and return ``(file_path, title, is_temp, attachment_key)``.
 
     Tries local storage first (via LocalZoteroReader), then downloads via API.
-    Returns None if no PDF attachment is found.
+    Returns None if no PDF attachment is found. When ``attachment_key`` names a
+    specific attachment, only that attachment is used and it must be a PDF that
+    belongs to ``item_key`` (either as its parent item or as the key itself);
+    mismatches raise :class:`PdfEvidenceInputError`. The returned attachment key
+    is ``None`` only when resolution fell back to a source that could not
+    identify the attachment.
 
     ``is_temp`` says whether the caller owns the file. It is True only for a
     file downloaded into a directory this function created, which the caller
@@ -96,6 +105,10 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
     storage, which must be left alone: those paths point into the real
     library, and deleting one takes the user's copy of the PDF with it.
     """
+    requested_key = (attachment_key or "").strip().upper() or None
+    if requested_key and requested_key == str(item_key).strip().upper():
+        # Asking for the item "as an attachment" degenerates to the default route.
+        requested_key = None
     zot = _client.get_zotero_client()
     item = zot.item(item_key)
 
@@ -119,15 +132,52 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
                             item_key, attachment["content_type"]
                         )
                     if resolved and resolved.exists():
-                        return str(resolved), attachment["title"] or item_key, False
+                        return (
+                            str(resolved),
+                            attachment["title"] or item_key,
+                            False,
+                            str(attachment.get("key") or item_key).upper(),
+                        )
+
+                if requested_key:
+                    explicit = reader.get_attachment_by_key(requested_key)
+                    if explicit:
+                        parent_ok = requested_key == str(item_key).strip().upper() or str(
+                            explicit.get("parent_key") or ""
+                        ).upper() == str(item_key).strip().upper()
+                        if not parent_ok or "pdf" not in (explicit["content_type"] or "").lower():
+                            raise PdfEvidenceInputError(
+                                _attachment_mismatch_message(item_key, requested_key)
+                            )
+                        resolved = reader._resolve_attachment_path(
+                            requested_key, explicit["zotero_path"] or ""
+                        )
+                        if not (resolved and resolved.exists()):
+                            resolved = reader._scan_storage_for_attachment(
+                                requested_key, explicit["content_type"]
+                            )
+                        if resolved and resolved.exists():
+                            return (
+                                str(resolved),
+                                explicit["title"] or requested_key,
+                                False,
+                                requested_key,
+                            )
 
                 local_item = reader.get_item_by_key(item_key)
                 if local_item:
                     for att_key, path, ctype in reader._iter_parent_attachments(local_item.item_id):
                         if ctype == "application/pdf":
+                            if requested_key and att_key.upper() != requested_key:
+                                continue
                             resolved = reader._resolve_attachment_path(att_key, path or "")
                             if resolved and resolved.exists():
-                                return str(resolved), local_item.title or item_key, False
+                                return (
+                                    str(resolved),
+                                    local_item.title or item_key,
+                                    False,
+                                    str(att_key).upper(),
+                                )
     except Exception:
         pass
 
@@ -135,7 +185,15 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
     # Zotero cloud) so WebDAV-backed attachments work, not just cloud storage.
     # PDF only: this tool renders page ranges, so a markdown-first
     # attachment_priority must not hand it a file it cannot paginate.
-    attachment = _client.get_attachment_details(zot, item, priority=("pdf",))
+    if requested_key:
+        explicit = _explicit_pdf_attachment(zot, item_key, requested_key)
+        if explicit is None:
+            raise PdfEvidenceInputError(
+                _attachment_mismatch_message(item_key, requested_key)
+            )
+        attachment = explicit
+    else:
+        attachment = _client.get_attachment_details(zot, item, priority=("pdf",))
     if not attachment:
         return None
 
@@ -161,10 +219,43 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
         raise
 
     if download.path and download.path.exists() and download.path.stat().st_size > 0:
-        return str(download.path), attachment.title, True
+        return str(download.path), attachment.title, True, str(attachment.key).upper()
 
     _cleanup_path(probe)
     return None
+
+
+def _attachment_mismatch_message(item_key: str, attachment_key: str) -> str:
+    return (
+        f"attachment {attachment_key} is not a PDF child of item {item_key}; "
+        "pass the key of one of the item's PDF attachments or omit attachment_key "
+        "to use the default PDF"
+    )
+
+
+def _explicit_pdf_attachment(zot, item_key: str, requested_key: str):
+    """Return the requested attachment when it is a PDF child of ``item_key``."""
+    try:
+        candidate = zot.item(requested_key)
+    except Exception:
+        return None
+    cand_data = candidate.get("data", {}) if isinstance(candidate, dict) else {}
+    if cand_data.get("itemType") != "attachment":
+        return None
+    parent = str(cand_data.get("parentItem") or "").strip().upper()
+    if parent and parent != str(item_key).strip().upper():
+        return None
+    try:
+        from zotero_mcp.client import AttachmentDetails
+
+        return AttachmentDetails(
+            key=requested_key,
+            title=str(cand_data.get("title") or requested_key),
+            filename=str(cand_data.get("filename") or ""),
+            content_type=str(cand_data.get("contentType") or ""),
+        )
+    except Exception:
+        return None
 
 
 def _pdf_json_error(code: str, message: str) -> str:
@@ -243,10 +334,14 @@ def _parse_region_argument(region: list[float] | str | None) -> list[float] | No
         "attachment and return bounded verbatim windows. Parent and attachment keys both work. "
         "Whitespace in the query spans source whitespace; special characters are literal — no regex, "
         "fuzzy, semantic, OCR, sidecar, or neighboring-page search. Pages are one-based PDF pages, "
-        "not printed labels or indexed offsets. Searches the complete requested range and reports exact "
+        "not printed labels or indexed offsets. attachment_key optionally pins one specific PDF "
+        "attachment of the item (multi-PDF items otherwise use the default PDF, and the response "
+        "always echoes the resolved attachment_key). Searches the complete requested range and reports exact "
         "match accounting plus complete/partial/no-usable-text coverage. offset paginates matching "
         "windows; match_pages and omitted_match_pages expose later matching pages even when excerpts "
-        "are capped. max_matches is 1–10; max_chars is 256–16000; a range over 50 pages is rejected."
+        "are capped. Identical clamped windows are returned once: later matches in the same window "
+        "carry empty excerpts and duplicate_window=true. max_matches is 1–10; max_chars is 256–16000; "
+        "a range over 50 pages is rejected."
     ),
 )
 def find_in_pdf(
@@ -258,6 +353,7 @@ def find_in_pdf(
     offset: int = 0,
     max_chars: int = DEFAULT_PDF_SEARCH_MAX_CHARS,
     context_chars: int = DEFAULT_PDF_MATCH_CONTEXT_CHARS,
+    attachment_key: str | None = None,
     *,
     ctx: Context,
 ) -> str:
@@ -303,12 +399,12 @@ def find_in_pdf(
         # Only source resolution/download uses the API lock. Extraction and
         # matching happen after it is released.
         with zotero_api_lock():
-            result = _get_pdf_path(item_key, ctx)
+            result = _get_pdf_path(item_key, ctx, attachment_key)
         if result is None:
             return _pdf_json_error(
                 "PDF_NOT_FOUND", f"No PDF attachment found for item: {item_key}"
             )
-        pdf_path, title, is_temp = result
+        pdf_path, title, is_temp, resolved_attachment_key = result
         source_is_temp = is_temp
 
         try:
@@ -336,6 +432,10 @@ def find_in_pdf(
             "ok": True,
             "item_key": item_key,
             "title": str(title or ""),
+            "attachment_key": resolved_attachment_key,
+            "attachment_selection": (
+                "explicit" if (attachment_key or "").strip() else "default"
+            ),
             "query": query,
             "route": "pdf_extraction",
             "source_route": _pdf_source_route(source_is_temp),
@@ -404,6 +504,7 @@ def render_pdf_page(
     region: list[float] | str | None = None,
     padding: float = 0,
     dpi: int = DEFAULT_PDF_RENDER_DPI,
+    attachment_key: str | None = None,
     *,
     ctx: Context,
 ) -> Any:
@@ -424,10 +525,10 @@ def render_pdf_page(
         # Resolve/download while the API lock is held, then release it before
         # PyMuPDF opens or rasterizes the file.
         with zotero_api_lock():
-            result = _get_pdf_path(item_key, ctx)
+            result = _get_pdf_path(item_key, ctx, attachment_key)
         if result is None:
             return f"Error: No PDF attachment found for item: {item_key}"
-        pdf_path, title, is_temp = result
+        pdf_path, title, is_temp, _resolved_attachment_key = result
         source_is_temp = is_temp
 
         try:
@@ -504,6 +605,7 @@ def read_pdf_pages(
     item_key: str,
     start_page: int,
     end_page: int | None = None,
+    attachment_key: str | None = None,
     *,
     ctx: Context,
 ) -> str:
@@ -513,6 +615,8 @@ def read_pdf_pages(
         item_key: Zotero item key/ID of the paper or its PDF attachment.
         start_page: First page to read (1-indexed).
         end_page: Last page to read (1-indexed). If omitted, reads only start_page.
+        attachment_key: Optional key pinning one specific PDF attachment of the
+            item; multi-PDF items otherwise use the default PDF.
         ctx: MCP context.
 
     Returns:
@@ -527,11 +631,11 @@ def read_pdf_pages(
 
         ctx.info(f"Reading PDF pages {start_page}-{end_page or start_page} for item {item_key}")
 
-        result = _get_pdf_path(item_key, ctx)
+        result = _get_pdf_path(item_key, ctx, attachment_key)
         if result is None:
             return f"No PDF attachment found for item: {item_key}"
 
-        pdf_path, title, is_temp = result
+        pdf_path, title, is_temp, resolved_attachment_key = result
 
         def _release() -> None:
             """Drop the working copy, but never a file in the user's library."""
@@ -570,8 +674,10 @@ def read_pdf_pages(
             f"# PDF Pages {start_page}-{actual_end} of {title}",
             f"**Item Key:** {item_key}",
             f"**Total pages in PDF:** {total_pages}",
-            "",
         ]
+        if resolved_attachment_key:
+            output.append(f"**Attachment:** {resolved_attachment_key}")
+        output.append("")
 
         for page_index, markdown in zip(doc.page_numbers, doc.pages):
             output.append(f"## Page {page_index + 1}")

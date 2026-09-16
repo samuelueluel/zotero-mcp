@@ -276,6 +276,9 @@ def find_literal_matches(
     ``max_matches`` raw-text windows and keeps their combined text within
     ``max_chars``. A character cap can therefore reduce the returned count
     without changing ``total_matches`` or the complete matching-page summary.
+    Matches whose clamped window is identical to one already returned keep
+    their accounting record but carry an empty excerpt and a
+    ``duplicate_window`` marker instead of repeating the same text.
 
     Returned page locators are one-based PDF pages.  Character offsets are
     zero-based offsets within that page's original extracted text, with an
@@ -319,6 +322,7 @@ def find_literal_matches(
     total_matches = 0
     used_chars = 0
     matching_pages: set[int] = set()
+    emitted_windows: set[tuple[int, int, int]] = set()
 
     # Deliberately iterate all pages even after output caps are reached.  This
     # is what makes total_matches and has_more_matches truthful.
@@ -369,8 +373,19 @@ def find_literal_matches(
                 "char_start": found.start(),
                 "char_end": found.end(),
             }
+            window_key = (source_page + 1, excerpt_start, excerpt_end)
+            if window_key in emitted_windows:
+                # An earlier match on this page already returned this exact
+                # window (common when short pages clamp every match to the
+                # same span). Keep per-match accounting and locators complete
+                # without repeating identical text.
+                record["text"] = ""
+                record["excerpt"] = ""
+                record["duplicate_window"] = True
+            else:
+                emitted_windows.add(window_key)
+                used_chars += len(excerpt)
             matches.append(record)
-            used_chars += len(excerpt)
 
     returned_pages = sorted({int(match["page"]) for match in matches})
     match_pages = sorted(matching_pages)

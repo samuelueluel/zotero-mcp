@@ -185,7 +185,7 @@ class TestReadPdfPagesWithAttachmentKey:
 
         result = read_pdf_tools._get_pdf_path(ATTACHMENT_KEY, DummyContext())
 
-        assert result == (str(pdf_path), "Full Text PDF", False)
+        assert result == (str(pdf_path), "Full Text PDF", False, ATTACHMENT_KEY)
 
     def test_local_mode_still_resolves_parent_key(self, monkeypatch, tmp_path, fake_zot):
         """The parent-key path (the only one that used to work) is unchanged."""
@@ -194,7 +194,7 @@ class TestReadPdfPagesWithAttachmentKey:
 
         result = read_pdf_tools._get_pdf_path(PARENT_KEY, DummyContext())
 
-        assert result == (str(pdf_path), "Parent Article", False)
+        assert result == (str(pdf_path), "Parent Article", False, ATTACHMENT_KEY)
 
     def test_local_mode_survives_filename_drift(self, monkeypatch, tmp_path, fake_zot):
         """Recorded filename no longer on disk -> scan the storage folder (#291)."""
@@ -205,7 +205,7 @@ class TestReadPdfPagesWithAttachmentKey:
 
         result = read_pdf_tools._get_pdf_path(ATTACHMENT_KEY, DummyContext())
 
-        assert result == (str(pdf_path), "Full Text PDF", False)
+        assert result == (str(pdf_path), "Full Text PDF", False, ATTACHMENT_KEY)
 
     def test_tool_reads_pages_from_attachment_key(self, monkeypatch, tmp_path, fake_zot):
         """End to end: the tool no longer answers 'No PDF attachment found'."""
@@ -271,8 +271,9 @@ class TestReadPdfPagesWithAttachmentKey:
 
         assert downloaded == [ATTACHMENT_KEY]
         assert result is not None
-        path, title, is_temp = result
+        path, title, is_temp, attachment_key = result
         assert path.endswith("paper.pdf")
+        assert attachment_key == ATTACHMENT_KEY
         assert title == "Full Text PDF"
         # A downloaded copy is ours to delete; a library file never is.
         assert is_temp is True

@@ -116,7 +116,7 @@ def _read_pdf_window(
     resolved = _get_pdf_path(target_key, ctx)
     if resolved is None:
         return {"error_code": "PDF_NOT_FOUND"}
-    pdf_path, title, is_temp = resolved
+    pdf_path, title, is_temp, resolved_attachment_key = resolved
     actual_end = end_page or start_page
     try:
         total_pages = pdf_page_count(pdf_path)
@@ -137,6 +137,7 @@ def _read_pdf_window(
             "text": text,
             "locator": f"pages {start_page}-{actual_end}",
             "title": title,
+            "attachment_key": resolved_attachment_key,
             "needs_ocr": bool(doc.needs_ocr),
             "source": "pdf",
         }

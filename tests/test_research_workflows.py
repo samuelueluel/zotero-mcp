@@ -118,7 +118,7 @@ def _comparison_result(result_id="r1", result_class="main"):
         "geography": "city",
         "time_horizon": "one year",
         "specification": "fixed effects",
-        "evidence_ids": ["evidence-" + result_id],
+        "evidence_ids": ["pdf:ITEM0001:p6:" + result_id],
     }
 
 
@@ -872,7 +872,7 @@ def test_pdf_query_reader_uses_bounded_windows_and_cleans_temp_file(monkeypatch)
     monkeypatch.setattr(
         read_pdf_tool,
         "_get_pdf_path",
-        lambda key, ctx: ("/tmp/zotero_pdf_test/paper.pdf", "Paper", True),
+        lambda key, ctx: ("/tmp/zotero_pdf_test/paper.pdf", "Paper", True, "ATTACH01"),
     )
     monkeypatch.setattr(read_pdf_tool, "_cleanup_path", lambda path: cleaned.append(path))
     monkeypatch.setattr(extract_module, "pdf_page_count", lambda path: 120)
@@ -913,3 +913,58 @@ def test_pdf_query_reader_uses_bounded_windows_and_cleans_temp_file(monkeypatch)
     assert [len(pages) for pages in extracted_pages] == [50, 50]
     assert result["queries"][0]["total_matches"] == 2
     assert cleaned == ["/tmp/zotero_pdf_test/paper.pdf"]
+
+
+def test_candidate_scope_omits_inventory_by_default_and_includes_on_request():
+    request = CandidateScopeRequest(
+        collection_key=COLLECTION,
+        query_facets=["facet one"],
+    )
+    dependencies = CandidateScopeDependencies(
+        inventory_reader=lambda key, subcollections: _inventory(),
+        semantic_searcher=lambda *args: {"results": [_hit(ITEM, "First", rerank=2.0, chunk=1)]},
+    )
+
+    default = CandidateScopeService(dependencies).build(request)
+    assert "inventory" not in default
+    assert default["scope"]["member_count"] == 2
+    assert default["scope"]["inventory_complete"] is True
+
+    requested = CandidateScopeService(dependencies).build(
+        request.model_copy(update={"include_inventory": True})
+    )
+    assert [row["item_key"] for row in requested["inventory"]] == [ITEM, OTHER]
+
+
+def test_manifest_evidence_ids_must_be_route_prefixed_locators():
+    """Regression (2026-09-15 Detroit run): fabricated evidence handles such as
+    'evidence-r1' or bare item keys used to pass the manifest validator
+    silently; evidence_ids must name a route."""
+    card = _comparison_card(ITEM)
+    card["results"][0]["evidence_ids"] = ["evidence-r1", ITEM]
+    with pytest.raises(ValidationError) as excinfo:
+        ComparisonManifestRequest(
+            frozen_item_keys=[ITEM],
+            cards=[card],
+            ranking_rule="largest percent reduction",
+            selected_item_keys=[ITEM],
+            **_comparison_manifest_defaults(),
+        )
+    assert "route-prefixed" in str(excinfo.value)
+
+
+def test_manifest_accepts_retained_ids_and_route_prefixed_locators():
+    card = _comparison_card(ITEM)
+    card["results"][0]["evidence_ids"] = [
+        "zr1:0:ITEM0001#25:" + "a" * 64,
+        "pdf:ITEM0001:p12:table6-local-direct",
+        "mineru:ITEM0001:line250",
+    ]
+    request = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM],
+        cards=[card],
+        ranking_rule="largest percent reduction",
+        selected_item_keys=[ITEM],
+        **_comparison_manifest_defaults(),
+    )
+    assert request.cards[0].results[0].evidence_ids == card["results"][0]["evidence_ids"]

@@ -45,6 +45,7 @@ class CandidateScopeRequest(_StrictModel):
     include_subcollections: bool = True
     filters: dict[str, Any] | None = None
     inventory_limit: int = Field(default=250, ge=1, le=MAX_INVENTORY_ROWS)
+    include_inventory: bool = False
 
     @field_validator("query_facets")
     @classmethod
@@ -285,7 +286,7 @@ class CandidateScopeService:
 
         inventory_limit = request.inventory_limit
         returned_inventory = inventory[:inventory_limit]
-        return {
+        payload: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,
             "ok": True,
             "scope": {
@@ -299,7 +300,6 @@ class CandidateScopeService:
             },
             "query_facets": facet_summaries,
             "filters": request.filters,
-            "inventory": returned_inventory,
             "candidate_count": len(candidate_rows),
             "candidates": candidate_rows,
             "scope_leak_count": len(scope_leaks),
@@ -309,6 +309,12 @@ class CandidateScopeService:
                 "Positive rerank eligibility does not establish support or causality."
             ),
         }
+        # The full inventory is opt-in: scope.inventory_* fields always describe
+        # inventory coverage, but the row array ships only when requested so the
+        # default response stays compact for large collections.
+        if request.include_inventory:
+            payload["inventory"] = returned_inventory
+        return payload
 
 
 _LiteralQuery = Annotated[str, Field(min_length=1, max_length=MAX_QUERY_CHARS)]
@@ -804,6 +810,16 @@ def _reason(code: str, message: str, *, blocking: bool = True) -> dict[str, Any]
     return {"code": code, "message": message, "blocking": blocking}
 
 
+# Manifest evidence_ids must identify a route. Retained semantic IDs look like
+# 'zr1:0:KEY#25:<hash>'; PDF and sidecar reads have no retained semantic ID, so
+# route-prefixed page/line locators are accepted in their place. Bare item keys,
+# titles, and free prose are rejected: they identify a paper, not evidence.
+_EVIDENCE_LOCATOR_PATTERN = re.compile(
+    r"^(?:zr\d*|pdf|pdf_page|pdfpage|mineru|mineru_sidecar|sidecar|semantic|passage|locator):\S+",
+    re.IGNORECASE,
+)
+
+
 class ComparisonResultRecord(_StrictModel):
     """One result eligible for a task-specific cross-paper comparison."""
 
@@ -827,6 +843,13 @@ class ComparisonResultRecord(_StrictModel):
     def _evidence_ids_are_distinct(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value):
             raise ValueError("evidence_ids must be distinct")
+        invalid = [item for item in value if not _EVIDENCE_LOCATOR_PATTERN.match(item)]
+        if invalid:
+            raise ValueError(
+                "evidence_ids entries must be route-prefixed retained-evidence IDs or "
+                "locators, e.g. 'zr1:0:KEY#12:<hash>', 'pdf:KEY:p12:label', or "
+                "'mineru:KEY:line7'; rejected: " + ", ".join(invalid[:5])
+            )
         return value
 
 
