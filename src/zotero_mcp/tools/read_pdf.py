@@ -428,6 +428,13 @@ def find_in_pdf(
                 is_temp = False
 
         total_matches = evidence["total_matches"]
+        if resolved_attachment_key:
+            for m in evidence["matches"]:
+                p = m.get("page")
+                m["locator"] = (
+                    f"[PDF p. {p}](zotero://open-pdf/library/items/{resolved_attachment_key}?page={p})"
+                )
+
         payload = {
             "ok": True,
             "item_key": item_key,
@@ -462,6 +469,15 @@ def find_in_pdf(
             "offset_basis": "zero-based characters within each extracted PDF page; end exclusive",
             "returned_excerpt_chars": evidence["source_chars_returned"],
         }
+        if resolved_attachment_key:
+            payload["zotero_select_uri"] = f"zotero://select/library/items/{item_key}"
+            payload["zotero_open_pdf_uri"] = (
+                f"zotero://open-pdf/library/items/{resolved_attachment_key}?page={start}"
+            )
+            payload["page_locators"] = {
+                str(p): f"[PDF p. {p}](zotero://open-pdf/library/items/{resolved_attachment_key}?page={p})"
+                for p in evidence["match_pages"]
+            }
         if total_matches == 0:
             if coverage["state"] == "complete":
                 payload["message"] = (
@@ -548,6 +564,7 @@ def render_pdf_page(
             "ok": True,
             "item_key": item_key,
             "title": str(title or ""),
+            "attachment_key": _resolved_attachment_key,
             "route": "pdf_rendering",
             "source_route": _pdf_source_route(source_is_temp),
             "page_basis": (
@@ -567,6 +584,14 @@ def render_pdf_page(
             "mime_type": "image/png",
             "encoded_bytes": len(rendered.png),
         }
+        if _resolved_attachment_key:
+            provenance["zotero_select_uri"] = f"zotero://select/library/items/{item_key}"
+            provenance["zotero_open_pdf_uri"] = (
+                f"zotero://open-pdf/library/items/{_resolved_attachment_key}?page={rendered.page}"
+            )
+            provenance["locator"] = (
+                f"[PDF p. {rendered.page}](zotero://open-pdf/library/items/{_resolved_attachment_key}?page={rendered.page})"
+            )
         text = "PDF image provenance:\n" + json.dumps(
             provenance, ensure_ascii=False, sort_keys=True
         )
@@ -676,11 +701,21 @@ def read_pdf_pages(
             f"**Total pages in PDF:** {total_pages}",
         ]
         if resolved_attachment_key:
-            output.append(f"**Attachment:** {resolved_attachment_key}")
+            output.append(
+                f"**Attachment:** {resolved_attachment_key} "
+                f"([Open in Zotero Reader](zotero://open-pdf/library/items/{resolved_attachment_key}?page={start_page}))"
+            )
         output.append("")
 
         for page_index, markdown in zip(doc.page_numbers, doc.pages):
-            output.append(f"## Page {page_index + 1}")
+            page_num = page_index + 1
+            if resolved_attachment_key:
+                output.append(
+                    f"## Page {page_num} "
+                    f"([PDF p. {page_num}](zotero://open-pdf/library/items/{resolved_attachment_key}?page={page_num}))"
+                )
+            else:
+                output.append(f"## Page {page_num}")
             output.append("")
             if markdown.strip():
                 output.append(markdown.strip())

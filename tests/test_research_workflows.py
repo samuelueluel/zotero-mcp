@@ -529,6 +529,8 @@ def test_result_evidence_clears_table_follow_up_when_pdf_table_is_read():
     assert row["read_referenced_tables"] == [4]
     assert "referenced_tables_not_read" not in row
     assert row["requires_follow_up"] is False
+    assert row["zotero_select_uri"] == f"zotero://select/library/items/{ITEM}"
+    assert f"zotero://select/library/items/{ITEM}" in row["select_link"]
 
 
 def test_result_evidence_flags_no_match_on_incomplete_pdf_text():

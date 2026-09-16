@@ -525,6 +525,8 @@ class ResultEvidenceService:
                 "title": str(parent.get("title") or "")[:500],
                 "library_id": parent.get("library_id"),
                 "ok": True,
+                "zotero_select_uri": f"zotero://select/library/items/{key}",
+                "select_link": f"[{str(parent.get('title') or key)[:500]}](zotero://select/library/items/{key})",
                 "requested": {
                     "evidence_id": item_request.evidence_id,
                     "sidecar_queries": item_request.sidecar_queries,

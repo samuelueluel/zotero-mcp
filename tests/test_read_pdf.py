@@ -402,3 +402,70 @@ class TestAttachmentProvenance:
         )
         assert result["error"]["code"] == "INVALID_ARGUMENT"
         assert "ATTACH09" in result["error"]["message"]
+
+    def test_find_in_pdf_emits_clickable_locators_and_uris(self, monkeypatch, dummy_ctx, fake_zot):
+        _patch_extract(monkeypatch, ["before Needle after"], total=1)
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Test Paper", False, "ATTACH01"),
+        )
+        result = json.loads(
+            server.find_in_pdf(item_key="ITEM01", query="needle", ctx=dummy_ctx)
+        )
+        assert result["zotero_select_uri"] == "zotero://select/library/items/ITEM01"
+        assert result["zotero_open_pdf_uri"] == "zotero://open-pdf/library/items/ATTACH01?page=1"
+        assert result["page_locators"]["1"] == "[PDF p. 1](zotero://open-pdf/library/items/ATTACH01?page=1)"
+        assert (
+            result["matches"][0]["locator"]
+            == "[PDF p. 1](zotero://open-pdf/library/items/ATTACH01?page=1)"
+        )
+
+    def test_read_pdf_pages_emits_clickable_heading_and_attachment_links(
+        self, monkeypatch, dummy_ctx, fake_zot
+    ):
+        _patch_extract(monkeypatch, ["Page 1 content."], total=1)
+        monkeypatch.setattr(
+            "zotero_mcp.tools.read_pdf._get_pdf_path",
+            lambda _k, _c, _a=None: ("/tmp/test.pdf", "Test Paper", False, "ATTACH01"),
+        )
+        result = server.read_pdf_pages(item_key="ITEM01", start_page=1, ctx=dummy_ctx)
+        assert (
+            "[Open in Zotero Reader](zotero://open-pdf/library/items/ATTACH01?page=1)"
+            in result
+        )
+        assert (
+            "## Page 1 ([PDF p. 1](zotero://open-pdf/library/items/ATTACH01?page=1))"
+            in result
+        )
+
+    def test_get_attachment_paths_emits_deep_links(self, monkeypatch, dummy_ctx):
+        from pathlib import Path
+
+        class FakeReader:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def get_attachment_paths(self, item_key):
+                return [
+                    {
+                        "key": "ATT01",
+                        "content_type": "application/pdf",
+                        "zotero_path": "storage:paper.pdf",
+                        "resolved_path": Path("/storage/ATT01/paper.pdf"),
+                        "exists": True,
+                    }
+                ]
+
+        monkeypatch.setattr("zotero_mcp.tools.retrieval._utils.is_local_mode", lambda: True)
+        monkeypatch.setattr("zotero_mcp.local_db.LocalZoteroReader", FakeReader)
+        from zotero_mcp.tools import retrieval
+
+        result = retrieval.get_attachment_paths(item_key="ITEM01", ctx=dummy_ctx)
+        assert "[View in Library](zotero://select/library/items/ITEM01)" in result
+        assert "[Open PDF](zotero://open-pdf/library/items/ATT01?page=1)" in result

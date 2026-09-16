@@ -9,8 +9,8 @@ import time as _time
 from typing import Literal
 
 from zotero_mcp import client as _client
-from zotero_mcp import utils as _utils
 from zotero_mcp import mineru as _mineru  # [mineru patch] sidecar preference for fulltext reads
+from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
@@ -310,10 +310,18 @@ def get_attachment_paths(
         if not attachments:
             return f"No attachments found for item `{item_key}`."
 
-        lines = [f"# Attachments for `{item_key}`", ""]
+        lines = [
+            f"# Attachments for `{item_key}`",
+            f"- Zotero item: [View in Library](zotero://select/library/items/{item_key})",
+            "",
+        ]
         for att in attachments:
             lines.append(f"## `{att['key']}` ({att['content_type'] or 'unknown'})")
             lines.append(f"- Zotero path: `{att['zotero_path']}`")
+            if "pdf" in (att["content_type"] or "").lower():
+                lines.append(
+                    f"- Zotero reader: [Open PDF](zotero://open-pdf/library/items/{att['key']}?page=1)"
+                )
             if att["resolved_path"] is not None:
                 marker = "" if att["exists"] else " (missing on disk)"
                 lines.append(f"- Local path: `{att['resolved_path']}`{marker}")

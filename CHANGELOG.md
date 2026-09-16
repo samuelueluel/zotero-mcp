@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Clickable deep-links and pre-formatted locators across PDF and retrieval tools (Samuel fork):**
+  - `find_in_pdf`: each match dictionary includes a pre-formatted `locator` token (`[PDF p. X](zotero://open-pdf/library/items/<ATTACH_KEY>?page=X)`); response payloads expose `zotero_select_uri`, `zotero_open_pdf_uri`, and a `page_locators` map.
+  - `read_pdf_pages`: echoes an `[Open in Zotero Reader](zotero://open-pdf/...)` deep-link in its header and decorates each page heading with a clickable `[PDF p. N](...)` token.
+  - `render_pdf_page`: provenance dictionary includes `zotero_select_uri`, `zotero_open_pdf_uri`, and `locator`.
+  - `get_attachment_paths`: surfaces a `- Zotero item: [View in Library](zotero://select/library/items/<KEY>)` link and `- Zotero reader: [Open PDF](zotero://open-pdf/library/items/<ATT_KEY>?page=1)` links for PDF attachments.
+  - `collect_result_evidence`: attaches `zotero_select_uri` and `select_link` to parent records, and attaches clickable `locator` tokens to PDF query matches.
+
 ### Fixed
 
 - **Audit unit gate no longer false-fails unit-less expected values (Samuel fork):** an `expected_values` entry without a `unit` (for example `{"role": "se", "value": "10.66"}`) now matches evidence printed with a unit token such as `(10.66%)`; the unit gate applies only when a unit is explicitly asserted, which must still be confirmed by the quote. Each audit result now also carries a `gate_failures` payload with per-failure code, message (including expected-vs-quoted token details), and blocking flag, so `UNIT_MISMATCH`/`NUMBER_MISMATCH` verdicts are debuggable without re-reading excerpts.

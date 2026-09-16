@@ -410,6 +410,11 @@ def _read_pdf_queries(
                     text = str(match.get("text") or "")
                     if returned_chars + len(text) > max_chars:
                         break
+                    if resolved_attachment_key:
+                        page_num = match.get("page")
+                        match["locator"] = (
+                            f"[PDF p. {page_num}](zotero://open-pdf/library/items/{resolved_attachment_key}?page={page_num})"
+                        )
                     matches.append(match)
                     returned_chars += len(text)
             coverage_state = _aggregate_coverage(coverage_states)
@@ -426,7 +431,7 @@ def _read_pdf_queries(
                 }
             )
 
-        return {
+        payload = {
             "ok": True,
             "item_key": item_key,
             "title": str(title or "")[:500],
@@ -450,6 +455,12 @@ def _read_pdf_queries(
             ],
             "queries": query_rows,
         }
+        if resolved_attachment_key:
+            payload["zotero_select_uri"] = f"zotero://select/library/items/{item_key}"
+            payload["zotero_open_pdf_uri"] = (
+                f"zotero://open-pdf/library/items/{resolved_attachment_key}?page={start}"
+            )
+        return payload
     except Exception as exc:
         return {
             "ok": False,
