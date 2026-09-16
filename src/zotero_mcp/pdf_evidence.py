@@ -36,6 +36,7 @@ MAX_PDF_SEARCH_PAGES = 50
 DEFAULT_PDF_SEARCH_MAX_MATCHES = 5
 MIN_PDF_SEARCH_MAX_MATCHES = 1
 MAX_PDF_SEARCH_MAX_MATCHES = 10
+MAX_PDF_SEARCH_MATCH_OFFSET = 10_000
 MIN_PDF_SEARCH_MAX_CHARS = 256
 DEFAULT_PDF_SEARCH_MAX_CHARS = 8000
 MAX_PDF_SEARCH_MAX_CHARS = 16000
@@ -264,15 +265,17 @@ def find_literal_matches(
     page_numbers: Sequence[int] | None = None,
     needs_ocr: Sequence[int] | None = None,
     max_matches: int = DEFAULT_PDF_SEARCH_MAX_MATCHES,
+    match_offset: int = 0,
     max_chars: int = DEFAULT_PDF_SEARCH_MAX_CHARS,
     context_chars: int = DEFAULT_PDF_MATCH_CONTEXT_CHARS,
 ) -> dict[str, Any]:
     """Find a literal query across page text with exact accounting.
 
     The function scans every supplied page and counts every non-overlapping
-    match.  It materializes at most ``max_matches`` raw-text windows and keeps
-    their combined text within ``max_chars``.  A character cap can therefore
-    reduce the returned count without changing ``total_matches``.
+    match.  It skips ``match_offset`` matches, then materializes at most
+    ``max_matches`` raw-text windows and keeps their combined text within
+    ``max_chars``. A character cap can therefore reduce the returned count
+    without changing ``total_matches`` or the complete matching-page summary.
 
     Returned page locators are one-based PDF pages.  Character offsets are
     zero-based offsets within that page's original extracted text, with an
@@ -287,6 +290,12 @@ def find_literal_matches(
         name="max_matches",
         minimum=MIN_PDF_SEARCH_MAX_MATCHES,
         maximum=MAX_PDF_SEARCH_MAX_MATCHES,
+    )
+    match_offset = _validate_bounded_int(
+        match_offset,
+        name="match_offset",
+        minimum=0,
+        maximum=MAX_PDF_SEARCH_MATCH_OFFSET,
     )
     max_chars = _validate_bounded_int(
         max_chars,
@@ -309,6 +318,7 @@ def find_literal_matches(
     matches: list[dict[str, Any]] = []
     total_matches = 0
     used_chars = 0
+    matching_pages: set[int] = set()
 
     # Deliberately iterate all pages even after output caps are reached.  This
     # is what makes total_matches and has_more_matches truthful.
@@ -320,8 +330,10 @@ def find_literal_matches(
         if source_page in ocr_pages or not isinstance(text, str) or not text:
             continue
         for found in pattern.finditer(text):
+            match_index = total_matches
             total_matches += 1
-            if len(matches) >= max_matches:
+            matching_pages.add(source_page + 1)
+            if match_index < match_offset or len(matches) >= max_matches:
                 continue
 
             window = _window_for_match(
@@ -341,6 +353,7 @@ def find_literal_matches(
             excerpt = text[excerpt_start:excerpt_end]
             matched_text = text[found.start():found.end()]
             record = {
+                "match_index": match_index,
                 "page": source_page + 1,
                 "page_index": source_page,
                 "text": excerpt,
@@ -359,11 +372,20 @@ def find_literal_matches(
             matches.append(record)
             used_chars += len(excerpt)
 
+    returned_pages = sorted({int(match["page"]) for match in matches})
+    match_pages = sorted(matching_pages)
+    consumed = match_offset + len(matches)
+    has_more = total_matches > consumed
     return {
         "matches": matches,
+        "match_offset": match_offset,
+        "next_offset": consumed if has_more and matches else None,
         "total_matches": total_matches,
         "returned_matches": len(matches),
-        "has_more_matches": total_matches > len(matches),
+        "has_more_matches": has_more,
+        "match_pages": match_pages,
+        "returned_pages": returned_pages,
+        "omitted_match_pages": sorted(matching_pages - set(returned_pages)),
         "coverage": coverage,
         "source_chars_returned": used_chars,
     }
@@ -626,6 +648,7 @@ __all__ = [
     "MAX_PDF_RENDER_DPI",
     "MAX_PDF_RENDER_PNG_BYTES",
     "MAX_PDF_RENDER_PIXELS",
+    "MAX_PDF_SEARCH_MATCH_OFFSET",
     "MAX_PDF_SEARCH_MAX_CHARS",
     "MAX_PDF_SEARCH_MAX_MATCHES",
     "MAX_PDF_SEARCH_PAGES",

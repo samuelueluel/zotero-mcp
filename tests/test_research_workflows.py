@@ -12,6 +12,8 @@ from zotero_mcp.research_workflows import (
     CandidateScopeDependencies,
     CandidateScopeRequest,
     CandidateScopeService,
+    ComparisonManifestRequest,
+    ComparisonManifestValidator,
     EvidenceBundleValidationRequest,
     EvidenceBundleValidator,
     ResultEvidenceDependencies,
@@ -99,6 +101,168 @@ def test_candidate_scope_deduplicates_retains_facets_and_sorts_by_positive_reran
     assert len(leader["hits"]) == 2
     assert all(hit["evidence_id"].startswith("zr1:") for hit in leader["hits"])
     assert calls[0][5] == {ITEM, OTHER}
+
+
+def _comparison_result(result_id="r1", result_class="main"):
+    return {
+        "result_id": result_id,
+        "result_class": result_class,
+        "outcome": "crime count",
+        "point_estimate": "-0.10",
+        "scale": "percentage change",
+        "uncertainty": "SE 0.03",
+        "treatment": "demolition",
+        "dose": "one demolition",
+        "denominator": "baseline crime count",
+        "population": "neighborhoods",
+        "geography": "city",
+        "time_horizon": "one year",
+        "specification": "fixed effects",
+        "evidence_ids": ["evidence-" + result_id],
+    }
+
+
+def _comparison_card(key, status="eligible", result_id="r1"):
+    card = {"item_key": key, "status": status}
+    if status == "eligible":
+        card.update(
+            {
+                "results": [_comparison_result(result_id)],
+                "primary_result_id": result_id,
+                "maximum_substantive_result_id": result_id,
+                "selected_result_id": result_id,
+                "inventory_locators": ["Table 2, PDF p. 6"],
+            }
+        )
+    elif status == "no_eligible_result":
+        card["reason"] = "No crime outcome was estimated."
+    return card
+
+
+def _comparison_manifest_defaults():
+    return {
+        "eligible_result_policy": "substantive_all",
+        "numerical_winner_status": "clear",
+        "substantive_winner_status": "clear",
+        "alternative_policy_changes_top_k": False,
+    }
+
+
+def test_comparison_manifest_requires_complete_frozen_item_coverage():
+    request = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM, OTHER],
+        cards=[_comparison_card(ITEM), _comparison_card(OTHER, "no_eligible_result")],
+        ranking_rule="Largest absolute percentage change in a primary crime outcome.",
+        selected_item_keys=[ITEM],
+        reported_item_keys=[ITEM],
+        **_comparison_manifest_defaults(),
+    )
+    result = ComparisonManifestValidator().validate(request)
+    assert result["ready"] is True
+    assert result["complete"] is True
+    assert result["summary"]["eligible"] == 1
+
+
+def test_comparison_manifest_blocks_missing_cards_and_unresolved_complete_scope():
+    request = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM, OTHER],
+        cards=[_comparison_card(ITEM), _comparison_card(OTHER, "unresolved")],
+        ranking_rule="Largest point estimate.",
+        selected_item_keys=[ITEM],
+        **_comparison_manifest_defaults(),
+    )
+    result = ComparisonManifestValidator().validate(request)
+    assert result["ready"] is False
+    assert "UNRESOLVED_ITEMS" in result["reason_codes"]
+
+    missing = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM, OTHER],
+        cards=[_comparison_card(ITEM)],
+        ranking_rule="Largest point estimate.",
+        selected_item_keys=[ITEM],
+        **_comparison_manifest_defaults(),
+    )
+    result = ComparisonManifestValidator().validate(missing)
+    assert "CARD_SET_MISMATCH" in result["reason_codes"]
+
+
+def test_comparison_manifest_rejects_inconsistent_card_selection():
+    card = _comparison_card(ITEM, "no_eligible_result")
+    card["selected_result_id"] = "r1"
+    request = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM],
+        cards=[card],
+        ranking_rule="Largest point estimate.",
+        selected_item_keys=[ITEM],
+        **_comparison_manifest_defaults(),
+    )
+    result = ComparisonManifestValidator().validate(request)
+    assert result["ready"] is False
+    assert "INELIGIBLE_CARD_SELECTED" in result["reason_codes"]
+
+
+def test_comparison_manifest_enforces_reported_top_set():
+    request = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM, OTHER],
+        cards=[_comparison_card(ITEM), _comparison_card(OTHER)],
+        ranking_rule="Largest absolute percentage change.",
+        selected_item_keys=[ITEM],
+        reported_item_keys=[OTHER],
+        **_comparison_manifest_defaults(),
+    )
+    result = ComparisonManifestValidator().validate(request)
+    assert result["ready"] is False
+    assert "REPORTED_ITEM_NOT_SELECTED" in result["reason_codes"]
+
+
+def test_comparison_manifest_enforces_primary_and_maximum_substantive_policy():
+    card = _comparison_card(ITEM)
+    card["results"].append(_comparison_result("dynamic", "dynamic"))
+    card["maximum_substantive_result_id"] = "dynamic"
+    request = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM],
+        cards=[card],
+        ranking_rule="Largest significant substantive effect.",
+        eligible_result_policy="substantive_all",
+        numerical_winner_status="clear",
+        substantive_winner_status="clear",
+        alternative_policy_changes_top_k=False,
+        selected_item_keys=[ITEM],
+    )
+    result = ComparisonManifestValidator().validate(request)
+    assert result["ready"] is False
+    assert "SELECTED_RESULT_POLICY_MISMATCH" in result["reason_codes"]
+
+    card["selected_result_id"] = "dynamic"
+    request = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM],
+        cards=[card],
+        ranking_rule="Largest significant substantive effect.",
+        eligible_result_policy="substantive_all",
+        numerical_winner_status="clear",
+        substantive_winner_status="clear",
+        alternative_policy_changes_top_k=False,
+        selected_item_keys=[ITEM],
+    )
+    result = ComparisonManifestValidator().validate(request)
+    assert result["ready"] is True
+
+
+def test_comparison_manifest_requires_top_k_when_only_numerical_winner_is_clear():
+    request = ComparisonManifestRequest(
+        frozen_item_keys=[ITEM],
+        cards=[_comparison_card(ITEM)],
+        ranking_rule="Largest heterogeneous effect.",
+        eligible_result_policy="substantive_all",
+        numerical_winner_status="clear",
+        substantive_winner_status="not_clear",
+        alternative_policy_changes_top_k=True,
+        winner_type="clear_winner",
+        selected_item_keys=[ITEM],
+    )
+    result = ComparisonManifestValidator().validate(request)
+    assert result["ready"] is False
+    assert "SUBSTANTIVE_WINNER_NOT_CLEAR" in result["reason_codes"]
 
 
 def test_candidate_scope_rejects_backend_scope_leaks():
@@ -192,7 +356,13 @@ def test_direct_collection_scope_intersects_existing_item_filter():
     assert result == {"item_keys": [ITEM], "source_group": "article"}
 
 
-def _result_dependencies(*, sidecar_text="Estimate -0.072*** (0.020)", pdf_text="Estimate -0.072*** (0.020)", pdf_coverage="complete"):
+def _result_dependencies(
+    *,
+    passage_text="Indexed estimate discussion.",
+    sidecar_text="Estimate -0.072*** (0.020)",
+    pdf_text="Estimate -0.072*** (0.020)",
+    pdf_coverage="complete",
+):
     calls = {"passage": [], "sidecar": [], "pdf": []}
 
     def passage_reader(token, neighbors, max_chars):
@@ -200,7 +370,7 @@ def _result_dependencies(*, sidecar_text="Estimate -0.072*** (0.020)", pdf_text=
         return {
             "ok": True,
             "route": "indexed_passage",
-            "chunks": [{"text": "Indexed estimate discussion."}],
+            "chunks": [{"text": passage_text}],
         }
 
     def sidecar_reader(key, **kwargs):
@@ -314,6 +484,51 @@ def test_result_evidence_ignores_markdown_bold_around_table_numbers():
     )["items"][0]
     assert row["conflict_flags"] == []
     assert row["requires_visual_review"] is False
+
+
+def test_result_evidence_flags_referenced_table_not_read():
+    dependencies, _ = _result_dependencies(
+        passage_text="The decisive estimates appear in Table 4.",
+        pdf_text="Results prose without the table caption.",
+    )
+    row = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[
+                {
+                    "item_key": ITEM,
+                    "evidence_id": "zr1:0:ITEM0001#1:" + "b" * 64,
+                    "pdf_queries": ["decisive estimates"],
+                }
+            ]
+        )
+    )["items"][0]
+    assert row["referenced_tables"] == [4]
+    assert row["referenced_tables_not_read"] == [4]
+    assert row["requires_follow_up"] is True
+    assert "REFERENCED_TABLE_NOT_READ" in {
+        flag["code"] for flag in row["conflict_flags"]
+    }
+
+
+def test_result_evidence_clears_table_follow_up_when_pdf_table_is_read():
+    dependencies, _ = _result_dependencies(
+        passage_text="The decisive estimates appear in Table 4.",
+        pdf_text="Table 4: Decisive estimates.",
+    )
+    row = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[
+                {
+                    "item_key": ITEM,
+                    "evidence_id": "zr1:0:ITEM0001#1:" + "b" * 64,
+                    "pdf_queries": ["Table 4"],
+                }
+            ]
+        )
+    )["items"][0]
+    assert row["read_referenced_tables"] == [4]
+    assert "referenced_tables_not_read" not in row
+    assert row["requires_follow_up"] is False
 
 
 def test_result_evidence_flags_no_match_on_incomplete_pdf_text():
@@ -490,6 +705,34 @@ def test_evidence_bundle_validator_accepts_complete_numeric_claim():
     assert result["results"][0]["status"] == "ready"
 
 
+def test_evidence_bundle_validator_uses_structured_expected_values():
+    claim = _numeric_claim(
+        text="Table 6 reports an effect of -0.164 with SE 0.052.",
+        expected_values=[
+            {"role": "estimate", "value": "-0.164"},
+            {"role": "se", "value": "0.052"},
+        ],
+    )
+    evidence = _evidence_record(quote="Table row | -.164** | .052")
+    result = EvidenceBundleValidator().validate(
+        EvidenceBundleValidationRequest(claims=[claim], evidence=[evidence])
+    )
+    assert result["ready"] is True
+
+
+def test_evidence_bundle_validator_blocks_claims_outside_allowed_items():
+    result = EvidenceBundleValidator().validate(
+        EvidenceBundleValidationRequest(
+            claims=[_numeric_claim()],
+            evidence=[_evidence_record()],
+            allowed_item_keys=[OTHER],
+        )
+    )
+    row = result["results"][0]
+    assert row["status"] == "blocked"
+    assert "ITEM_OUTSIDE_ALLOWED_SCOPE" in row["reason_codes"]
+
+
 def test_evidence_bundle_validator_blocks_missing_context_and_quote_numbers():
     claim = _numeric_claim(
         text="The treatment reduced crime by 17%.",
@@ -557,10 +800,37 @@ def test_validate_evidence_bundle_adapter_parses_json(monkeypatch):
     raw = research_tool.validate_evidence_bundle(
         claims=json.dumps([_numeric_claim()]),
         evidence=json.dumps([_evidence_record()]),
+        allowed_item_keys=json.dumps([ITEM]),
         ctx=DummyContext(),
     )
     assert json.loads(raw)["ready"] is True
     assert captured["request"].claims[0].claim_id == "c1"
+    assert captured["request"].allowed_item_keys == [ITEM]
+
+
+def test_validate_comparison_manifest_adapter_parses_json(monkeypatch):
+    captured = {}
+
+    class Validator:
+        def validate(self, request):
+            captured["request"] = request
+            return {"schema_version": 1, "ok": True, "ready": True}
+
+    monkeypatch.setattr(research_tool, "ComparisonManifestValidator", Validator)
+    manifest = {
+        "frozen_item_keys": [ITEM],
+        "cards": [_comparison_card(ITEM)],
+        "ranking_rule": "Largest point estimate.",
+        "selected_item_keys": [ITEM],
+        **_comparison_manifest_defaults(),
+    }
+    raw = research_tool.validate_comparison_manifest(
+        manifest=json.dumps(manifest),
+        ctx=DummyContext(),
+    )
+    result = json.loads(raw)
+    assert result["ready"] is True
+    assert captured["request"].frozen_item_keys == [ITEM]
 
 
 def test_candidate_searcher_reuses_one_semantic_service(monkeypatch):

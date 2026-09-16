@@ -79,6 +79,7 @@ from zotero_mcp.tools.read_pdf import (  # noqa: F401
 from zotero_mcp.tools.research import (  # noqa: F401
     build_candidate_scope,
     collect_result_evidence,
+    validate_comparison_manifest,
     validate_evidence_bundle,
 )
 from zotero_mcp.tools.retrieval import (  # noqa: F401

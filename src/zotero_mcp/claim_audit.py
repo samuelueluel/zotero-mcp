@@ -47,12 +47,24 @@ RiskTag = Literal[
     "attribution",
     "other",
 ]
+NumericValueRole = Literal[
+    "estimate",
+    "se",
+    "ci_lower",
+    "ci_upper",
+    "p_value",
+    "p_threshold",
+    "sample_size",
+    "other",
+]
+NumericOperator = Literal["<", "<=", "=", ">=", ">"]
 
 # Stable machine-readable gate codes. The alias is intentionally not used to
 # validate arbitrary internal failures: adding a code is a deliberate API
 # change, while the public result remains forward-compatible as a JSON object.
 ReasonCode = Literal[
     "ITEM_MISMATCH",
+    "ITEM_OUTSIDE_ALLOWED_SCOPE",
     "ITEM_NOT_FOUND",
     "ATTACHMENT_MISMATCH",
     "STALE_EVIDENCE",
@@ -65,6 +77,7 @@ ReasonCode = Literal[
     "SIDECAR_FALLBACK_REQUIRES_PAGE_FAILURE",
     "NUMBER_MISMATCH",
     "UNIT_MISMATCH",
+    "OPERATOR_MISMATCH",
     "COMPARATOR_EVIDENCE_MISSING",
     "ROUTE_MISLABELED",
 ]
@@ -144,12 +157,31 @@ EvidenceRef = Annotated[
 ]
 
 
+class ExpectedNumericValue(_StrictModel):
+    """One empirical value the numeric audit must find in accepted quotes."""
+
+    role: NumericValueRole
+    value: str = Field(min_length=1, max_length=64)
+    unit: str | None = Field(default=None, max_length=50)
+    operator: NumericOperator | None = None
+
+    @model_validator(mode="after")
+    def _valid_numeric_value(self) -> ExpectedNumericValue:
+        normalized = unicodedata.normalize("NFKC", self.value).replace("−", "-")
+        if not re.fullmatch(rf"[+-]?{_NUMBER_TOKEN}", normalized):
+            raise ValueError("expected numeric value must contain one scalar number")
+        if self.role == "p_threshold" and self.operator is None:
+            raise ValueError("p_threshold expected values require an operator")
+        return self
+
+
 class ClaimInput(_StrictModel):
     """One atomic claim and up to four caller-provided evidence candidates."""
 
     claim_id: str = Field(min_length=1, max_length=MAX_CLAIM_ID_CHARS)
     text: str = Field(min_length=1, max_length=MAX_CLAIM_CHARS)
     risk_tags: list[RiskTag] = Field(default_factory=list, max_length=6)
+    expected_values: list[ExpectedNumericValue] = Field(default_factory=list, max_length=16)
     evidence: list[EvidenceRef] = Field(
         min_length=1,
         max_length=MAX_EVIDENCE_REFS,
@@ -168,6 +200,17 @@ class ClaimInput(_StrictModel):
                 raise ValueError(
                     "within_item_comparison evidence must use exactly one item_key"
                 )
+        expected = [
+            (
+                value.role,
+                value.value,
+                value.unit or "",
+                value.operator or "",
+            )
+            for value in self.expected_values
+        ]
+        if len(set(expected)) != len(expected):
+            raise ValueError("expected_values entries must be distinct")
         return self
 
 
@@ -461,24 +504,24 @@ def _is_reference_hit(hit: Mapping[str, Any]) -> bool:
     )
 
 
-_NUMBER_TOKEN = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_NUMBER_TOKEN = r"(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
 _UNIT_TOKEN = (
     r"(?:percentage\s+points?|basis\s+points?|per\s+cent|"
     r"percent(?:age)?|%|pp|bps?|million|billion|thousand)"
 )
 _RANGE_PATTERN = re.compile(
     rf"(?<![A-Za-z0-9_.,])"
-    rf"(?P<left>[+-]?{_NUMBER_TOKEN})(?![\d,])"
+    rf"(?P<left>[+-]?{_NUMBER_TOKEN})(?!\d|,\d)"
     rf"(?:\s*(?P<left_unit>{_UNIT_TOKEN}))?\s*"
     rf"(?:to|[-‐‑‒–—])\s*"
-    rf"(?P<right>[+-]?{_NUMBER_TOKEN})(?![\d,])"
+    rf"(?P<right>[+-]?{_NUMBER_TOKEN})(?!\d|,\d)"
     rf"(?:\s*(?P<right_unit>{_UNIT_TOKEN}))?"
     rf"(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 _SCALAR_PATTERN = re.compile(
     rf"(?<![A-Za-z0-9_.,])"
-    rf"(?P<number>[+-]?{_NUMBER_TOKEN})(?![\d,])"
+    rf"(?P<number>[+-]?{_NUMBER_TOKEN})(?!\d|,\d)"
     rf"(?:\s*(?P<unit>{_UNIT_TOKEN}))?"
     rf"(?![A-Za-z0-9_])",
     re.IGNORECASE,
@@ -535,8 +578,53 @@ def _numeric_signatures(text: str) -> set[tuple[Decimal, str]]:
     return signatures
 
 
+_INCIDENTAL_NUMBER_PATTERN = re.compile(
+    r"\b(?:tables?|figures?|figs?\.?|columns?|cols?\.?|models?|specifications?|pdf\s+pages?|pages?)\s+"
+    rf"{_NUMBER_TOKEN}(?:\s*(?:[-‐‑‒–—/,]|and|to)\s*{_NUMBER_TOKEN})*\b",
+    re.IGNORECASE,
+)
+_OPERATOR_PATTERN = re.compile(
+    rf"(?P<operator><=|>=|<|>|=)\s*(?P<number>[+-]?{_NUMBER_TOKEN})(?!\d|,\d)",
+    re.IGNORECASE,
+)
+
+
+def _claim_numeric_signatures(text: str) -> set[tuple[Decimal, str]]:
+    """Extract claim values while ignoring structural locator numbers."""
+
+    without_locators = _INCIDENTAL_NUMBER_PATTERN.sub(" ", text or "")
+    return _numeric_signatures(without_locators)
+
+
+def _expected_numeric_signatures(
+    expected_values: Sequence[ExpectedNumericValue],
+) -> set[tuple[Decimal, str]]:
+    signatures: set[tuple[Decimal, str]] = set()
+    for expected in expected_values:
+        number = _decimal_number(
+            unicodedata.normalize("NFKC", expected.value).replace("−", "-")
+        )
+        if number is not None:
+            signatures.add((number, _canonical_numeric_unit(expected.unit)))
+    return signatures
+
+
+def _numeric_operator_signatures(text: str) -> set[tuple[Decimal, str]]:
+    normalized = unicodedata.normalize("NFKC", text or "").replace("−", "-")
+    signatures: set[tuple[Decimal, str]] = set()
+    for match in _OPERATOR_PATTERN.finditer(normalized):
+        number = _decimal_number(match.group("number"))
+        if number is not None:
+            signatures.add((number, match.group("operator")))
+    return signatures
+
+
 def _numeric_claim(claim: ClaimInput) -> bool:
-    return "numeric" in claim.risk_tags or bool(_numeric_signatures(claim.text))
+    return (
+        "numeric" in claim.risk_tags
+        or bool(claim.expected_values)
+        or bool(_claim_numeric_signatures(claim.text))
+    )
 
 
 def _source_classification(metadata: Mapping[str, Any]) -> str | None:
@@ -567,11 +655,31 @@ class AuditService:
         claims: Sequence[ClaimInput | Mapping[str, Any]] | str,
         *,
         escalation: Literal["none", "bounded"] = "none",
+        allowed_item_keys: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         parsed_claims = parse_claims(claims)
+        allowed = {key.upper() for key in (allowed_item_keys or [])}
         results: list[dict[str, Any]] = []
         escalation_budget = MAX_ESCALATED_CLAIMS
         for claim in parsed_claims:
+            claim_item_keys = {ref.item_key.upper() for ref in claim.evidence}
+            outside_allowed = sorted(claim_item_keys - allowed) if allowed else []
+            if outside_allowed:
+                results.append(
+                    self._evaluate(
+                        claim,
+                        [],
+                        [
+                            GateFailure(
+                                "ITEM_OUTSIDE_ALLOWED_SCOPE",
+                                "claim references unselected items: " + ", ".join(outside_allowed),
+                            )
+                        ],
+                        page_failure=False,
+                        escalation_performed=False,
+                    )
+                )
+                continue
             records, failures, page_failure = self._materialize_claim(claim)
             needs_escalation = self._needs_escalation(claim, records, failures)
             escalation_performed = False
@@ -612,6 +720,7 @@ class AuditService:
         return {
             "schema_version": SCHEMA_VERSION,
             "mode": "deterministic",
+            "allowed_item_keys": sorted(allowed),
             "summary": {
                 "total": len(results),
                 **counts,
@@ -1106,29 +1215,63 @@ class AuditService:
                     )
                 )
             else:
-                claim_numbers = _numeric_signatures(claim.text)
+                claim_numbers = (
+                    _expected_numeric_signatures(claim.expected_values)
+                    if claim.expected_values
+                    else _claim_numeric_signatures(claim.text)
+                )
                 # A number elsewhere on the page is not evidence for the claim.
                 # Only signatures inside caller-supplied quotes that passed
                 # containment may satisfy the deterministic numeric gate.
-                source_numbers = _numeric_signatures(
-                    "\n".join(record.quote for record in direct_records)
-                )
+                accepted_quotes = "\n".join(record.quote for record in direct_records)
+                source_numbers = _numeric_signatures(accepted_quotes)
                 missing = claim_numbers - source_numbers
                 source_values = {number for number, _unit in source_numbers}
+                missing_numbers = sorted(missing, key=lambda value: (value[0], value[1]))
+                quoted_numbers = sorted(source_numbers, key=lambda value: (value[0], value[1]))
+                missing_detail = ", ".join(
+                    f"{number}{unit}" for number, unit in missing_numbers
+                )
+                quoted_detail = ", ".join(
+                    f"{number}{unit}" for number, unit in quoted_numbers
+                )
                 if any(number not in source_values for number, _unit in missing):
                     failures.append(
                         GateFailure(
                             "NUMBER_MISMATCH",
-                            "numeric values in the claim were not confirmed by direct evidence quotes",
+                            "numeric values in the claim were not confirmed by direct evidence quotes; "
+                            f"missing={missing_detail}; quoted={quoted_detail}",
                         )
                     )
                 if any(number in source_values for number, _unit in missing):
                     failures.append(
                         GateFailure(
                             "UNIT_MISMATCH",
-                            "numeric units in the claim were not confirmed by direct evidence quotes",
+                            "numeric units in the claim were not confirmed by direct evidence quotes; "
+                            f"missing={missing_detail}; quoted={quoted_detail}",
                         )
                     )
+                if claim.expected_values:
+                    source_operators = _numeric_operator_signatures(accepted_quotes)
+                    missing_operators = []
+                    for expected in claim.expected_values:
+                        if expected.operator is None:
+                            continue
+                        number = _decimal_number(
+                            unicodedata.normalize("NFKC", expected.value).replace("−", "-")
+                        )
+                        if number is not None and (number, expected.operator) not in source_operators:
+                            missing_operators.append(
+                                f"{expected.role}:{expected.operator}{expected.value}"
+                            )
+                    if missing_operators:
+                        failures.append(
+                            GateFailure(
+                                "OPERATOR_MISMATCH",
+                                "numeric operators in the claim were not confirmed by direct evidence quotes; "
+                                "missing=" + ", ".join(missing_operators),
+                            )
+                        )
 
         # A failed PDF route may be rescued by a truthful, weaker sidecar
         # fallback; the failure remains visible only when no such record exists.

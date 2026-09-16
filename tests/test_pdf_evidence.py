@@ -87,6 +87,27 @@ class TestLiteralSearch:
         assert result["total_matches"] == 4
         assert result["returned_matches"] == 2
         assert result["has_more_matches"] is True
+        assert result["match_pages"] == [1, 2, 3]
+        assert result["returned_pages"] == [1]
+        assert result["omitted_match_pages"] == [2, 3]
+        assert result["next_offset"] == 2
+
+    def test_match_offset_paginates_without_losing_complete_page_summary(self):
+        result = find_literal_matches(
+            _doc(["needle needle", "needle", "needle"]),
+            "needle",
+            max_matches=2,
+            match_offset=2,
+            context_chars=0,
+        )
+        assert result["total_matches"] == 4
+        assert result["match_offset"] == 2
+        assert [match["match_index"] for match in result["matches"]] == [2, 3]
+        assert [match["page"] for match in result["matches"]] == [2, 3]
+        assert result["match_pages"] == [1, 2, 3]
+        assert result["omitted_match_pages"] == [1]
+        assert result["has_more_matches"] is False
+        assert result["next_offset"] is None
 
     def test_ocr_pages_are_not_searched(self):
         result = find_literal_matches(
@@ -195,7 +216,40 @@ class TestFindInPdfWrapper:
         assert result["page_range"] == {"start": 1, "end": 2}
         assert result["coverage"] == "partial_text_coverage"
         assert result["matches"][0]["page"] == 1
+        assert result["match_pages"] == [1]
+        assert result["returned_pages"] == [1]
+        assert result["omitted_match_pages"] == []
+        assert result["offset"] == 0
         assert result["extraction_engine"] == "pdf-inspector"
+
+    def test_wrapper_exposes_late_match_pages_and_offset_pagination(self, monkeypatch):
+        monkeypatch.setattr(
+            read_pdf_tools,
+            "_get_pdf_path",
+            lambda _key, _ctx: ("/tmp/paper.pdf", "Paper", False),
+        )
+        monkeypatch.setattr(read_pdf_tools, "pdf_page_count", lambda _path: 3)
+        monkeypatch.setattr(
+            read_pdf_tools,
+            "extract_pdf",
+            lambda _path, **_kwargs: _doc(["needle needle", "needle", "needle"]),
+        )
+        first = json.loads(
+            read_pdf_tools.find_in_pdf(
+                "ITEM", "needle", max_matches=2, ctx=DummyContext()
+            )
+        )
+        assert first["match_pages"] == [1, 2, 3]
+        assert first["omitted_match_pages"] == [2, 3]
+        assert first["next_offset"] == 2
+
+        second = json.loads(
+            read_pdf_tools.find_in_pdf(
+                "ITEM", "needle", max_matches=2, offset=2, ctx=DummyContext()
+            )
+        )
+        assert [match["page"] for match in second["matches"]] == [2, 3]
+        assert second["has_more_matches"] is False
 
     def test_wrapper_rejects_page_ranges_over_limit(self, monkeypatch):
         monkeypatch.setattr(

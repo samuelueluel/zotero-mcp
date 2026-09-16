@@ -8,11 +8,14 @@ logic remains hermetic and testable.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from zotero_mcp.claim_audit import ExpectedNumericValue
 
 SCHEMA_VERSION = 1
 MAX_QUERY_FACETS = 4
@@ -392,8 +395,6 @@ def _route_texts(record: Mapping[str, Any]) -> list[str]:
 def _signature_summary(texts: list[str]) -> dict[str, dict[str, list[str]]]:
     """Index signs and adjacent significance stars by numeric magnitude."""
 
-    import re
-
     pattern = re.compile(
         r"(?<![A-Za-z0-9])(?P<sign>[-+−]?)\s*(?P<number>\d[\d,]*(?:\.\d+)?)"
         r"\s*(?P<unit>%|percent|percentage points?|pp|bps)?\s*(?P<stars>\*{1,3})?",
@@ -412,6 +413,17 @@ def _signature_summary(texts: list[str]) -> dict[str, dict[str, list[str]]]:
     return {
         "signs": {key: sorted(value) for key, value in signs.items()},
         "stars": {key: sorted(value) for key, value in stars.items()},
+    }
+
+
+_TABLE_REFERENCE_PATTERN = re.compile(r"\btable\s+(\d{1,3})\b", re.IGNORECASE)
+
+
+def _referenced_table_numbers(texts: list[str]) -> set[int]:
+    return {
+        int(match.group(1))
+        for text in texts
+        for match in _TABLE_REFERENCE_PATTERN.finditer(text)
     }
 
 
@@ -569,6 +581,36 @@ class ResultEvidenceService:
                 record["pdf"] = pdf_record
 
             flags = _conflict_flags(sidecar_records, pdf_record)
+            non_pdf_texts: list[str] = []
+            indexed = record.get("indexed_passage")
+            if isinstance(indexed, Mapping):
+                non_pdf_texts.extend(_route_texts(indexed))
+            for sidecar in sidecar_records:
+                non_pdf_texts.extend(_route_texts(sidecar))
+            referenced_tables = _referenced_table_numbers(non_pdf_texts)
+            read_tables: set[int] = set()
+            if pdf_record and pdf_record.get("ok"):
+                for row in pdf_record.get("queries") or []:
+                    if not isinstance(row, Mapping) or not row.get("matches"):
+                        continue
+                    read_tables.update(
+                        _referenced_table_numbers(
+                            [str(row.get("query") or ""), *_route_texts(row)]
+                        )
+                    )
+            missing_tables = sorted(referenced_tables - read_tables)
+            if referenced_tables:
+                record["referenced_tables"] = sorted(referenced_tables)
+                record["read_referenced_tables"] = sorted(read_tables & referenced_tables)
+            if missing_tables:
+                record["referenced_tables_not_read"] = missing_tables
+                flags.append(
+                    {
+                        "code": "REFERENCED_TABLE_NOT_READ",
+                        "tables": missing_tables,
+                    }
+                )
+
             route_errors: list[dict[str, Any]] = []
             indexed = record.get("indexed_passage")
             if isinstance(indexed, Mapping) and not indexed.get("ok"):
@@ -627,6 +669,7 @@ class ResultEvidenceService:
             record["requires_visual_review"] = any(
                 flag.get("code") in visual_codes for flag in flags
             )
+            record["requires_follow_up"] = bool(missing_tables)
             record["ok"] = not route_errors
             items.append(record)
 
@@ -654,6 +697,17 @@ EvidenceRiskTag = Literal[
     "causal",
     "attribution",
 ]
+ResultClass = Literal[
+    "main",
+    "subgroup",
+    "dosage",
+    "dynamic",
+    "supplemental",
+    "robustness",
+    "model_based",
+]
+EligibleResultPolicy = Literal["primary_only", "substantive_all", "custom"]
+WinnerStatus = Literal["clear", "not_clear"]
 UncertaintyStatus = Literal[
     "reported",
     "threshold_only",
@@ -700,6 +754,7 @@ class DraftEvidenceClaim(_StrictModel):
     text: str = Field(min_length=1, max_length=1500)
     evidence_ids: list[str] = Field(min_length=1, max_length=8)
     risk_tags: list[EvidenceRiskTag] = Field(default_factory=list, max_length=5)
+    expected_values: list[ExpectedNumericValue] = Field(default_factory=list, max_length=16)
     unverified: bool = False
     context: ClaimEvidenceContext = Field(default_factory=ClaimEvidenceContext)
 
@@ -716,6 +771,7 @@ class EvidenceBundleValidationRequest(_StrictModel):
 
     claims: list[DraftEvidenceClaim] = Field(min_length=1, max_length=20)
     evidence: list[EvidenceBundleRecord] = Field(min_length=1, max_length=40)
+    allowed_item_keys: list[str] = Field(default_factory=list, max_length=20)
 
     @field_validator("claims")
     @classmethod
@@ -733,9 +789,314 @@ class EvidenceBundleValidationRequest(_StrictModel):
             raise ValueError("evidence_id values must be distinct")
         return value
 
+    @field_validator("allowed_item_keys")
+    @classmethod
+    def _allowed_item_keys_are_valid(cls, value: list[str]) -> list[str]:
+        normalized = [key.upper() for key in value]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("allowed_item_keys must be distinct")
+        if any(not re.fullmatch(_ITEM_KEY_PATTERN, key) for key in value):
+            raise ValueError("allowed_item_keys must contain exact parent item keys")
+        return value
+
 
 def _reason(code: str, message: str, *, blocking: bool = True) -> dict[str, Any]:
     return {"code": code, "message": message, "blocking": blocking}
+
+
+class ComparisonResultRecord(_StrictModel):
+    """One result eligible for a task-specific cross-paper comparison."""
+
+    result_id: str = Field(min_length=1, max_length=100)
+    result_class: ResultClass
+    outcome: str = Field(min_length=1, max_length=500)
+    point_estimate: str = Field(min_length=1, max_length=300)
+    scale: str = Field(min_length=1, max_length=300)
+    uncertainty: str = Field(min_length=1, max_length=300)
+    treatment: str = Field(min_length=1, max_length=500)
+    dose: str = Field(min_length=1, max_length=500)
+    denominator: str = Field(min_length=1, max_length=500)
+    population: str = Field(min_length=1, max_length=500)
+    geography: str = Field(min_length=1, max_length=300)
+    time_horizon: str = Field(min_length=1, max_length=500)
+    specification: str = Field(min_length=1, max_length=500)
+    evidence_ids: list[str] = Field(min_length=1, max_length=8)
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def _evidence_ids_are_distinct(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("evidence_ids must be distinct")
+        return value
+
+
+ComparisonStatus = Literal["eligible", "no_eligible_result", "unresolved"]
+
+
+class ComparisonResultCard(_StrictModel):
+    """Terminal result inventory for one frozen parent item."""
+
+    item_key: str = Field(pattern=_ITEM_KEY_PATTERN)
+    status: ComparisonStatus
+    results: list[ComparisonResultRecord] = Field(default_factory=list, max_length=100)
+    primary_result_id: str | None = Field(default=None, max_length=100)
+    maximum_substantive_result_id: str | None = Field(default=None, max_length=100)
+    selected_result_id: str | None = Field(default=None, max_length=100)
+    inventory_locators: list[str] = Field(default_factory=list, max_length=20)
+    reason: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("results")
+    @classmethod
+    def _result_ids_are_distinct(cls, value: list[ComparisonResultRecord]) -> list[ComparisonResultRecord]:
+        ids = [result.result_id for result in value]
+        if len(set(ids)) != len(ids):
+            raise ValueError("result_id values must be distinct within an item")
+        return value
+
+    @field_validator("inventory_locators")
+    @classmethod
+    def _inventory_locators_are_bounded(cls, value: list[str]) -> list[str]:
+        if any(not locator.strip() or len(locator) > 500 for locator in value):
+            raise ValueError("inventory_locators must be nonempty strings of at most 500 characters")
+        if len(set(value)) != len(value):
+            raise ValueError("inventory_locators must be distinct")
+        return value
+
+
+class ComparisonManifestRequest(_StrictModel):
+    """Frozen-set result manifest submitted before a comparison is reported."""
+
+    frozen_item_keys: list[str] = Field(min_length=1, max_length=500)
+    cards: list[ComparisonResultCard] = Field(min_length=1, max_length=500)
+    ranking_rule: str = Field(min_length=1, max_length=1500)
+    eligible_result_policy: EligibleResultPolicy
+    conclusion_scope: Literal["complete", "verified_only"] = "complete"
+    winner_type: Literal["clear_winner", "top_k"] = "clear_winner"
+    numerical_winner_status: WinnerStatus
+    substantive_winner_status: WinnerStatus
+    alternative_policy_changes_top_k: bool
+    max_reported_items: int = Field(default=1, ge=1, le=3)
+    selected_item_keys: list[str] = Field(min_length=1, max_length=3)
+    reported_item_keys: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("frozen_item_keys", "selected_item_keys", "reported_item_keys")
+    @classmethod
+    def _keys_are_distinct(cls, value: list[str]) -> list[str]:
+        normalized = [key.upper() for key in value]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("item keys must be distinct")
+        return value
+
+    @field_validator("cards")
+    @classmethod
+    def _card_keys_are_distinct(cls, value: list[ComparisonResultCard]) -> list[ComparisonResultCard]:
+        keys = [card.item_key.upper() for card in value]
+        if len(set(keys)) != len(keys):
+            raise ValueError("cards must contain one entry per item_key")
+        return value
+
+    @field_validator("frozen_item_keys")
+    @classmethod
+    def _frozen_keys_are_distinct(cls, value: list[str]) -> list[str]:
+        normalized = [key.upper() for key in value]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("frozen_item_keys must be distinct")
+        return value
+
+
+class ComparisonManifestValidator:
+    """Check frozen-set coverage and final selection without judging estimates."""
+
+    def validate(self, request: ComparisonManifestRequest) -> dict[str, Any]:
+        frozen = {key.upper() for key in request.frozen_item_keys}
+        card_map = {card.item_key.upper(): card for card in request.cards}
+        reasons: list[dict[str, Any]] = []
+
+        missing = sorted(frozen - set(card_map))
+        extra = sorted(set(card_map) - frozen)
+        if missing or extra:
+            details = []
+            if missing:
+                details.append("missing cards: " + ", ".join(missing))
+            if extra:
+                details.append("out-of-scope cards: " + ", ".join(extra))
+            reasons.append({
+                "code": "CARD_SET_MISMATCH",
+                "message": "; ".join(details),
+                "blocking": True,
+            })
+
+        unresolved = [
+            key for key, card in card_map.items() if card.status == "unresolved"
+        ]
+        if unresolved and request.conclusion_scope == "complete":
+            reasons.append({
+                "code": "UNRESOLVED_ITEMS",
+                "message": "unresolved items block a complete-scope comparison: " + ", ".join(sorted(unresolved)),
+                "blocking": True,
+            })
+
+        for key, card in card_map.items():
+            result_ids = {result.result_id for result in card.results}
+            if card.status == "eligible":
+                if not card.results:
+                    reasons.append({
+                        "code": "ELIGIBLE_CARD_EMPTY",
+                        "message": f"{key} is eligible but has no result records",
+                        "blocking": True,
+                    })
+                required_ids = {
+                    "primary_result_id": card.primary_result_id,
+                    "maximum_substantive_result_id": card.maximum_substantive_result_id,
+                    "selected_result_id": card.selected_result_id,
+                }
+                for field_name, result_id in required_ids.items():
+                    if result_id is None:
+                        reasons.append({
+                            "code": "RESULT_ROLE_MISSING",
+                            "message": f"{key} has no {field_name}",
+                            "blocking": True,
+                        })
+                    elif result_id not in result_ids:
+                        reasons.append({
+                            "code": "RESULT_ROLE_NOT_FOUND",
+                            "message": f"{key} {field_name} is absent from its result inventory",
+                            "blocking": True,
+                        })
+                if not card.inventory_locators:
+                    reasons.append({
+                        "code": "INVENTORY_LOCATOR_MISSING",
+                        "message": f"{key} has no exact result-table or passage locator",
+                        "blocking": True,
+                    })
+                if (
+                    request.eligible_result_policy == "primary_only"
+                    and card.selected_result_id != card.primary_result_id
+                ):
+                    reasons.append({
+                        "code": "SELECTED_RESULT_POLICY_MISMATCH",
+                        "message": f"{key} does not select its primary result under primary_only",
+                        "blocking": True,
+                    })
+                if (
+                    request.eligible_result_policy == "substantive_all"
+                    and card.selected_result_id != card.maximum_substantive_result_id
+                ):
+                    reasons.append({
+                        "code": "SELECTED_RESULT_POLICY_MISMATCH",
+                        "message": f"{key} does not select its maximum substantive result under substantive_all",
+                        "blocking": True,
+                    })
+            elif card.status == "no_eligible_result":
+                if card.results:
+                    reasons.append({
+                        "code": "INELIGIBLE_CARD_HAS_RESULTS",
+                        "message": f"{key} is marked no_eligible_result but contains result records",
+                        "blocking": True,
+                    })
+                if any(
+                    result_id is not None
+                    for result_id in (
+                        card.primary_result_id,
+                        card.maximum_substantive_result_id,
+                        card.selected_result_id,
+                    )
+                ):
+                    reasons.append({
+                        "code": "INELIGIBLE_CARD_SELECTED",
+                        "message": f"{key} is marked no_eligible_result but selects a result",
+                        "blocking": True,
+                    })
+                if not card.reason:
+                    reasons.append({
+                        "code": "EXCLUSION_REASON_MISSING",
+                        "message": f"{key} needs a reason for having no eligible result",
+                        "blocking": True,
+                    })
+            elif card.status == "unresolved" and any(
+                result_id is not None
+                for result_id in (
+                    card.primary_result_id,
+                    card.maximum_substantive_result_id,
+                    card.selected_result_id,
+                )
+            ):
+                reasons.append({
+                    "code": "UNRESOLVED_CARD_SELECTED",
+                    "message": f"{key} cannot select a paper-level result while unresolved",
+                    "blocking": True,
+                })
+
+        selected = [key.upper() for key in request.selected_item_keys]
+        if len(selected) > request.max_reported_items:
+            reasons.append({
+                "code": "REPORT_LIMIT_EXCEEDED",
+                "message": f"selected_item_keys exceeds max_reported_items={request.max_reported_items}",
+                "blocking": True,
+            })
+        if request.winner_type == "clear_winner":
+            if request.max_reported_items != 1 or len(selected) != 1:
+                reasons.append({
+                    "code": "CLEAR_WINNER_SELECTION_INVALID",
+                    "message": "clear_winner requires max_reported_items=1 and exactly one selected item",
+                    "blocking": True,
+                })
+            if request.substantive_winner_status != "clear":
+                reasons.append({
+                    "code": "SUBSTANTIVE_WINNER_NOT_CLEAR",
+                    "message": "clear_winner requires a clear substantive winner; use top_k for a numerical-only leader",
+                    "blocking": True,
+                })
+        reported = [key.upper() for key in request.reported_item_keys]
+        for field_name, keys in (("selected_item_keys", selected), ("reported_item_keys", reported)):
+            outside = sorted(set(keys) - frozen)
+            if outside:
+                reasons.append({
+                    "code": "OUT_OF_SCOPE_SELECTION",
+                    "message": f"{field_name} contains out-of-scope items: " + ", ".join(outside),
+                    "blocking": True,
+                })
+        selected_set = set(selected)
+        for key in selected:
+            card = card_map.get(key)
+            if card is None:
+                continue
+            if card.status != "eligible":
+                reasons.append({
+                    "code": "NON_ELIGIBLE_SELECTION",
+                    "message": f"selected item {key} does not have eligible status",
+                    "blocking": True,
+                })
+        reported_outside_selection = sorted(set(reported) - selected_set)
+        if reported_outside_selection:
+            reasons.append({
+                "code": "REPORTED_ITEM_NOT_SELECTED",
+                "message": "final analysis includes items outside the permitted selection: " + ", ".join(reported_outside_selection),
+                "blocking": True,
+            })
+
+        blocking = [reason for reason in reasons if reason["blocking"]]
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "ok": not blocking,
+            "ready": not blocking,
+            "complete": not unresolved,
+            "qualified_scope": "complete" if not unresolved else "verified_only",
+            "summary": {
+                "frozen_items": len(frozen),
+                "cards": len(card_map),
+                "eligible": sum(card.status == "eligible" for card in card_map.values()),
+                "no_eligible_result": sum(card.status == "no_eligible_result" for card in card_map.values()),
+                "unresolved": len(unresolved),
+                "selected": len(selected),
+                "eligible_result_policy": request.eligible_result_policy,
+                "numerical_winner_status": request.numerical_winner_status,
+                "substantive_winner_status": request.substantive_winner_status,
+                "alternative_policy_changes_top_k": request.alternative_policy_changes_top_k,
+            },
+            "reason_codes": [reason["code"] for reason in reasons],
+            "reasons": reasons[:20],
+        }
 
 
 class EvidenceBundleValidator:
@@ -745,9 +1106,10 @@ class EvidenceBundleValidator:
     _NUMERIC_RECOMMENDED = ("dose", "denominator", "time_horizon")
 
     def validate(self, request: EvidenceBundleValidationRequest) -> dict[str, Any]:
-        from zotero_mcp.claim_audit import _numeric_signatures
+        from zotero_mcp.claim_audit import _expected_numeric_signatures, _numeric_signatures
 
         evidence_by_id = {record.evidence_id: record for record in request.evidence}
+        allowed_item_keys = {key.upper() for key in request.allowed_item_keys}
         results: list[dict[str, Any]] = []
         for claim in request.claims:
             reasons: list[dict[str, Any]] = []
@@ -766,6 +1128,14 @@ class EvidenceBundleValidator:
 
             tags = set(claim.risk_tags)
             item_keys = sorted({record.item_key.upper() for record in linked})
+            outside_allowed = sorted(set(item_keys) - allowed_item_keys) if allowed_item_keys else []
+            if outside_allowed:
+                reasons.append(
+                    _reason(
+                        "ITEM_OUTSIDE_ALLOWED_SCOPE",
+                        "claim uses evidence from unselected items: " + ", ".join(outside_allowed),
+                    )
+                )
             if claim.unverified:
                 reasons.append(
                     _reason(
@@ -829,7 +1199,11 @@ class EvidenceBundleValidator:
                     )
 
                 if "calculated" not in tags:
-                    claim_numbers = _numeric_signatures(claim.text)
+                    claim_numbers = (
+                        _expected_numeric_signatures(claim.expected_values)
+                        if claim.expected_values
+                        else _numeric_signatures(claim.text)
+                    )
                     quote_numbers = set()
                     for record in linked:
                         quote_numbers.update(_numeric_signatures(record.quote))
@@ -871,6 +1245,7 @@ class EvidenceBundleValidator:
             "ok": True,
             "ready": ready,
             "results": results,
+            "allowed_item_keys": sorted(allowed_item_keys),
             "note": (
                 "This is structural validation only. Passing does not establish substantive support, "
                 "causality, comparability, or source accuracy and must not be cited as evidence."
@@ -883,6 +1258,10 @@ __all__ = [
     "CandidateScopeRequest",
     "CandidateScopeService",
     "ClaimEvidenceContext",
+    "ComparisonManifestRequest",
+    "ComparisonManifestValidator",
+    "ComparisonResultCard",
+    "ComparisonResultRecord",
     "DraftEvidenceClaim",
     "EvidenceBundleRecord",
     "EvidenceBundleValidationRequest",

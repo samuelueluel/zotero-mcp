@@ -23,6 +23,7 @@ from zotero_mcp.pdf_evidence import (
     DEFAULT_PDF_RENDER_DPI,
     DEFAULT_PDF_SEARCH_MAX_CHARS,
     DEFAULT_PDF_SEARCH_MAX_MATCHES,
+    MAX_PDF_SEARCH_MATCH_OFFSET,
     MAX_PDF_SEARCH_MAX_CHARS,
     MAX_PDF_SEARCH_MAX_MATCHES,
     MAX_PDF_SEARCH_PAGES,
@@ -243,8 +244,9 @@ def _parse_region_argument(region: list[float] | str | None) -> list[float] | No
         "Whitespace in the query spans source whitespace; special characters are literal — no regex, "
         "fuzzy, semantic, OCR, sidecar, or neighboring-page search. Pages are one-based PDF pages, "
         "not printed labels or indexed offsets. Searches the complete requested range and reports exact "
-        "match accounting plus complete/partial/no-usable-text coverage. max_matches is 1–10; "
-        "max_chars is 256–16000; a range over 50 pages is rejected."
+        "match accounting plus complete/partial/no-usable-text coverage. offset paginates matching "
+        "windows; match_pages and omitted_match_pages expose later matching pages even when excerpts "
+        "are capped. max_matches is 1–10; max_chars is 256–16000; a range over 50 pages is rejected."
     ),
 )
 def find_in_pdf(
@@ -253,6 +255,7 @@ def find_in_pdf(
     start_page: int = 1,
     end_page: int | None = None,
     max_matches: int = DEFAULT_PDF_SEARCH_MAX_MATCHES,
+    offset: int = 0,
     max_chars: int = DEFAULT_PDF_SEARCH_MAX_CHARS,
     context_chars: int = DEFAULT_PDF_MATCH_CONTEXT_CHARS,
     *,
@@ -272,6 +275,14 @@ def find_in_pdf(
         if not 1 <= max_matches <= MAX_PDF_SEARCH_MAX_MATCHES:
             raise PdfEvidenceLimitError(
                 f"max_matches must be between 1 and {MAX_PDF_SEARCH_MAX_MATCHES}."
+            )
+        if isinstance(offset, bool) or not isinstance(offset, int):
+            raise PdfEvidenceInputError(
+                f"offset must be an integer between 0 and {MAX_PDF_SEARCH_MATCH_OFFSET}."
+            )
+        if not 0 <= offset <= MAX_PDF_SEARCH_MATCH_OFFSET:
+            raise PdfEvidenceLimitError(
+                f"offset must be between 0 and {MAX_PDF_SEARCH_MATCH_OFFSET}."
             )
         if isinstance(max_chars, bool) or not isinstance(max_chars, int):
             raise PdfEvidenceInputError(
@@ -310,6 +321,7 @@ def find_in_pdf(
                 doc,
                 query,
                 max_matches=max_matches,
+                match_offset=offset,
                 max_chars=max_chars,
                 context_chars=context_chars,
             )
@@ -339,8 +351,13 @@ def find_in_pdf(
             "coverage": coverage["state"],
             "text_layer_coverage": coverage,
             "total_matches": total_matches,
+            "offset": evidence["match_offset"],
+            "next_offset": evidence["next_offset"],
             "returned_matches": evidence["returned_matches"],
             "has_more_matches": evidence["has_more_matches"],
+            "match_pages": evidence["match_pages"],
+            "returned_pages": evidence["returned_pages"],
+            "omitted_match_pages": evidence["omitted_match_pages"],
             "matches": evidence["matches"],
             "offset_basis": "zero-based characters within each extracted PDF page; end exclusive",
             "returned_excerpt_chars": evidence["source_chars_returned"],

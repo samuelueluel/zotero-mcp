@@ -258,6 +258,24 @@ def _retrieve_exact(query: str, item_key: str) -> list[dict[str, Any]]:
     )
 
 
+def _parse_allowed_item_keys(value: list[str] | str | None) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"allowed_item_keys must be a JSON array: {exc.msg}") from exc
+    if not isinstance(value, list) or any(not isinstance(key, str) for key in value):
+        raise ValueError("allowed_item_keys must be a list of exact parent item keys")
+    normalized = [key.strip().upper() for key in value]
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("allowed_item_keys must be distinct")
+    if any(not re.fullmatch(r"[A-Za-z0-9]{8}", key) for key in normalized):
+        raise ValueError("allowed_item_keys must contain exact 8-character parent item keys")
+    return normalized
+
+
 def _build_dependencies(ctx: Context) -> AuditDependencies:
     # Context is deliberately not passed into the pure service; the callback
     # interface keeps unit tests independent of FastMCP and prevents accidental
@@ -282,8 +300,11 @@ def _build_dependencies(ctx: Context) -> AuditDependencies:
         "and caller-supplied rerank scores are rejected. Semantic evidence is re-retrieved "
         "for that exact item and requires fresh raw Rerank > 0 plus quote containment. "
         "Numeric claims require direct PDF-page confirmation, or a clearly weaker MinerU "
-        "sidecar fallback after a failed page route; numeric values and units must occur "
-        "inside accepted evidence quotes. risk_tags='comparison' requires evidence from "
+        "sidecar fallback after a failed page route. Optional structured expected_values identify "
+        "the empirical estimate, uncertainty, interval, p-value, or sample-size numbers to audit "
+        "without treating table and figure locators as findings; audited values and units must occur "
+        "inside accepted evidence quotes. Optional allowed_item_keys rejects claims about papers "
+        "outside a validated final comparison set. risk_tags='comparison' requires evidence from "
         "two distinct items, while 'within_item_comparison' supports comparisons inside "
         "one item; the tags are mutually exclusive. The audit performs deterministic "
         "evidence validation only; `supported` means the evidence contract passed and "
@@ -295,6 +316,7 @@ def _build_dependencies(ctx: Context) -> AuditDependencies:
 def audit_claims(
     claims: list[ClaimInput] | str,
     escalation: str = "none",
+    allowed_item_keys: list[str] | str | None = None,
     *,
     ctx: Context,
 ) -> str:
@@ -306,9 +328,11 @@ def audit_claims(
         # Parse here so direct function calls and clients that send a JSON
         # string receive the same strict validation as the MCP schema.
         parsed = parse_claims(claims)
+        allowed = _parse_allowed_item_keys(allowed_item_keys)
         response = AuditService(_build_dependencies(ctx)).audit(
             parsed,
             escalation=escalation,  # type: ignore[arg-type]
+            allowed_item_keys=allowed,
         )
         return json.dumps(response, ensure_ascii=False, sort_keys=True)
     except Exception as exc:

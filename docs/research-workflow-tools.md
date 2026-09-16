@@ -1,6 +1,6 @@
 # Bounded Research Workflow Tools
 
-This document specifies three read-only composite tools for agentic Zotero research. They reduce repeated MCP calls while preserving the existing source-identity, scope, hash, PDF-page, and visual-verification contracts.
+This document specifies four read-only composite tools for agentic Zotero research. They reduce repeated MCP calls while preserving the existing source-identity, scope, hash, PDF-page, and visual-verification contracts. `validate_comparison_manifest` adds comparison-specific coverage and output-scope checks; it does not decide substantive inclusion, ranking, causality, or comparability.
 
 The tools do not decide whether a paper satisfies a substantive inclusion rule, whether an estimate is causal, or whether unlike estimates are comparable. Agents retain those decisions. The tools never repair extracted text or treat two text representations as visual verification.
 
@@ -91,8 +91,48 @@ Each item record contains:
 - PDF matches, coverage, and page indices
 - bounded conflict flags
 - `requires_visual_review`
+- referenced result tables and `REFERENCED_TABLE_NOT_READ` follow-up flags
 
 Route success means only that candidate evidence was retrieved. The agent must decide whether it supplies the requested estimate, uncertainty, dose, denominator, or other substantive field.
+
+## `validate_comparison_manifest`
+
+### Purpose
+
+Validate the result-level coverage and reporting scope of a comparison over a frozen parent-item set. A global comparison requires a terminal result card for every frozen item before ranking.
+
+### Inputs
+
+- `manifest`: An object or JSON-stringified object containing:
+  - `frozen_item_keys`: Exact parent keys for the frozen comparison set.
+  - `cards`: One result card per frozen item.
+  - `ranking_rule`: Task-specific rule selected before extraction.
+  - `eligible_result_policy`: `primary_only`, `substantive_all`, or `custom`.
+  - `conclusion_scope`: `complete` or `verified_only`.
+  - `winner_type`: `clear_winner` or `top_k`.
+  - `numerical_winner_status` and `substantive_winner_status`: `clear` or `not_clear`.
+  - `alternative_policy_changes_top_k`: Whether primary-only and substantive-all policies select different top sets.
+  - `max_reported_items`: Maximum number of papers the final answer may analyze, from 1 to 3.
+  - `selected_item_keys`: Paper-level winners or requested top-k set.
+  - optional `reported_item_keys`: Items actually analyzed in a draft answer.
+
+Each result card has `status` `eligible`, `no_eligible_result`, or `unresolved`. Eligible cards must contain result records with a `result_class` plus outcome, estimate, scale, uncertainty, treatment, dose, denominator, population, geography, horizon, specification, and evidence IDs. They also require `primary_result_id`, `maximum_substantive_result_id`, `selected_result_id`, and exact `inventory_locators`. A no-result card requires a reason and no result records.
+
+### Deterministic checks
+
+- Every frozen item has exactly one card, with no out-of-scope cards.
+- Every eligible card has at least one result, primary and maximum-substantive IDs, a policy-consistent selected result, and inventory locators.
+- Every no-result card has an exclusion reason.
+- Unresolved cards block a `complete` conclusion.
+- Selected items are eligible, in scope, and within the declared reporting limit.
+- `clear_winner` selects exactly one item, permits only one analyzed item, and requires a clear substantive winner rather than a numerical-only leader.
+- `reported_item_keys`, when supplied, are a subset of the selected items.
+
+The tool checks manifest structure only. It does not read sources, determine whether the result inventory is substantively exhaustive, rank estimates, or decide whether unlike estimates are comparable.
+
+### Output
+
+Return `ready`, `complete`, a compact item-count summary, and blocking reason codes. A `verified_only` result is a qualified comparison over the items whose result cards were resolved; it is not an unqualified collection-wide maximum.
 
 ## `validate_evidence_bundle`
 
@@ -104,6 +144,7 @@ Lint draft claim-to-evidence structure before synthesis. This tool does not re-r
 
 - `claims`: One to twenty bounded claim records.
 - `evidence`: One to forty bounded evidence records.
+- optional `allowed_item_keys`: Exact selected parent keys permitted in the final claim set.
 
 A claim record contains:
 
@@ -111,6 +152,7 @@ A claim record contains:
 - `text`
 - `evidence_ids`
 - optional `risk_tags`: `numeric`, `comparison`, `calculated`, `causal`, `attribution`
+- optional structured `expected_values` for estimate, SE, CI, p-value, threshold, and sample-size fields
 - optional `unverified`
 - structured context fields: outcome, estimate, scale, treatment, dose, denominator, sample, geography, time horizon, uncertainty status, and calculation method
 
@@ -128,6 +170,7 @@ An evidence record contains:
 
 - Every evidence reference resolves to a supplied evidence record.
 - Every claim has at least one source item; comparisons have at least two distinct items.
+- When `allowed_item_keys` is supplied, no claim links evidence from an unselected item.
 - Numeric claims supply outcome, estimate, scale, treatment, and uncertainty status.
 - Numeric signatures in the claim occur in at least one linked quote when quotes are supplied.
 - Calculated claims include a calculation method.

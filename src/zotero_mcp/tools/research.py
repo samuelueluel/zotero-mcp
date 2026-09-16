@@ -17,6 +17,8 @@ from zotero_mcp.research_workflows import (
     CandidateScopeDependencies,
     CandidateScopeRequest,
     CandidateScopeService,
+    ComparisonManifestRequest,
+    ComparisonManifestValidator,
     DraftEvidenceClaim,
     EvidenceBundleRecord,
     EvidenceBundleValidationRequest,
@@ -537,12 +539,64 @@ def _parse_json_array(value: list[Any] | str, field: str) -> list[Any]:
     return value
 
 
+def _parse_json_object(
+    value: dict[str, Any] | ComparisonManifestRequest | str,
+    field: str,
+) -> dict[str, Any]:
+    if isinstance(value, ComparisonManifestRequest):
+        return value.model_dump()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field} must be a JSON object: {exc.msg}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be an object or JSON-stringified object")
+    return value
+
+
+@mcp.tool(
+    name="validate_comparison_manifest",
+    description=(
+        "Validate a frozen Zotero comparison manifest before ranking. Checks that every frozen parent item "
+        "has one terminal result card, eligible cards record primary and maximum-substantive results, the "
+        "selected result follows the declared eligibility policy, numerical and substantive winner status "
+        "supports the requested top-k, unresolved items block complete-scope claims, and reported items stay "
+        "within the permitted selection. Returns blocking reason codes. This structural linter does not read "
+        "sources, rank estimates, judge statistical meaning, or decide comparability."
+    ),
+)
+def validate_comparison_manifest(
+    manifest: ComparisonManifestRequest | str,
+    *,
+    ctx: Context,
+) -> str:
+    """Return deterministic frozen-set coverage and output-scope checks."""
+
+    try:
+        parsed = ComparisonManifestRequest.model_validate(
+            _parse_json_object(manifest, "manifest")
+        )
+        response = ComparisonManifestValidator().validate(parsed)
+        return json.dumps(response, ensure_ascii=False, sort_keys=True)
+    except ValidationError:
+        message = "comparison-manifest input failed schema validation"
+    except Exception as exc:
+        message = str(exc)[:1000]
+    try:
+        ctx.error(f"Comparison-manifest request rejected: {message}")
+    except Exception:
+        pass
+    return _json_error("INVALID_INPUT", message)
+
+
 @mcp.tool(
     name="validate_evidence_bundle",
     description=(
         "Deterministically lint 1–20 draft claims against 1–40 caller-supplied, route-specific evidence "
-        "records. Checks evidence linkage, distinct comparator items, numeric context, quote-contained "
-        "numbers, calculation labels, one-based PDF-page provenance, and unresolved ambiguity flags. "
+        "records. Checks evidence linkage, distinct comparator items, optional allowed_item_keys final-output "
+        "scope, numeric context, quote-contained numbers, calculation labels, one-based PDF-page provenance, "
+        "and unresolved ambiguity flags. "
         "Does not read Zotero, repair source text, judge causality or comparability, or prove substantive "
         "support. A passing result must never be cited as evidence."
     ),
@@ -550,6 +604,7 @@ def _parse_json_array(value: list[Any] | str, field: str) -> list[Any]:
 def validate_evidence_bundle(
     claims: list[DraftEvidenceClaim] | str,
     evidence: list[EvidenceBundleRecord] | str,
+    allowed_item_keys: list[str] | str | None = None,
     *,
     ctx: Context,
 ) -> str:
@@ -559,6 +614,11 @@ def validate_evidence_bundle(
         parsed = EvidenceBundleValidationRequest(
             claims=_parse_json_array(claims, "claims"),
             evidence=_parse_json_array(evidence, "evidence"),
+            allowed_item_keys=(
+                _parse_json_array(allowed_item_keys, "allowed_item_keys")
+                if allowed_item_keys is not None
+                else []
+            ),
         )
         response = EvidenceBundleValidator().validate(parsed)
         return json.dumps(response, ensure_ascii=False, sort_keys=True)
@@ -576,5 +636,6 @@ def validate_evidence_bundle(
 __all__ = [
     "build_candidate_scope",
     "collect_result_evidence",
+    "validate_comparison_manifest",
     "validate_evidence_bundle",
 ]

@@ -59,11 +59,18 @@ def _sidecar_ref(quote="The treatment reduced emissions by 5%.", **extra):
     }
 
 
-def _claim(evidence, text="The treatment reduced emissions by 5%.", tags=None, claim_id="c1"):
+def _claim(
+    evidence,
+    text="The treatment reduced emissions by 5%.",
+    tags=None,
+    claim_id="c1",
+    expected_values=None,
+):
     return {
         "claim_id": claim_id,
         "text": text,
         "risk_tags": tags or [],
+        "expected_values": expected_values or [],
         "evidence": evidence,
     }
 
@@ -122,6 +129,13 @@ def test_excerpt_centers_a_dehyphenated_quote_on_the_original_text(line_break):
         ("15 basis points", {(Decimal("15"), "bps")}),
         ("9,398", {(Decimal("9398"), "")}),
         ("9,38", set()),
+        ("0.89 (0.85, 0.93)", {
+            (Decimal("0.89"), ""),
+            (Decimal("0.85"), ""),
+            (Decimal("0.93"), ""),
+        }),
+        ("-.097 (.036)", {(Decimal("-0.097"), ""), (Decimal("0.036"), "")}),
+        ("−.164** (.052)", {(Decimal("-0.164"), ""), (Decimal("0.052"), "")}),
     ],
 )
 def test_numeric_signatures_canonicalize_units_and_thousands(text, expected):
@@ -289,6 +303,81 @@ def test_numeric_claim_matches_symbol_and_spelled_percent_units():
         ]
     )
     assert result["results"][0]["status"] == "supported"
+
+
+def test_numeric_claim_matches_parenthesized_decimal_ci_values():
+    page_text = "Firearm assaults | IRR 0.89 (95% CI 0.85, 0.93) | p = 0.01"
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote=page_text)],
+                text="Firearm assaults had an IRR of 0.89 (95% CI 0.85, 0.93), p = 0.01.",
+                tags=["numeric"],
+            )
+        ]
+    )
+    assert result["results"][0]["status"] == "supported"
+
+
+def test_structured_expected_values_ignore_table_numbers_and_match_leading_decimals():
+    page_text = "Table 6 | T x Demo Work | -.164** | .052 | ** p<.01"
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote=page_text)],
+                text="Table 6 reports a dynamic theft coefficient of -0.164 with SE 0.052 and p<0.01.",
+                tags=["numeric"],
+                expected_values=[
+                    {"role": "estimate", "value": "-0.164"},
+                    {"role": "se", "value": "0.052"},
+                    {"role": "p_threshold", "value": "0.01", "operator": "<"},
+                ],
+            )
+        ]
+    )
+    assert result["results"][0]["status"] == "supported"
+
+
+def test_unstructured_numeric_claim_ignores_table_and_figure_locator_numbers():
+    page_text = "The coefficient was -0.164 with SE 0.052."
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote=page_text)],
+                text="Tables 5–6 and Figures 3/4 report a coefficient of -0.164 with SE 0.052.",
+                tags=["numeric"],
+            )
+        ]
+    )
+    assert result["results"][0]["status"] == "supported"
+
+
+def test_structured_p_threshold_requires_matching_operator():
+    page_text = "The estimate was .10 with p = .01."
+    result = AuditService(
+        _deps(page_reader=lambda *args: {"text": page_text, "needs_ocr": False})
+    ).audit(
+        [
+            _claim(
+                [_pdf_ref(quote=page_text)],
+                text="The estimate was 0.10 with p<0.01.",
+                tags=["numeric"],
+                expected_values=[
+                    {"role": "estimate", "value": "0.10"},
+                    {"role": "p_threshold", "value": "0.01", "operator": "<"},
+                ],
+            )
+        ]
+    )
+    row = result["results"][0]
+    assert row["status"] == "insufficient"
+    assert "OPERATOR_MISMATCH" in row["reason_codes"]
 
 
 def test_numeric_claim_matches_range_notation_with_endpoint_units():
@@ -552,6 +641,21 @@ def test_bounded_escalation_is_capped_at_three_claims():
     result = AuditService(_deps(retriever=retrieve)).audit(claims, escalation="bounded")
     assert [row["escalation"]["performed"] for row in result["results"]] == [True, True, True, False]
     assert len(calls) == 7  # four initial calls plus one bounded retry for three claims
+
+
+def test_audit_blocks_claims_outside_allowed_final_scope():
+    result = AuditService(_deps()).audit(
+        [_claim([_pdf_ref()], tags=["numeric"])],
+        allowed_item_keys=[OTHER_ITEM],
+    )
+    row = result["results"][0]
+    assert row["status"] == "insufficient"
+    assert "ITEM_OUTSIDE_ALLOWED_SCOPE" in row["reason_codes"]
+    assert result["allowed_item_keys"] == [OTHER_ITEM]
+
+
+def test_tool_parses_json_allowed_item_scope():
+    assert claim_audit_tool._parse_allowed_item_keys(json.dumps([OTHER_ITEM])) == [OTHER_ITEM]
 
 
 def test_tool_returns_bounded_invalid_input_json_without_calling_sources():

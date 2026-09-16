@@ -98,6 +98,7 @@ TOOLSETS: dict[str, frozenset[str]] = {
         {
             "build_candidate_scope",
             "collect_result_evidence",
+            "validate_comparison_manifest",
             "validate_evidence_bundle",
         }
     ),

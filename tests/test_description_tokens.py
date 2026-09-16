@@ -49,6 +49,7 @@ TOOL_BUDGETS = {
     "attach_file":              (190, 430),
     # tools/claim_audit.py and tools/search.py
     "audit_claims":             (130, 295),
+    "validate_comparison_manifest": (60, 180),
     "search_items":             (175, 400),
     "search_items_by_tag":            (115, 265),
     "find_item_by_citation_key":   (125, 280),
