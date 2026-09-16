@@ -14,8 +14,8 @@ Hook points:
 
 Config (``~/.config/zotero-mcp/config.json`` -> ``semantic_search.mineru``):
 - enabled: bool (default false; flip true once verified)
-- bin: magic-pdf binary (default ~/mineru-rocm-venv/bin/magic-pdf)
-- config_json: magic-pdf config with device-mode (default ~/magic-pdf-gpu.json)
+- bin: MinerU CLI binary (default ~/mineru-upgrade-venv/bin/mineru)
+- config_json: optional CLI config path exported as MINERU_TOOLS_CONFIG_JSON
 - sidecar_dir: sidecar cache dir (default ~/.config/zotero-mcp/mineru-sidecars)
 - work_dir: per-item magic-pdf work dir (default ~/.cache/zotero-mcp/mineru-work)
 - timeout_seconds: per-parse cap (default 3600)
@@ -61,9 +61,9 @@ def load_mineru_config(config_path: str | None = None) -> dict:
         logger.debug("mineru: config read failed: %s", e)
     defaults = {
         "enabled": False,
-        # MinerU 3.4.5 (upgrade 2026-08-19): CLI renamed magic-pdf -> mineru,
-        # pipeline backend via -b pipeline. 1.x venv kept at
-        # ~/mineru-rocm-venv (magic-pdf) as fallback.
+        # MinerU 3.4.5 (upgrade 2026-08-19): CLI renamed magic-pdf -> mineru.
+        # Explicit configs may still select the compatible 1.x magic-pdf fallback;
+        # run_mineru detects the CLI capability before adding version-specific flags.
         "bin": str(Path.home() / "mineru-upgrade-venv/bin/mineru"),
         "config_json": None,
         "sidecar_dir": str(Path.home() / ".config" / "zotero-mcp" / "mineru-sidecars"),
@@ -109,11 +109,81 @@ def _find_output_md(out_dir: Path) -> Path | None:
     return None
 
 
-def run_mineru(cfg: dict, pdf_path: Path, item_key: str) -> bool:
-    """Run mineru (pipeline backend) on a PDF; on success copy the .md to the sidecar.
+_CLI_BACKEND_CAPABILITY_CACHE: dict[str, bool] = {}
 
-    mineru's CLI exits 0 even on failure, so success is defined as the
-    output .md existing after a zero-exit run (see MinerU-Setup.md).
+
+def _supports_backend_flag(bin_: Path, env: dict[str, str]) -> bool:
+    """Detect whether the selected MinerU CLI accepts ``-b/--backend``.
+
+    MinerU 3.x (``mineru``) exposes the backend option; the retained 1.x
+    ``magic-pdf`` CLI does not.  The configured binary is authoritative, not
+    its filename or the package version installed in another virtualenv.
+    """
+    cache_key = str(bin_.resolve())
+    cached = _CLI_BACKEND_CAPABILITY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    supported = False
+    try:
+        probe = subprocess.run(
+            [str(bin_), "--help"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=15,
+        )
+        supported = "--backend" in (probe.stdout or "")
+    except Exception as e:
+        logger.warning("mineru: CLI capability probe failed for %s: %s", bin_, e)
+    _CLI_BACKEND_CAPABILITY_CACHE[cache_key] = supported
+    return supported
+
+
+def _build_mineru_invocation(
+    cfg: dict, pdf_path: Path, out_dir: Path
+) -> tuple[list[str], dict[str, str], bool]:
+    """Build a version-compatible command and environment for MinerU."""
+    bin_ = Path(cfg["bin"])
+    env = dict(os.environ)
+
+    # ``config_json`` was part of the original magic-pdf integration.  Keep it
+    # authoritative for both generations instead of silently relying on a
+    # cwd-dependent ``~/magic-pdf.json`` default.
+    config_json = cfg.get("config_json")
+    if config_json:
+        env["MINERU_TOOLS_CONFIG_JSON"] = str(Path(str(config_json)).expanduser())
+
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    supports_backend = _supports_backend_flag(bin_, env)
+
+    # MinerU 3.x renamed the guard variable.  Preserve the conservative 1.x
+    # fallback that the pre-upgrade integration used when no new setting was
+    # explicitly supplied.
+    vvs = cfg.get("virtual_vram_size")
+    if vvs is not None:
+        env["MINERU_VIRTUAL_VRAM_SIZE" if supports_backend else "VIRTUAL_VRAM_SIZE"] = str(vvs)
+    elif not supports_backend:
+        env.setdefault("VIRTUAL_VRAM_SIZE", "4")
+
+    cmd = [
+        str(bin_),
+        "-p", str(pdf_path),
+        "-o", str(out_dir),
+        "-m", "txt",
+    ]
+    if supports_backend and cfg.get("backend"):
+        cmd.extend(["-b", str(cfg["backend"])])
+    return cmd, env, supports_backend
+
+
+def run_mineru(cfg: dict, pdf_path: Path, item_key: str) -> bool:
+    """Run the configured MinerU CLI and copy its Markdown to the sidecar.
+
+    The runner supports both MinerU 3.x (``mineru -b pipeline``) and the
+    retained 1.x ``magic-pdf`` fallback (no ``-b``).  MinerU CLIs may exit 0
+    without producing output, so success requires both a zero exit code and a
+    generated Markdown file.
     """
     bin_ = Path(cfg["bin"])
     if not bin_.exists():
@@ -123,20 +193,11 @@ def run_mineru(cfg: dict, pdf_path: Path, item_key: str) -> bool:
     work.mkdir(parents=True, exist_ok=True)
     out_dir = work / "out"
     log_path = work / "run.log"
-    env = dict(os.environ)
-    # MinerU 3.x GTT guard (renamed from 1.x VIRTUAL_VRAM_SIZE): None -> real
-    # GPU mem (batch_ratio 16, fastest); set via config for conservative mode.
-    vvs = cfg.get("virtual_vram_size")
-    if vvs is not None:
-        env["MINERU_VIRTUAL_VRAM_SIZE"] = str(vvs)
-    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    cmd = [
-        str(bin_),
-        "-p", str(pdf_path),
-        "-o", str(out_dir),
-        "-m", "txt",
-        "-b", str(cfg.get("backend", "pipeline")),
-    ]
+    cmd, env, supports_backend = _build_mineru_invocation(cfg, pdf_path, out_dir)
+    logger.info(
+        "mineru: using %s CLI (backend_flag=%s, config=%s)",
+        bin_, supports_backend, env.get("MINERU_TOOLS_CONFIG_JSON", "default"),
+    )
     try:
         start = time.time()
         with open(log_path, "w", encoding="utf-8") as lf:
