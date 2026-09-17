@@ -198,6 +198,44 @@ def test_positive_semantic_evidence_can_be_verified():
     assert quote_contained(quote, row["evidence"][0]["excerpt"])
 
 
+def test_default_audit_response_omits_redundant_excerpts():
+    quote = "The treatment reduced emissions."
+    service = AuditService(
+        _deps(
+            retriever=lambda query, key: [_positive_hit(key, quote=quote)],
+        )
+    )
+
+    result = service.audit(
+        [_claim([_semantic_ref(quote=quote)], text="The treatment reduced emissions.")],
+        include_excerpts=False,
+    )
+
+    row = result["results"][0]
+    assert row["status"] == "supported"
+    assert "excerpt" not in row["evidence"][0]
+    assert quote_contained(quote, row["evidence"][0]["quote"])
+    assert row["evidence"][0]["locator"]
+
+
+def test_tool_defaults_to_omitting_excerpts(monkeypatch):
+    quote = "The treatment reduced emissions."
+    deps = _deps(
+        retriever=lambda query, key: [_positive_hit(key, quote=quote)],
+    )
+    monkeypatch.setattr(claim_audit_tool, "_build_dependencies", lambda ctx: deps)
+    raw = claim_audit_tool.audit_claims(
+        claims=[
+            _claim([_semantic_ref(quote=quote)], text="The treatment reduced emissions.")
+        ],
+        ctx=DummyContext(),
+    )
+    row = json.loads(raw)["results"][0]
+    assert row["status"] == "supported"
+    assert "excerpt" not in row["evidence"][0]
+    assert quote_contained(quote, row["evidence"][0]["quote"])
+
+
 def test_rejected_candidate_failures_do_not_leak_after_valid_hit():
     quote = "Candidate text."
     hits = [

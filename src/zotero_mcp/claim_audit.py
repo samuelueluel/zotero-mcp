@@ -250,8 +250,13 @@ class EvidenceRecord:
     weaker_evidence: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
-    def public(self) -> dict[str, Any]:
-        """Return a bounded provenance record; never expose the full source window."""
+    def public(self, *, include_excerpts: bool = True) -> dict[str, Any]:
+        """Return a bounded provenance record; never expose the full source window.
+
+        With ``include_excerpts=False`` the redundant ``excerpt`` window is
+        omitted: the caller-supplied ``quote`` plus the verdict already carry
+        the audited content.
+        """
 
         result: dict[str, Any] = {
             "evidence_id": self.evidence_id,
@@ -259,15 +264,16 @@ class EvidenceRecord:
             "route": self.route,
             "locator": self.locator[:MAX_LOCATOR_CHARS],
             "quote": self.quote[:MAX_OUTPUT_EXCERPT_CHARS],
-            "excerpt": _excerpt_around(
-                self.excerpt,
-                self.quote,
-                limit=MAX_OUTPUT_EXCERPT_CHARS,
-            ),
             "content_hash": self.content_hash,
             "source_classification": self.source_classification,
             "weaker_evidence": self.weaker_evidence,
         }
+        if include_excerpts:
+            result["excerpt"] = _excerpt_around(
+                self.excerpt,
+                self.quote,
+                limit=MAX_OUTPUT_EXCERPT_CHARS,
+            )
         if self.raw_rerank is not None:
             result["raw_rerank"] = self.raw_rerank
         if self.index_generation is not None:
@@ -656,6 +662,7 @@ class AuditService:
         *,
         escalation: Literal["none", "bounded"] = "none",
         allowed_item_keys: Sequence[str] | None = None,
+        include_excerpts: bool = True,
     ) -> dict[str, Any]:
         parsed_claims = parse_claims(claims)
         allowed = {key.upper() for key in (allowed_item_keys or [])}
@@ -677,6 +684,7 @@ class AuditService:
                         ],
                         page_failure=False,
                         escalation_performed=False,
+                        include_excerpts=include_excerpts,
                     )
                 )
                 continue
@@ -711,6 +719,7 @@ class AuditService:
                     failures,
                     page_failure=page_failure,
                     escalation_performed=escalation_performed,
+                    include_excerpts=include_excerpts,
                 )
             )
 
@@ -1185,6 +1194,7 @@ class AuditService:
         *,
         page_failure: bool,
         escalation_performed: bool,
+        include_excerpts: bool = True,
     ) -> dict[str, Any]:
         failures = list(failures)
         direct_records = [
@@ -1339,7 +1349,10 @@ class AuditService:
             "gate_failure_codes": codes,
             "gate_failures": gate_failures,
             "escalation": {"performed": escalation_performed},
-            "evidence": [record.public() for record in eligible_records],
+            "evidence": [
+                record.public(include_excerpts=include_excerpts)
+                for record in eligible_records
+            ],
         }
 
 

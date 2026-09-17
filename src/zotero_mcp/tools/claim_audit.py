@@ -311,13 +311,16 @@ def _build_dependencies(ctx: Context) -> AuditDependencies:
         "evidence validation only; `supported` means the evidence contract passed and "
         "does not replace agent review of claim wording. escalation='bounded' permits "
         "at most three exact-item follow-ups. Returns compact JSON with evidence-gate "
-        "statuses and does not synthesize answers or adjudicate zotero-extract packets."
+        "statuses and does not synthesize answers or adjudicate zotero-extract packets. "
+        "Evidence records omit the redundant excerpt window unless include_excerpts "
+        "is true; quotes, locators, verdicts, and gate diagnostics are always returned."
     ),
 )
 def audit_claims(
     claims: list[ClaimInput] | str,
     escalation: str = "none",
     allowed_item_keys: list[str] | str | None = None,
+    include_excerpts: bool = False,
     *,
     ctx: Context,
 ) -> str:
@@ -334,6 +337,7 @@ def audit_claims(
             parsed,
             escalation=escalation,  # type: ignore[arg-type]
             allowed_item_keys=allowed,
+            include_excerpts=include_excerpts,
         )
         return json.dumps(response, ensure_ascii=False, sort_keys=True)
     except Exception as exc:
