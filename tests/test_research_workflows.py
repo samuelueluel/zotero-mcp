@@ -1173,3 +1173,36 @@ def test_manifest_accepts_retained_ids_and_route_prefixed_locators():
         **_comparison_manifest_defaults(),
     )
     assert request.cards[0].results[0].evidence_ids == card["results"][0]["evidence_ids"]
+
+
+def test_result_evidence_budget_trim_clears_stale_table_obligations():
+    """A trim that removes the referencing text must not leave a stale
+    REFERENCED_TABLE_NOT_READ obligation with empty conflict flags."""
+    dependencies, _ = _result_dependencies(sidecar_text="x" * 3000 + " See Table 2 for results.")
+    result = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[{"item_key": ITEM, "sidecar_queries": ["Table"]}],
+            max_total_chars=1500,
+        )
+    )
+    row = result["items"][0]
+
+    # The kept window no longer mentions any table, so no obligation ships.
+    assert "referenced_tables" not in row
+    assert "referenced_tables_not_read" not in row
+    assert row["conflict_flags"] == []
+    assert row["requires_follow_up"] is False
+
+    # When the referencing text survives the trim, the obligation ships with
+    # consistent flag and follow-up markers.
+    dependencies, _ = _result_dependencies(sidecar_text="results in Table 2 " + "y" * 3000)
+    result = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[{"item_key": ITEM, "sidecar_queries": ["Table"]}],
+            max_total_chars=1500,
+        )
+    )
+    row = result["items"][0]
+    assert row["referenced_tables_not_read"] == [2]
+    assert {"code": "REFERENCED_TABLE_NOT_READ", "tables": [2]} in row["conflict_flags"]
+    assert row["requires_follow_up"] is True

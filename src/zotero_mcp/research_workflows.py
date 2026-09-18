@@ -773,9 +773,15 @@ class ResultEvidenceService:
                     )
                 )
         missing_tables = sorted(referenced_tables - read_tables)
+        # Recompute unconditionally: a budget trim can remove the very text
+        # that referenced a table, so stale pre-trim fields must be cleared.
         if referenced_tables:
             record["referenced_tables"] = sorted(referenced_tables)
             record["read_referenced_tables"] = sorted(read_tables & referenced_tables)
+        else:
+            record.pop("referenced_tables", None)
+            record.pop("read_referenced_tables", None)
+        record.pop("referenced_tables_not_read", None)
         if missing_tables:
             record["referenced_tables_not_read"] = missing_tables
             flags.append(
