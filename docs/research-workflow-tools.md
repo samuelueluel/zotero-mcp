@@ -65,6 +65,10 @@ Collect bounded indexed, sidecar, and PDF-text representations for exact parent 
   - `neighbors`: 0–2 for passage expansion; default 1
 - `max_chars_per_route`: 512–16000; default 8000.
 - `max_pdf_windows`: One to three 50-page windows per PDF query; default 2.
+- `max_chars_per_item`: Optional 1024–200000 per-item text budget across all routes.
+- `max_total_chars`: Optional 1024–500000 total text budget across the whole response.
+- `compact`: Optional boolean; each route read is capped at 1200 characters instead of `max_chars_per_route`.
+- `continuation_token`: A token returned by a budget-limited call. Pass it alone (with no `requests` and no conflicting parameters) to collect the deferred items deterministically.
 
 At least one evidence ID or literal query is required for each item.
 
@@ -80,6 +84,8 @@ At least one evidence ID or literal query is required for each item.
 8. Detect literal numeric-signature or direction-marker disagreements as review flags. Never choose or repair a value.
 9. Set `requires_visual_review` when a decisive table may have missing signs, detached stars, conflicting numeric signatures, or ambiguous column alignment.
 10. Do not render images automatically. The agent must call `render_pdf_page` for actual visual inspection.
+11. Enforce the optional budgets deterministically after collection. Walk indexed-passage chunks, sidecar windows (primary before continuation), and PDF matches in request order; cut the first window that crosses the budget at the remaining allowance when at least 256 characters would remain, and drop every later window. Report every omission in `budget_omissions` with its locators; never truncate silently.
+12. When the total budget leaves later items unshipped, replace them with deferred stubs that carry measured per-route character counts, list their keys in `budget.items_deferred`, and mint an `evc1` continuation token for `budget.continuation_token`.
 
 ### Output
 
@@ -94,6 +100,10 @@ Each item record contains:
 - bounded conflict flags
 - `requires_visual_review`
 - referenced result tables and `REFERENCED_TABLE_NOT_READ` follow-up flags
+- `char_usage`: shipped character counts per route plus the total
+- `budget_omissions`: explicit record of windows cut or dropped by the budget, with continuation locators
+
+The response also carries a `budget` block with `max_total_chars`, `max_chars_per_item`, `compact`, `route_chars_per_read`, `shipped_chars`, `measured_chars`, `items_deferred`, and `continuation_token`. Deferred stubs report `measured_chars` instead of evidence. Conflict flags and table follow-up markers are computed on the shipped evidence.
 
 Route success means only that candidate evidence was retrieved. The agent must decide whether it supplies the requested estimate, uncertainty, dose, denominator, or other substantive field.
 
