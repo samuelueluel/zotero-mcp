@@ -8,8 +8,11 @@ logic remains hermetic and testable.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
@@ -23,6 +26,18 @@ MAX_QUERY_CHARS = 500
 MAX_RESULTS_PER_FACET = 12
 MAX_INVENTORY_ROWS = 500
 MAX_PREVIEW_CHARS = 600
+
+# Compact evidence mode caps each route read at this many characters instead
+# of max_chars_per_route, trading window size for breadth.
+COMPACT_ROUTE_CHARS = 1200
+# A window that would keep fewer characters than this is dropped outright
+# instead of being cut; fragments below this size cannot carry a result row.
+MIN_WINDOW_KEEP = 256
+# Floor for the total-response budget and the smallest remaining budget a
+# continuation token will carry; below this the resumed call runs uncapped.
+MIN_TOTAL_BUDGET_CHARS = 1024
+# Continuation tokens minted when the total-character budget defers items.
+CONTINUATION_TOKEN_PREFIX = "evc1."
 
 _ITEM_KEY_PATTERN = r"^[A-Za-z0-9]{8}$"
 
@@ -360,6 +375,9 @@ class ResultEvidenceRequest(_StrictModel):
     requests: list[ResultEvidenceItemRequest] = Field(min_length=1, max_length=4)
     max_chars_per_route: int = Field(default=8000, ge=512, le=16000)
     max_pdf_windows: int = Field(default=2, ge=1, le=3)
+    max_chars_per_item: int | None = Field(default=None, ge=1024, le=200000)
+    max_total_chars: int | None = Field(default=None, ge=MIN_TOTAL_BUDGET_CHARS, le=500000)
+    compact: bool = False
 
     @field_validator("requests")
     @classmethod
@@ -499,13 +517,339 @@ def _conflict_flags(
     return flags
 
 
+def _sidecar_windows(sidecar: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Primary windows plus continuation windows of one sidecar record."""
+
+    windows: list[dict[str, Any]] = []
+    for window in sidecar.get("windows") or []:
+        if isinstance(window, dict):
+            windows.append(window)
+    continuation = sidecar.get("continuation")
+    if isinstance(continuation, Mapping):
+        for window in continuation.get("windows") or []:
+            if isinstance(window, dict):
+                windows.append(window)
+    return windows
+
+
+def _iter_text_containers(record: Mapping[str, Any]) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    """Deterministic (label, kind, container) walk order for budget trimming.
+
+    Order is indexed-passage chunks, then sidecar windows per sidecar record
+    (primary before continuation), then PDF matches per query. The caller's
+    first-requested evidence is therefore retained preferentially. Each
+    container is the actual list stored in the record so that dropping
+    elements mutates the shipped evidence, not a temporary copy.
+    """
+
+    containers: list[tuple[str, str, list[dict[str, Any]]]] = []
+    indexed = record.get("indexed_passage")
+    if isinstance(indexed, dict):
+        chunks = indexed.get("chunks")
+        if isinstance(chunks, list):
+            containers.append(("indexed_passage.chunks", "chunk", chunks))
+    for sidecar_index, sidecar in enumerate(record.get("sidecar") or []):
+        if isinstance(sidecar, dict):
+            windows = sidecar.get("windows")
+            if isinstance(windows, list):
+                containers.append((f"mineru_sidecar[{sidecar_index}].windows", "window", windows))
+            continuation = sidecar.get("continuation")
+            if isinstance(continuation, dict):
+                continued = continuation.get("windows")
+                if isinstance(continued, list):
+                    containers.append(
+                        (f"mineru_sidecar[{sidecar_index}].continuation.windows", "window", continued)
+                    )
+    pdf = record.get("pdf")
+    if isinstance(pdf, dict):
+        for query_index, row in enumerate(pdf.get("queries") or []):
+            if isinstance(row, dict):
+                matches = row.get("matches")
+                if isinstance(matches, list):
+                    containers.append((f"pdf.queries[{query_index}].matches", "match", matches))
+    return containers
+
+
+_LOCATOR_KEYS = (
+    "chunk_id",
+    "chunk_index",
+    "char_start",
+    "char_end",
+    "start_line",
+    "end_line",
+    "page",
+    "locator",
+    "query",
+)
+
+
+def _item_char_usage(record: Mapping[str, Any]) -> dict[str, int]:
+    """Character footprint of the shipped text per route plus the total."""
+
+    usage = {"indexed_passage": 0, "mineru_sidecar": 0, "pdf_extraction": 0, "total": 0}
+    indexed = record.get("indexed_passage")
+    if isinstance(indexed, Mapping):
+        for chunk in indexed.get("chunks") or []:
+            if isinstance(chunk, Mapping) and chunk.get("text"):
+                usage["indexed_passage"] += len(str(chunk["text"]))
+    for sidecar in record.get("sidecar") or []:
+        if isinstance(sidecar, Mapping):
+            for window in _sidecar_windows(sidecar):
+                usage["mineru_sidecar"] += len(str(window.get("text") or ""))
+    pdf = record.get("pdf")
+    if isinstance(pdf, Mapping):
+        for row in pdf.get("queries") or []:
+            if isinstance(row, Mapping):
+                for match in row.get("matches") or []:
+                    if isinstance(match, Mapping) and match.get("text"):
+                        usage["pdf_extraction"] += len(str(match["text"]))
+    usage["total"] = usage["indexed_passage"] + usage["mineru_sidecar"] + usage["pdf_extraction"]
+    return usage
+
+
+def _apply_item_budget(record: dict[str, Any], cap: int) -> list[dict[str, Any]]:
+    """Trim one item record to a total text budget, deterministically.
+
+    Walks containers in the fixed order of `_iter_text_containers`. The first
+    window that crosses the cap is cut at the remaining allowance when at
+    least MIN_WINDOW_KEEP characters would remain; every later window is
+    dropped. Dropped windows are removed from the response and reported with
+    their locators, and cut windows carry their continuation coordinates, so
+    no text is ever silently truncated.
+    """
+
+    omissions: list[dict[str, Any]] = []
+    if _item_char_usage(record)["total"] <= cap:
+        return omissions
+
+    running = 0
+    for label, kind, container in _iter_text_containers(record):
+        survivors: list[dict[str, Any]] = []
+        for element in container:
+            text = str(element.get("text") or "")
+            if running + len(text) <= cap:
+                running += len(text)
+                survivors.append(element)
+                continue
+            remaining = cap - running
+            entry: dict[str, Any] = {
+                "container": label,
+                "kind": kind,
+                "dropped_chars": len(text),
+            }
+            for locator_key in _LOCATOR_KEYS:
+                if element.get(locator_key) is not None:
+                    entry[locator_key] = element[locator_key]
+            if remaining >= MIN_WINDOW_KEEP:
+                element["text"] = text[:remaining]
+                element["text_budget_cut"] = True
+                if element.get("char_start") is not None:
+                    element["char_end"] = int(element["char_start"]) + remaining
+                    entry["continuation"] = {
+                        "route": "mineru_sidecar" if kind == "window" else "indexed_passage",
+                        "char_start": element["char_end"],
+                    }
+                entry["action"] = "cut"
+                entry["kept_chars"] = remaining
+                entry["dropped_chars"] = len(text) - remaining
+                running = cap
+                survivors.append(element)
+            else:
+                entry["action"] = "dropped"
+            omissions.append(entry)
+        if len(survivors) != len(container):
+            container[:] = survivors
+    return omissions
+
+
+def _deferred_stub(item: Mapping[str, Any], item_request: ResultEvidenceItemRequest) -> dict[str, Any]:
+    """Response stub for an item deferred by the total-character budget."""
+
+    key = item_request.item_key.upper()
+    return {
+        "item_key": key,
+        "title": item.get("title"),
+        "library_id": item.get("library_id"),
+        "ok": True,
+        "deferred": True,
+        "zotero_select_uri": f"zotero://select/library/items/{key}",
+        "requested": {
+            "evidence_id": item_request.evidence_id,
+            "sidecar_queries": list(item_request.sidecar_queries),
+            "pdf_queries": list(item_request.pdf_queries),
+            "pdf_start_page": item_request.pdf_start_page,
+            "pdf_end_page": item_request.pdf_end_page,
+        },
+        "measured_chars": item.get("char_usage") or _item_char_usage(item),
+        "note": (
+            "Deferred by the response budget: evidence was collected and measured but is "
+            "omitted from this response. Resume with the returned continuation token."
+        ),
+    }
+
+
+def encode_result_evidence_continuation(
+    request: ResultEvidenceRequest,
+    remaining_requests: Sequence[ResultEvidenceItemRequest],
+    remaining_total_chars: int,
+) -> str | None:
+    """Mint a deterministic continuation token for the unshipped items."""
+
+    if not remaining_requests:
+        return None
+    payload = {
+        "v": 1,
+        "items": [item.model_dump(mode="json") for item in remaining_requests],
+        "max_chars_per_route": request.max_chars_per_route,
+        "max_pdf_windows": request.max_pdf_windows,
+        "max_chars_per_item": request.max_chars_per_item,
+        # The deferred items were selected because their share of the total
+        # budget was consumed, so the token never carries a residual total
+        # cap. Route and per-item caps still bound the resumed call.
+        "max_total_chars": None,
+        "compact": request.compact,
+    }
+    blob = base64.urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return CONTINUATION_TOKEN_PREFIX + blob
+
+
+def decode_result_evidence_continuation(token: str) -> dict[str, Any]:
+    """Decode a continuation token back into its request parameters.
+
+    Raises ValueError with a one-line reason for malformed tokens.
+    """
+
+    if not token.startswith(CONTINUATION_TOKEN_PREFIX):
+        raise ValueError("continuation_token has an unrecognized prefix")
+    blob = token[len(CONTINUATION_TOKEN_PREFIX) :]
+    padded = blob + "=" * (-len(blob) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+        raise ValueError("continuation_token is not decodable") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise ValueError("continuation_token payload is not a version-1 evidence continuation")
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValueError("continuation_token carries no remaining item requests")
+    return payload
+
+
 class ResultEvidenceService:
     """Collect exact-item evidence while preserving route boundaries."""
 
     def __init__(self, dependencies: ResultEvidenceDependencies):
         self.dependencies = dependencies
 
+    def _summarize_item(self, record: dict[str, Any]) -> None:
+        """Compute route errors, conflict flags, and follow-up markers in place.
+
+        Runs on the shipped (post-budget) evidence so every flag describes
+        text the caller actually received.
+        """
+
+        sidecar_records = [row for row in record.get("sidecar") or [] if isinstance(row, Mapping)]
+        pdf_record = record.get("pdf")
+        pdf_record = pdf_record if isinstance(pdf_record, Mapping) else None
+        flags = _conflict_flags(sidecar_records, pdf_record)
+
+        non_pdf_texts: list[str] = []
+        indexed = record.get("indexed_passage")
+        if isinstance(indexed, Mapping):
+            non_pdf_texts.extend(_route_texts(indexed))
+        for sidecar in sidecar_records:
+            non_pdf_texts.extend(_route_texts(sidecar))
+        referenced_tables = _referenced_table_numbers(non_pdf_texts)
+        read_tables: set[int] = set()
+        if pdf_record and pdf_record.get("ok"):
+            for row in pdf_record.get("queries") or []:
+                if not isinstance(row, Mapping) or not row.get("matches"):
+                    continue
+                read_tables.update(
+                    _referenced_table_numbers(
+                        [str(row.get("query") or ""), *_route_texts(row)]
+                    )
+                )
+        missing_tables = sorted(referenced_tables - read_tables)
+        if referenced_tables:
+            record["referenced_tables"] = sorted(referenced_tables)
+            record["read_referenced_tables"] = sorted(read_tables & referenced_tables)
+        if missing_tables:
+            record["referenced_tables_not_read"] = missing_tables
+            flags.append(
+                {
+                    "code": "REFERENCED_TABLE_NOT_READ",
+                    "tables": missing_tables,
+                }
+            )
+
+        route_errors: list[dict[str, Any]] = []
+        indexed = record.get("indexed_passage")
+        if isinstance(indexed, Mapping) and not indexed.get("ok"):
+            route_errors.append(
+                {"route": "indexed_passage", "error": indexed.get("error")}
+            )
+        for sidecar in sidecar_records:
+            if not sidecar.get("ok"):
+                route_errors.append(
+                    {
+                        "route": "mineru_sidecar",
+                        "query": sidecar.get("query"),
+                        "error": sidecar.get("error"),
+                    }
+                )
+            continuation = sidecar.get("continuation")
+            if isinstance(continuation, Mapping) and not continuation.get("ok"):
+                route_errors.append(
+                    {
+                        "route": "mineru_sidecar_continuation",
+                        "query": sidecar.get("query"),
+                        "error": continuation.get("error"),
+                    }
+                )
+        if pdf_record and not pdf_record.get("ok"):
+            route_errors.append(
+                {"route": "pdf_extraction", "error": pdf_record.get("error")}
+            )
+        if pdf_record:
+            if pdf_record.get("ok") and pdf_record.get("search_complete") is False:
+                flags.append(
+                    {
+                        "code": "PDF_SEARCH_INCOMPLETE",
+                        "searched_page_range": pdf_record.get("searched_page_range"),
+                        "requested_page_range": pdf_record.get("requested_page_range"),
+                    }
+                )
+            for row in pdf_record.get("queries") or []:
+                if not isinstance(row, Mapping):
+                    continue
+                if row.get("coverage") != "complete" and not row.get("matches"):
+                    flags.append(
+                        {
+                            "code": "INCOMPLETE_PDF_TEXT_NO_MATCH",
+                            "query": row.get("query"),
+                            "coverage": row.get("coverage"),
+                        }
+                    )
+        record["route_errors"] = route_errors
+        record["conflict_flags"] = flags
+        visual_codes = {
+            "NUMERIC_SIGNATURE_MISMATCH",
+            "SIGNIFICANCE_MARKER_MISMATCH",
+            "INCOMPLETE_PDF_TEXT_NO_MATCH",
+        }
+        record["requires_visual_review"] = any(
+            flag.get("code") in visual_codes for flag in flags
+        )
+        record["requires_follow_up"] = bool(missing_tables)
+        record["ok"] = not route_errors
+
     def collect(self, request: ResultEvidenceRequest) -> dict[str, Any]:
+        effective_route_chars = request.max_chars_per_route
+        if request.compact:
+            effective_route_chars = min(effective_route_chars, COMPACT_ROUTE_CHARS)
         items: list[dict[str, Any]] = []
         for item_request in request.requests:
             key = item_request.item_key.upper()
@@ -541,7 +885,7 @@ class ResultEvidenceService:
                     self.dependencies.passage_reader(
                         item_request.evidence_id,
                         item_request.neighbors,
-                        request.max_chars_per_route,
+                        effective_route_chars,
                     )
                 )
 
@@ -552,7 +896,7 @@ class ResultEvidenceService:
                     self.dependencies.sidecar_reader(
                         key,
                         query=query,
-                        max_chars=request.max_chars_per_route,
+                        max_chars=effective_route_chars,
                         expected_hash=expected_hash,
                     )
                 )
@@ -564,7 +908,7 @@ class ResultEvidenceService:
                             self.dependencies.sidecar_reader(
                                 key,
                                 query=None,
-                                max_chars=request.max_chars_per_route,
+                                max_chars=effective_route_chars,
                                 expected_hash=expected_hash,
                                 start_char=int(sidecar["next_char_start"]),
                             )
@@ -583,111 +927,104 @@ class ResultEvidenceService:
                         item_request.pdf_start_page,
                         item_request.pdf_end_page,
                         request.max_pdf_windows,
-                        request.max_chars_per_route,
+                        effective_route_chars,
                     )
                 )
                 record["pdf"] = pdf_record
 
-            flags = _conflict_flags(sidecar_records, pdf_record)
-            non_pdf_texts: list[str] = []
-            indexed = record.get("indexed_passage")
-            if isinstance(indexed, Mapping):
-                non_pdf_texts.extend(_route_texts(indexed))
-            for sidecar in sidecar_records:
-                non_pdf_texts.extend(_route_texts(sidecar))
-            referenced_tables = _referenced_table_numbers(non_pdf_texts)
-            read_tables: set[int] = set()
-            if pdf_record and pdf_record.get("ok"):
-                for row in pdf_record.get("queries") or []:
-                    if not isinstance(row, Mapping) or not row.get("matches"):
-                        continue
-                    read_tables.update(
-                        _referenced_table_numbers(
-                            [str(row.get("query") or ""), *_route_texts(row)]
-                        )
-                    )
-            missing_tables = sorted(referenced_tables - read_tables)
-            if referenced_tables:
-                record["referenced_tables"] = sorted(referenced_tables)
-                record["read_referenced_tables"] = sorted(read_tables & referenced_tables)
-            if missing_tables:
-                record["referenced_tables_not_read"] = missing_tables
-                flags.append(
-                    {
-                        "code": "REFERENCED_TABLE_NOT_READ",
-                        "tables": missing_tables,
-                    }
-                )
-
-            route_errors: list[dict[str, Any]] = []
-            indexed = record.get("indexed_passage")
-            if isinstance(indexed, Mapping) and not indexed.get("ok"):
-                route_errors.append(
-                    {"route": "indexed_passage", "error": indexed.get("error")}
-                )
-            for sidecar in sidecar_records:
-                if not sidecar.get("ok"):
-                    route_errors.append(
-                        {
-                            "route": "mineru_sidecar",
-                            "query": sidecar.get("query"),
-                            "error": sidecar.get("error"),
-                        }
-                    )
-                continuation = sidecar.get("continuation")
-                if isinstance(continuation, Mapping) and not continuation.get("ok"):
-                    route_errors.append(
-                        {
-                            "route": "mineru_sidecar_continuation",
-                            "query": sidecar.get("query"),
-                            "error": continuation.get("error"),
-                        }
-                    )
-            if pdf_record and not pdf_record.get("ok"):
-                route_errors.append(
-                    {"route": "pdf_extraction", "error": pdf_record.get("error")}
-                )
-            if pdf_record:
-                if pdf_record.get("ok") and pdf_record.get("search_complete") is False:
-                    flags.append(
-                        {
-                            "code": "PDF_SEARCH_INCOMPLETE",
-                            "searched_page_range": pdf_record.get("searched_page_range"),
-                            "requested_page_range": pdf_record.get("requested_page_range"),
-                        }
-                    )
-                for row in pdf_record.get("queries") or []:
-                    if not isinstance(row, Mapping):
-                        continue
-                    if row.get("coverage") != "complete" and not row.get("matches"):
-                        flags.append(
-                            {
-                                "code": "INCOMPLETE_PDF_TEXT_NO_MATCH",
-                                "query": row.get("query"),
-                                "coverage": row.get("coverage"),
-                            }
-                        )
-            record["route_errors"] = route_errors
-            record["conflict_flags"] = flags
-            visual_codes = {
-                "NUMERIC_SIGNATURE_MISMATCH",
-                "SIGNIFICANCE_MARKER_MISMATCH",
-                "INCOMPLETE_PDF_TEXT_NO_MATCH",
-            }
-            record["requires_visual_review"] = any(
-                flag.get("code") in visual_codes for flag in flags
-            )
-            record["requires_follow_up"] = bool(missing_tables)
-            record["ok"] = not route_errors
+            budget_omissions: list[dict[str, Any]] = []
+            if request.max_chars_per_item is not None:
+                budget_omissions = _apply_item_budget(record, request.max_chars_per_item)
+            if budget_omissions:
+                record["budget_omissions"] = budget_omissions
+            self._summarize_item(record)
+            record["char_usage"] = _item_char_usage(record)
             items.append(record)
 
+        return self._apply_total_budget(request, items)
+
+    def _apply_total_budget(
+        self,
+        request: ResultEvidenceRequest,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Ship items within the total budget; defer the rest with a token.
+
+        Items ship in request order. The first item that crosses the remaining
+        budget is trimmed to what still fits; every later item is deferred as
+        a measured stub and encoded into a continuation token. Omissions are
+        always explicit.
+        """
+
+        shipped = items
+        deferred_keys: list[str] = []
+        continuation_token: str | None = None
+        if request.max_total_chars is not None:
+            remaining = request.max_total_chars
+            shipped = []
+            defer_from: int | None = None
+            for index, (item, item_request) in enumerate(zip(items, request.requests)):
+                total = int(item.get("char_usage", {}).get("total") or 0)
+                if total <= remaining:
+                    remaining -= total
+                    shipped.append(item)
+                    continue
+                if remaining >= MIN_WINDOW_KEEP:
+                    omissions = _apply_item_budget(item, remaining)
+                    if omissions:
+                        existing = item.get("budget_omissions") or []
+                        item["budget_omissions"] = existing + omissions
+                        item["char_usage"] = _item_char_usage(item)
+                        self._summarize_item(item)
+                    remaining = 0
+                    shipped.append(item)
+                    defer_from = index + 1
+                else:
+                    defer_from = index
+                break
+            if defer_from is not None:
+                for index in range(defer_from, len(items)):
+                    item_request = request.requests[index]
+                    deferred_keys.append(item_request.item_key.upper())
+                    shipped.append(_deferred_stub(items[index], item_request))
+                continuation_token = encode_result_evidence_continuation(
+                    request, request.requests[defer_from:], remaining
+                )
+
+        shipped_chars = sum(
+            int(item.get("char_usage", {}).get("total") or 0)
+            if not item.get("deferred")
+            else 0
+            for item in shipped
+        )
+        measured_chars = sum(
+            int(item.get("char_usage", {}).get("total") or 0)
+            if not item.get("deferred")
+            else int(item.get("measured_chars", {}).get("total") or 0)
+            for item in shipped
+        )
         return {
             "schema_version": SCHEMA_VERSION,
-            "ok": all(item.get("ok") for item in items),
-            "items": items,
+            "ok": all(item.get("ok") for item in shipped),
+            "items": shipped,
+            "budget": {
+                "max_total_chars": request.max_total_chars,
+                "max_chars_per_item": request.max_chars_per_item,
+                "compact": request.compact,
+                "route_chars_per_read": (
+                    min(request.max_chars_per_route, COMPACT_ROUTE_CHARS)
+                    if request.compact
+                    else request.max_chars_per_route
+                ),
+                "shipped_chars": shipped_chars,
+                "measured_chars": measured_chars,
+                "items_deferred": deferred_keys,
+                "continuation_token": continuation_token,
+            },
             "note": (
                 "Route success means candidate evidence was retrieved, not that a requested substantive field "
-                "was verified. Text-route agreement is not image inspection."
+                "was verified. Text-route agreement is not image inspection. Budget omissions and deferred "
+                "items are explicit; a continuation token resumes deferred items."
             ),
         }
 
@@ -1296,4 +1633,6 @@ __all__ = [
     "ResultEvidenceRequest",
     "ResultEvidenceService",
     "compact_inventory_item",
+    "decode_result_evidence_continuation",
+    "encode_result_evidence_continuation",
 ]

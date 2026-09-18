@@ -9,6 +9,7 @@ from conftest import DummyContext
 from pydantic import ValidationError
 
 from zotero_mcp.research_workflows import (
+    COMPACT_ROUTE_CHARS,
     CandidateScopeDependencies,
     CandidateScopeRequest,
     CandidateScopeService,
@@ -17,8 +18,11 @@ from zotero_mcp.research_workflows import (
     EvidenceBundleValidationRequest,
     EvidenceBundleValidator,
     ResultEvidenceDependencies,
+    ResultEvidenceItemRequest,
     ResultEvidenceRequest,
     ResultEvidenceService,
+    decode_result_evidence_continuation,
+    encode_result_evidence_continuation,
 )
 from zotero_mcp.tools import research as research_tool
 
@@ -661,6 +665,205 @@ def test_collect_result_evidence_adapter_parses_json(monkeypatch):
     )
     assert json.loads(raw)["ok"] is True
     assert captured["request"].requests[0].pdf_queries == ["Table 5"]
+    assert captured["request"].max_total_chars is None
+    assert captured["request"].compact is False
+
+
+def test_collect_result_evidence_adapter_rejects_conflicting_continuation(monkeypatch):
+    request = ResultEvidenceRequest(
+        requests=[{"item_key": ITEM, "sidecar_queries": ["Table 5"]}],
+        max_chars_per_route=4000,
+    )
+    token = encode_result_evidence_continuation(request, request.requests, 0)
+
+    raw = research_tool.collect_result_evidence(
+        continuation_token=token,
+        max_chars_per_route=8000,
+        ctx=DummyContext(),
+    )
+    payload = json.loads(raw)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert "conflicts with the continuation token" in payload["error"]["message"]
+
+
+def test_collect_result_evidence_adapter_resumes_from_token(monkeypatch):
+    captured = {}
+
+    class Service:
+        def __init__(self, dependencies):
+            pass
+
+        def collect(self, request):
+            captured["request"] = request
+            return {"schema_version": 1, "ok": True, "items": []}
+
+    monkeypatch.setattr(research_tool, "ResultEvidenceService", Service)
+    original = ResultEvidenceRequest(
+        requests=[
+            {"item_key": ITEM, "sidecar_queries": ["Table 5"], "pdf_start_page": 4},
+            {"item_key": OTHER, "evidence_id": "zr1:0:ITEM0002#1:" + "b" * 64},
+        ],
+        max_chars_per_route=4000,
+        max_pdf_windows=3,
+        max_chars_per_item=9000,
+        compact=True,
+    )
+    token = encode_result_evidence_continuation(original, original.requests, 0)
+
+    raw = research_tool.collect_result_evidence(continuation_token=token, ctx=DummyContext())
+    assert json.loads(raw)["ok"] is True
+    resumed = captured["request"]
+    assert [r.item_key for r in resumed.requests] == [ITEM, OTHER]
+    assert resumed.requests[0].pdf_start_page == 4
+    assert resumed.requests[1].evidence_id.startswith("zr1:")
+    assert resumed.max_chars_per_route == 4000
+    assert resumed.max_pdf_windows == 3
+    assert resumed.max_chars_per_item == 9000
+    assert resumed.max_total_chars is None
+    assert resumed.compact is True
+
+
+def test_result_evidence_total_budget_cuts_crossing_item_and_defers_the_rest():
+    dependencies, _ = _result_dependencies(sidecar_text="x" * 3000)
+    result = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[
+                {"item_key": ITEM, "sidecar_queries": ["Table 5"]},
+                {"item_key": OTHER, "sidecar_queries": ["Table 5"]},
+            ],
+            max_total_chars=2500,
+        )
+    )
+    first, second = result["items"]
+    budget = result["budget"]
+
+    assert budget["items_deferred"] == [OTHER]
+    assert budget["shipped_chars"] == 2500
+    # Item 1 ships the cut window only; item 2 is deferred whole (3000-char
+    # primary window plus the 21-char continuation the fixture chains).
+    assert budget["measured_chars"] == 5521
+    assert first["char_usage"]["total"] == 2500
+    omission = first["budget_omissions"][0]
+    assert omission["action"] == "cut"
+    assert omission["kept_chars"] == 2500 and omission["dropped_chars"] == 500
+    assert first["sidecar"][0]["windows"][0]["text_budget_cut"] is True
+    assert second["deferred"] is True
+    assert second["measured_chars"]["total"] == 3021
+    assert "windows" not in second and "sidecar" not in second
+
+    token = budget["continuation_token"]
+    payload = decode_result_evidence_continuation(token)
+    assert [item["item_key"] for item in payload["items"]] == [OTHER]
+    assert payload["max_chars_per_route"] == 8000
+    assert payload["max_total_chars"] is None
+    resumed = ResultEvidenceRequest(
+        requests=[ResultEvidenceItemRequest(**item) for item in payload["items"]],
+        max_chars_per_route=payload["max_chars_per_route"],
+        max_pdf_windows=payload["max_pdf_windows"],
+        max_chars_per_item=payload["max_chars_per_item"],
+        max_total_chars=payload["max_total_chars"],
+        compact=payload["compact"],
+    )
+    assert resumed.requests[0].item_key == OTHER
+
+
+def test_result_evidence_per_item_budget_trims_windows_deterministically():
+    dependencies, calls = _result_dependencies(sidecar_text="y" * 4000)
+    result = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[
+                {
+                    "item_key": ITEM,
+                    "sidecar_queries": ["Table 5", "Table notes"],
+                    "evidence_id": "zr1:0:ITEM0001#1:" + "b" * 64,
+                }
+            ],
+            max_chars_per_item=2000,
+        )
+    )
+    row = result["items"][0]
+
+    assert row["char_usage"]["total"] <= 2000
+    assert row["char_usage"]["indexed_passage"] + row["char_usage"]["mineru_sidecar"] == row["char_usage"]["total"]
+    containers = [omission["container"] for omission in row["budget_omissions"]]
+    assert containers, "omissions must be reported"
+    assert all(
+        omission["action"] in {"cut", "dropped"}
+        for omission in row["budget_omissions"]
+    )
+    # Flags are computed on the shipped evidence only.
+    assert row["ok"] is True
+
+
+def test_result_evidence_compact_caps_route_reads():
+    observed = {}
+
+    def sidecar_reader(key, **kwargs):
+        observed["max_chars"] = kwargs.get("max_chars")
+        return {
+            "ok": True,
+            "route": "mineru_sidecar",
+            "source_hash": "a" * 64,
+            "windows": [{"text": "z" * 3000}],
+            "truncated": False,
+        }
+
+    dependencies = ResultEvidenceDependencies(
+        parent_resolver=lambda key: {"item_key": key, "title": "Paper", "library_id": 0},
+        passage_reader=lambda *args: {"ok": True, "chunks": []},
+        sidecar_reader=sidecar_reader,
+        pdf_reader=lambda *args: {"ok": True, "queries": []},
+    )
+    result = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[{"item_key": ITEM, "sidecar_queries": ["Table 5"]}],
+            compact=True,
+        )
+    )
+
+    assert observed["max_chars"] == COMPACT_ROUTE_CHARS
+    assert result["budget"]["route_chars_per_read"] == COMPACT_ROUTE_CHARS
+    assert result["budget"]["compact"] is True
+
+
+def test_result_evidence_without_budget_keeps_shape_and_flags():
+    dependencies, _ = _result_dependencies(
+        sidecar_text="Estimate -0.072*** (0.020)",
+        pdf_text="Estimate 0.072 (0.020)",
+    )
+    result = ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[
+                {
+                    "item_key": ITEM,
+                    "sidecar_queries": ["Table 5"],
+                    "pdf_queries": ["Table 5"],
+                }
+            ]
+        )
+    )
+    row = result["items"][0]
+
+    assert result["budget"]["items_deferred"] == []
+    assert result["budget"]["continuation_token"] is None
+    assert "budget_omissions" not in row
+    assert {flag["code"] for flag in row["conflict_flags"]} == {
+        "NUMERIC_SIGNATURE_MISMATCH",
+        "SIGNIFICANCE_MARKER_MISMATCH",
+    }
+
+
+def test_decode_result_evidence_continuation_rejects_malformed_tokens():
+    with pytest.raises(ValueError, match="unrecognized prefix"):
+        decode_result_evidence_continuation("zzz1.notatoken")
+    with pytest.raises(ValueError, match="not decodable"):
+        decode_result_evidence_continuation("evc1.!!!not-base64!!!")
+    import base64 as _base64
+
+    empty = _base64.urlsafe_b64encode(b'{"v":1,"items":[]}').decode().rstrip("=")
+    with pytest.raises(ValueError, match="no remaining item requests"):
+        decode_result_evidence_continuation("evc1." + empty)
 
 
 def _evidence_record(evidence_id="e1", item_key=ITEM, **extra):

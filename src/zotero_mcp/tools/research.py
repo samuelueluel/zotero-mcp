@@ -27,6 +27,7 @@ from zotero_mcp.research_workflows import (
     ResultEvidenceItemRequest,
     ResultEvidenceRequest,
     ResultEvidenceService,
+    decode_result_evidence_continuation,
 )
 from zotero_mcp.tools import _helpers
 from zotero_mcp.tools.retrieval import _is_top_level_item
@@ -491,25 +492,61 @@ def _parse_request_list(
         "one call. Expands supplied evidence IDs first, chains sidecar source hashes across lookups and "
         "one continuation, searches at most two literal phrases per text route, preserves one-based PDF "
         "page provenance and text-layer coverage, and keeps routes separate. Numeric or star disagreements "
-        "are flagged for visual review, never repaired. Does not render images or decide that a substantive "
-        "field was verified."
+        "are flagged for visual review, never repaired. Optional response budgets: compact caps each route "
+        "read at 1200 characters; max_chars_per_item and max_total_chars trim windows deterministically "
+        "and defer later items with an explicit continuation_token (resume by passing it alone). Every "
+        "omission is reported with locators; nothing is silently truncated. Does not render images or "
+        "decide that a substantive field was verified."
     ),
 )
 def collect_result_evidence(
-    requests: list[ResultEvidenceItemRequest] | str,
-    max_chars_per_route: int = 8000,
-    max_pdf_windows: int = 2,
+    requests: list[ResultEvidenceItemRequest] | str | None = None,
+    max_chars_per_route: int | None = None,
+    max_pdf_windows: int | None = None,
+    max_chars_per_item: int | None = None,
+    max_total_chars: int | None = None,
+    compact: bool | None = None,
+    continuation_token: str | None = None,
     *,
     ctx: Context,
 ) -> str:
     """Return route-separated candidate result evidence for exact items."""
 
     try:
-        parsed = ResultEvidenceRequest(
-            requests=_parse_request_list(requests),
-            max_chars_per_route=max_chars_per_route,
-            max_pdf_windows=max_pdf_windows,
-        )
+        if continuation_token:
+            if requests is not None:
+                raise ValueError("pass either requests or continuation_token, not both")
+            payload = decode_result_evidence_continuation(continuation_token)
+            supplied = {
+                "max_chars_per_route": max_chars_per_route,
+                "max_pdf_windows": max_pdf_windows,
+                "max_chars_per_item": max_chars_per_item,
+                "max_total_chars": max_total_chars,
+                "compact": compact,
+            }
+            for name, value in supplied.items():
+                if value is not None and value != payload[name]:
+                    raise ValueError(
+                        f"{name}={value} conflicts with the continuation token "
+                        f"({name}={payload[name]}); omit the parameter to resume"
+                    )
+            parsed = ResultEvidenceRequest(
+                requests=[ResultEvidenceItemRequest(**item) for item in payload["items"]],
+                max_chars_per_route=payload["max_chars_per_route"],
+                max_pdf_windows=payload["max_pdf_windows"],
+                max_chars_per_item=payload["max_chars_per_item"],
+                max_total_chars=payload["max_total_chars"],
+                compact=payload["compact"],
+            )
+        else:
+            parsed = ResultEvidenceRequest(
+                requests=_parse_request_list(requests),
+                max_chars_per_route=max_chars_per_route or 8000,
+                max_pdf_windows=max_pdf_windows or 2,
+                max_chars_per_item=max_chars_per_item,
+                max_total_chars=max_total_chars,
+                compact=bool(compact),
+            )
         response = ResultEvidenceService(
             ResultEvidenceDependencies(
                 parent_resolver=_resolve_parent,
