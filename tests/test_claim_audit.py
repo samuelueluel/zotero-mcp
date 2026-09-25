@@ -860,3 +860,19 @@ def test_gate_failures_surface_expected_and_found_tokens():
     assert "10.66pp" in unit_gate["message"]
     assert "10.66%" in unit_gate["message"]
     assert unit_gate["blocking"] is True
+
+
+def test_unresolved_sidecar_block_cannot_rescue_numeric_claim():
+    sidecar_text = (
+        "[Table status: UNRESOLVED (duplicate_rows); unverified numbers withheld. Verify on PDF p. 11.]\n"
+        "Results. The treatment reduced emissions by 5%."
+    )
+    result = AuditService(
+        _deps(
+            page_reader=lambda *args: {"text": "", "needs_ocr": True},
+            sidecar_reader=lambda *args: {"text": sidecar_text},
+        )
+    ).audit([_claim([_pdf_ref(quote="No text."), _sidecar_ref()])])
+    row = result["results"][0]
+    assert row["verified"] is False
+    assert "SIDECAR_BLOCK_UNRESOLVED" in row["reason_codes"]

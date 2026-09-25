@@ -20,6 +20,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from . import sidecar_reliability as _reliability
+
 SCHEMA_VERSION = 1
 
 MAX_CLAIMS = 8
@@ -1222,6 +1224,20 @@ class AuditService:
                     GateFailure(
                         "SIDECAR_FALLBACK_REQUIRES_PAGE_FAILURE",
                         "sidecar evidence is a fallback and requires a failed or unreadable page route",
+                    )
+                )
+            elif all(record.route == "mineru_sidecar" for record in direct_records) and any(
+                _reliability.WITHHELD_RE.search(record.quote)
+                or _reliability.chunk_reliability(record.source_text, _reliability.SURYA_SOURCE)["block_status"]
+                == "unresolved"
+                for record in direct_records
+            ):
+                # [surya sidecars] an unresolved table block cannot rescue a numeric claim.
+                failures.append(
+                    GateFailure(
+                        "SIDECAR_BLOCK_UNRESOLVED",
+                        "sidecar window contains an unresolved table block or withheld number; "
+                        "inspect the rendered PDF page or ask the user to check it",
                     )
                 )
             else:
