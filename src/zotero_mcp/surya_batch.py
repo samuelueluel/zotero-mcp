@@ -23,18 +23,20 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import signal
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import pymupdf
 import requests
 
-from .sidecar_assemble import assemble_batch
+from .sidecar_assemble import assemble_batch, assemble_item, atomic_write_text
 from .surya_runner import ItemJob, load_surya_config, run_batch, sha256_file
 
 STAGES = ("ocr", "repair", "enrich", "index")
@@ -79,9 +81,7 @@ class State:
         self.save()
 
     def save(self) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
-        tmp.replace(self.path)
+        atomic_write_text(self.path, json.dumps(self.data, indent=1))
 
 
 # ---------------------------------------------------------------- servers
@@ -104,7 +104,7 @@ def start_surya(cfg: dict) -> None:
     port = cfg["inference_url"].rsplit(":", 1)[1].split("/")[0]
     parallel = int(cfg["parallel"])
     subprocess.run(["podman", "rm", "-f", SURYA_CONTAINER], capture_output=True)
-    subprocess.run([
+    proc = subprocess.run([
         "podman", "run", "-d", "--pull=never", "--name", SURYA_CONTAINER,
         "--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "keep-groups",
         "--security-opt", "label=disable", "--log-driver=journald", "--log-opt", f"tag={SURYA_CONTAINER}",
@@ -115,7 +115,9 @@ def start_surya(cfg: dict) -> None:
         "-m", "/mnt/model.gguf", "--mmproj", "/mnt/mmproj.gguf", "-ngl", "99",
         "--parallel", str(parallel), "--ctx-size", str(12288 * parallel),
         "--alias", "datalab-to/surya-ocr-2", "--jinja",
-    ], check=True, capture_output=True)
+    ], capture_output=True, text=True)
+    if proc.returncode:
+        raise RuntimeError(f"podman run {SURYA_CONTAINER} failed: {proc.stderr.strip()[-400:]}")
     for _ in range(90):
         if _healthy(models):
             return
@@ -129,7 +131,14 @@ def stop_surya() -> None:
 
 
 def start_vlm() -> None:
-    subprocess.run([str(VLM_SCRIPT), "start"], check=True, capture_output=True)
+    if _healthy(VLM_URL.removesuffix("chat/completions") + "models"):
+        return
+    # A hard stop (power loss, kill -9) leaves the dedicated container behind,
+    # and the start script refuses to replace an existing one.
+    stop_vlm()
+    proc = subprocess.run([str(VLM_SCRIPT), "start"], capture_output=True, text=True)
+    if proc.returncode:
+        raise RuntimeError(f"{VLM_SCRIPT.name} start failed: {(proc.stderr or proc.stdout).strip()[-400:]}")
 
 
 def stop_vlm() -> None:
@@ -178,6 +187,56 @@ def chunk_jobs(jobs: list[ItemJob], pages: dict[str, int], max_pages: int) -> li
     if cur:
         chunks.append(cur)
     return chunks
+
+
+# ---------------------------------------------------------------- integrity
+
+def sidecar_consistent(key: str, sidecar_dir: Path) -> bool:
+    """True if a paper's sidecar files agree with each other.
+
+    Catches a repair write cut off by a stop: blocks.json must parse, its table
+    statuses must match reliability.json, and until enrichment starts the
+    Markdown must hash to the recorded sidecar_sha256. Enrichment edits the
+    Markdown in place (atomically), so a sidecar with schema blocks skips the hash.
+    """
+    try:
+        blocks = json.loads((sidecar_dir / f"{key}.blocks.json").read_text(encoding="utf-8"))["blocks"]
+        rel = json.loads((sidecar_dir / f"{key}.reliability.json").read_text(encoding="utf-8"))
+        md = (sidecar_dir / f"{key}.md").read_text(encoding="utf-8")
+        tables = Counter(b["status"] for b in blocks if b["label"] == "Table")
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if dict(tables) != rel.get("tables"):
+        return False
+    if "[Figure Schema]" in md:
+        return True
+    return hashlib.sha256(md.encode("utf-8")).hexdigest() == rel.get("sidecar_sha256")
+
+
+def reassemble(key: str, batch: Path, sidecar_dir: Path) -> dict:
+    """Rebuild one paper's sidecar from its recorded OCR chunk (the pre-repair state)."""
+    manifest = json.loads((batch / "manifest.json").read_text(encoding="utf-8"))
+    results = json.loads(next(iter(sorted((batch / "ocr").glob("*/results.json")))).read_text(encoding="utf-8"))
+    return assemble_item(key, manifest["items"][key], results, sidecar_dir, batch)
+
+
+def heal_sidecars(jobs, state, run_dir, sidecar_dir) -> None:
+    """Before repair and enrichment, rebuild any sidecar left inconsistent by a stop."""
+    for j in jobs:
+        k = j.item_key
+        if not state.done(k, "ocr") or state.done(k, "enrich") or sidecar_consistent(k, sidecar_dir):
+            continue
+        it = state.item(k)
+        try:
+            rel = reassemble(k, Path(it["batch"]), sidecar_dir)
+        except Exception as exc:  # noqa: BLE001 - fall back to a fresh OCR of this paper
+            it["done"] = []
+            state.error(k, "heal", f"{type(exc).__name__}: {exc}")
+            log(run_dir, f"sidecar {k} inconsistent and not rebuildable ({exc}); OCR will be redone")
+            continue
+        it["done"] = ["ocr"]
+        state.mark(k, "ocr", level=rel["level"], tables=rel["tables"])
+        log(run_dir, f"sidecar {k} inconsistent (interrupted write); rebuilt from its OCR chunk, repair will be redone")
 
 
 # ---------------------------------------------------------------- stages
@@ -345,12 +404,21 @@ def main(argv: list[str] | None = None) -> int:
         log(run_dir, f"skip {k}: {why}")
 
     t = time.time()
-    if "ocr" in stages:
-        stage_ocr(jobs, state, cfg, run_dir, sidecar_dir, args.chunk_pages)
-    if {"repair", "enrich"} & set(stages):
-        stage_vlm(jobs, state, run_dir, sidecar_dir, stages)
-    if "index" in stages:
-        stage_index(jobs, state, run_dir, config_path)
+    try:
+        if {"repair", "enrich"} & set(stages):
+            heal_sidecars(jobs, state, run_dir, sidecar_dir)
+        if "ocr" in stages:
+            stage_ocr(jobs, state, cfg, run_dir, sidecar_dir, args.chunk_pages)
+        if {"repair", "enrich"} & set(stages):
+            stage_vlm(jobs, state, run_dir, sidecar_dir, stages)
+        if "index" in stages:
+            stage_index(jobs, state, run_dir, config_path)
+    except (SystemExit, KeyboardInterrupt):
+        log(run_dir, f"stopped before completion; rerun with --run {args.run} to resume")
+        raise
+    except Exception as exc:
+        log(run_dir, f"ABORTED: {type(exc).__name__}: {exc}; rerun with --run {args.run} after fixing")
+        raise
 
     levels: dict[str, int] = {}
     for j in jobs:

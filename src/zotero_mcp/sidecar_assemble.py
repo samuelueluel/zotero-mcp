@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html as _html
 import json
+import os
 import re
 import time
 from collections import Counter
@@ -234,24 +235,35 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
     return write_outputs(item_key, meta, blocks, provenance, Path(out_dir))
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """Replace ``path`` in one step, so an interrupted write leaves the old file intact."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def write_outputs(item_key: str, meta: dict, blocks: list[dict], provenance: dict, out_dir: Path) -> dict:
-    """Write blocks.json, the Markdown sidecar and reliability.json.
+    """Write the Markdown sidecar, reliability.json and blocks.json.
 
     Shared by assembly and the repair pass. Overwrites the sidecar, so it must
-    run before figure enrichment inserts [Figure Schema] blocks.
+    run before figure enrichment inserts [Figure Schema] blocks. Each file is
+    replaced atomically and blocks.json goes last: after an interrupted repair
+    it still records the tables as unresolved, so a resumed run redoes them.
     """
     import hashlib
 
     reliability = summarize(item_key, meta, blocks)
     markdown = render_markdown(blocks)
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"{item_key}.blocks.json").write_text(
-        json.dumps({"item_key": item_key, **provenance, "meta": meta, "blocks": blocks}, indent=1),
-        encoding="utf-8")
-    (out_dir / f"{item_key}.md").write_text(markdown, encoding="utf-8")
     reliability.update(provenance)
     reliability["sidecar_sha256"] = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
-    (out_dir / f"{item_key}.reliability.json").write_text(json.dumps(reliability, indent=1), encoding="utf-8")
+    atomic_write_text(out_dir / f"{item_key}.md", markdown)
+    atomic_write_text(out_dir / f"{item_key}.reliability.json", json.dumps(reliability, indent=1))
+    atomic_write_text(out_dir / f"{item_key}.blocks.json", json.dumps(
+        {"item_key": item_key, **provenance, "meta": meta, "blocks": blocks}, indent=1))
     return reliability
 
 
