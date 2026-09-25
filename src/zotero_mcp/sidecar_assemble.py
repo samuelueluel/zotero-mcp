@@ -150,6 +150,21 @@ def _check_text_numbers(fragment: str, tokens) -> tuple[str, list[dict]]:
     return "single-route", [{"kind": "text_numbers_unmatched", "detail": "", "values": missing[:20]}]
 
 
+FIGURE_ZOOM = 200 / 72  # crops for Qwen enrichment; clears its 300 px size filter
+
+
+def save_figure_crop(page, pdf_bbox, out_dir: Path, item_key: str, name: str) -> str | None:
+    """Render a figure region from the PDF itself; return the sidecar image ref."""
+    rect = pymupdf.Rect(pdf_bbox) & page.rect
+    if rect.is_empty or rect.width < 20 or rect.height < 20:
+        return None
+    img_dir = out_dir / f"{item_key}.images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(FIGURE_ZOOM, FIGURE_ZOOM), clip=rect)
+    pix.save(img_dir / name)
+    return f"images/{name}"
+
+
 def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch_dir: Path) -> dict:
     doc = pymupdf.open(meta["pdf_path"])
     minus_fonts = validated_minus_fonts(symbol_minus_fonts(doc))
@@ -176,7 +191,10 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 "repairs": [],
                 "surya_error": bool(b.get("error")),
             }
-            if label in SKIP_LABELS or label in FIGURE_LABELS or b.get("skipped"):
+            if label in FIGURE_LABELS:
+                rec["status"] = "not-text"
+                rec["image"] = save_figure_crop(page, pdf_bbox, out_dir, item_key, f"p{page_no:03d}_b{order}.png")
+            elif label in SKIP_LABELS or b.get("skipped"):
                 rec["status"] = "not-text"
             else:
                 tokens = native_number_tokens(page, page_no, clip=pdf_bbox, minus_fonts=minus_fonts)
@@ -278,7 +296,10 @@ def render_markdown(blocks: list[dict]) -> str:
         if label in SKIP_LABELS:
             continue
         if label in FIGURE_LABELS:
-            out.append(f"[Figure on PDF p. {b['page']}; see caption]")
+            if b.get("image"):
+                out.append(f"![Figure, PDF p. {b['page']}]({b['image']})")
+            else:
+                out.append(f"[Figure on PDF p. {b['page']}; see caption]")
             continue
         if label == "Table":
             line = _status_line(b)
