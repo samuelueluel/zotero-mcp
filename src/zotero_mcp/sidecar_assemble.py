@@ -66,7 +66,10 @@ def _status_line(block: dict) -> str | None:
     if status == "unresolved":
         return f"[Table status: UNRESOLVED ({reasons}); unverified numbers withheld. Verify on PDF p. {page}.]"
     if status == "repaired":
-        return f"[Table status: REPAIRED ({len(block['repairs'])} sign fix(es) from the PDF text layer). Check PDF p. {page} before quoting.]"
+        routes = sorted({r.get("route", "") for r in block["repairs"]})
+        how = "re-read by a second model and matched to the PDF text layer" if "vlm_table_reread" in routes \
+            else f"{len(block['repairs'])} sign fix(es) from the PDF text layer"
+        return f"[Table status: REPAIRED ({how}). Check PDF p. {page} before quoting.]"
     return f"[Table status: SINGLE-ROUTE ({reasons}); numbers not independently confirmed. Check PDF p. {page} before quoting.]"
 
 
@@ -220,21 +223,32 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 rec["findings"].append({"kind": "surya_block_error", "detail": "", "values": []})
             blocks.append(rec)
 
-    reliability = summarize(item_key, meta, blocks)
-    markdown = render_markdown(blocks)
-    out_dir.mkdir(parents=True, exist_ok=True)
     provenance = {
         "assembler": ASSEMBLER_VERSION,
         "batch_dir": str(batch_dir),
+        "pdf_path": meta["pdf_path"],
         "pdf_sha256": meta["pdf_sha256"],
         "attachment_key": meta.get("attachment_key"),
         "assembled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
-    (out_dir / f"{item_key}.blocks.json").write_text(
-        json.dumps({"item_key": item_key, **provenance, "blocks": blocks}, indent=1), encoding="utf-8")
-    md_path = out_dir / f"{item_key}.md"
-    md_path.write_text(markdown, encoding="utf-8")
+    return write_outputs(item_key, meta, blocks, provenance, Path(out_dir))
+
+
+def write_outputs(item_key: str, meta: dict, blocks: list[dict], provenance: dict, out_dir: Path) -> dict:
+    """Write blocks.json, the Markdown sidecar and reliability.json.
+
+    Shared by assembly and the repair pass. Overwrites the sidecar, so it must
+    run before figure enrichment inserts [Figure Schema] blocks.
+    """
     import hashlib
+
+    reliability = summarize(item_key, meta, blocks)
+    markdown = render_markdown(blocks)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"{item_key}.blocks.json").write_text(
+        json.dumps({"item_key": item_key, **provenance, "meta": meta, "blocks": blocks}, indent=1),
+        encoding="utf-8")
+    (out_dir / f"{item_key}.md").write_text(markdown, encoding="utf-8")
     reliability.update(provenance)
     reliability["sidecar_sha256"] = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
     (out_dir / f"{item_key}.reliability.json").write_text(json.dumps(reliability, indent=1), encoding="utf-8")
