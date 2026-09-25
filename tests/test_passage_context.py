@@ -221,6 +221,34 @@ def test_sidecar_line_read_and_changed_source(monkeypatch, tmp_path):
     assert call_find(expected_hash=result["source_hash"])["error"]["code"] == "STALE_EVIDENCE"
 
 
+def test_surya_sidecar_reports_pages_and_status(monkeypatch, tmp_path):
+    setup_tool(monkeypatch, tmp_path)
+    (tmp_path / f"{KEY}.md").write_text(
+        "<!-- pdf-page: 1 -->\n\nIntro text.\n\n<!-- pdf-page: 2 -->\n\n"
+        "[Table status: UNRESOLVED (duplicate_rows); unverified numbers withheld. Verify on PDF p. 2.]\n\n"
+        "<table><tr><td>x</td></tr></table>\n",
+        encoding="utf-8",
+    )
+    (tmp_path / f"{KEY}.reliability.json").write_text(
+        json.dumps({"level": "warn", "warning": "1 of 1 tables unresolved", "problem_tables": [{"page": 2}]}))
+    result = call_find(query="Table status")
+    window = result["windows"][0]
+    assert result["sidecar_parser"] == "surya"
+    assert result["reliability"]["item_level"] == "warn"
+    assert 2 in window["pdf_pages"]
+    assert window["block_status"] == "unresolved" and window["requires_pdf_check"] is True
+    assert window["check_pages"] == [2]
+
+
+def test_legacy_sidecar_is_flagged(monkeypatch, tmp_path):
+    setup_tool(monkeypatch, tmp_path)
+    (tmp_path / f"{KEY}.md").write_bytes(b"one\ntwo\n")
+    result = call_find(query="two")
+    assert result["sidecar_parser"] == "mineru-legacy"
+    assert result["windows"][0]["block_status"] == "legacy-unverified"
+    assert result["reliability"]["item_level"] == "legacy-unverified"
+
+
 def test_missing_sidecar_does_not_create_or_parse(monkeypatch, tmp_path):
     setup_tool(monkeypatch, tmp_path)
     assert call_find(query="anything")["error"]["code"] == "SIDECAR_NOT_FOUND"

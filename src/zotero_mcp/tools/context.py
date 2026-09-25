@@ -9,6 +9,7 @@ from typing import Any
 
 from zotero_mcp import client as _client
 from zotero_mcp import mineru as _mineru
+from zotero_mcp import sidecar_reliability as _reliability
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context
 from zotero_mcp.client import with_zotero_api_lock
@@ -28,6 +29,20 @@ from zotero_mcp.passage_context import (
 )
 
 MAX_SIDECAR_BYTES = 16 * 1024 * 1024
+
+
+def _item_reliability(item_key: str, source: str | None) -> dict:
+    """Paper-level reliability summary for a sidecar-backed read."""
+    item_rel = None
+    if source == _reliability.SURYA_SOURCE:
+        cfg = _mineru.load_mineru_config(_config_path())
+        item_rel = _reliability.load_item_reliability(cfg["sidecar_dir"], item_key)
+    out = _reliability.result_reliability({"block_status": "verified"}, item_rel)
+    summary = {k: out[k] for k in ("item_level", "item_warning") if k in out}
+    if item_rel:
+        summary["problem_tables"] = item_rel.get("problem_tables", [])
+        summary["scan_pages"] = item_rel.get("scan_pages", [])
+    return summary
 
 
 def _config_path() -> str:
@@ -153,6 +168,10 @@ def read_passage(
                     "source": meta.get("fulltext_source", "indexed-text"),
                 }
             )
+            # [surya sidecars] block status and PDF pages for sidecar-backed chunks.
+            if meta.get("fulltext_source") in (_reliability.SURYA_SOURCE, _reliability.LEGACY_SOURCE):
+                rel = _reliability.result_reliability(meta, None)
+                chunks[-1].update({k: rel[k] for k in ("block_status", "requires_pdf_check", "pdf_pages", "check_pages")})
             remaining -= end - start
             truncated = truncated or partial
         return json.dumps(
@@ -166,6 +185,9 @@ def read_passage(
                 "truncated": truncated,
                 "next_char_start": next_char,
                 "omitted_chunk_ids": omitted,
+                "reliability": _item_reliability(key, anchor_meta.get("fulltext_source"))
+                if anchor_meta.get("fulltext_source") in (_reliability.SURYA_SOURCE, _reliability.LEGACY_SOURCE)
+                else None,
                 "note": "Indexed context, not a new semantic score or verified PDF-page read. Neighbors may overlap and are current index context.",
             },
             ensure_ascii=False,
@@ -254,11 +276,24 @@ def find_in_item(
             # The exact char offset supports continuation even inside huge HTML table lines.
             windows = result["windows"]
             result["next_char_start"] = windows[-1]["char_end"] if windows and windows[-1]["truncated"] else None
+        # [surya sidecars] PDF pages and block status per window.
+        source = _reliability.sidecar_source(cfg["sidecar_dir"], item_key)
+        anchored = _reliability.has_page_markers(text)
+        for window in result.get("windows", []):
+            if anchored:
+                window["pdf_pages"] = _reliability.pages_in_span(text, window["char_start"], window["char_end"])
+            rel = _reliability.chunk_reliability(window.get("text", ""), source)
+            window["block_status"] = rel["block_status"]
+            window["check_pages"] = rel["check_pages"]
+            window["requires_pdf_check"] = _reliability.requires_pdf_check(rel["block_status"])
         return json.dumps(
             {
                 "ok": True,
                 **parent,
                 "route": "mineru_sidecar",
+                "sidecar_parser": "surya" if source == _reliability.SURYA_SOURCE else "mineru-legacy",
+                "page_basis": "one-based PDF pages from sidecar anchors" if anchored else "no PDF page anchors in this sidecar",
+                "reliability": _item_reliability(item_key, source),
                 "source_hash": digest,
                 "offset_basis": "one-based lines; zero-based source characters, end exclusive",
                 **result,
