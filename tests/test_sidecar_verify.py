@@ -92,6 +92,28 @@ def test_merged_estimate_se_is_split():
     assert ".0640*** [.0166]" in html and ".0053 (.0098)" in html
 
 
+def test_header_column_numbers_are_structural():
+    html = ("<table><tr><td></td><td>(1)</td><td>(2)</td></tr>"
+            "<tr><td>Age</td><td>.5</td><td>.6</td></tr></table>")
+    check = verify_table(html, [tok(".5"), tok(".6")])
+    assert check.status == "verified"
+    assert any(f.kind == "label_or_header_mismatch" for f in check.findings)
+
+
+def test_scan_agreement_caps_at_single_route():
+    html = TABLE.format(a="-.007", b="-.218")
+    check = verify_table(html, [tok(x) for x in ("-.007", "-.218", "-.815", "-37.652")], native_is_ocr=True)
+    assert check.status == "single-route"
+    assert any(f.kind == "ocr_layer_agreement" for f in check.findings)
+
+
+def test_scan_never_repairs():
+    html = TABLE.format(a=".007", b="-.218")
+    native = [tok("-.007", "codepoint"), tok("-.218"), tok("-.815"), tok("-37.652")]
+    check = verify_table(html, native, native_is_ocr=True)
+    assert not check.repairs and "-.007" not in check.html
+
+
 def test_ranges_and_unicode_minus():
     assert text_numbers("1993–98 period") == ["1993", "98"]
     assert text_numbers("<td>\u2212.059</td>") == ["-.059"]

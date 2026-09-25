@@ -101,7 +101,40 @@ class TableCheck:
         return [f for f in self.findings if f.kind in STRUCTURAL]
 
 
-STRUCTURAL = {"empty_body_column", "merged_estimate_se", "ragged_numeric_rows"}
+STRUCTURAL = {"empty_body_column", "merged_estimate_se", "label_or_header_mismatch"}
+
+_THEAD_RE = re.compile(r"<thead\b[^>]*>(.*?)</thead>", re.S | re.I)
+_COLNUM_RE = re.compile(r"^\(\d{1,2}\)$")
+_MATH_RE = re.compile(r"<math\b[^>]*>.*?</math>", re.S | re.I)
+
+
+def _plain(fragment: str) -> str:
+    return _TAG_RE.sub(" ", _MATH_RE.sub(" ", fragment)).strip()
+
+
+def numbers_with_roles(html: str) -> list[tuple[str, str]]:
+    """Return ``(number, role)`` for every number in the table.
+
+    Roles: ``header`` (thead rows, th cells, rows of column numbers such as
+    ``(1) (2) (3)``), ``label`` (cells whose text contains words, e.g.
+    ``Small (0-50)`` or ``1978 earnings``), otherwise ``data``.
+    """
+    head_spans = [m.span(1) for m in _THEAD_RE.finditer(html)]
+    out: list[tuple[str, str]] = []
+    for rm in _ROW_RE.finditer(html):
+        in_head = any(a <= rm.start(1) < b for a, b in head_spans)
+        cells = [Cell(t.lower(), a, inner) for t, a, inner in _CELL_RE.findall(rm.group(1))]
+        numeric = [c for c in cells if c.numbers]
+        colnum_row = bool(numeric) and all(_COLNUM_RE.match(_plain(c.inner)) for c in numeric)
+        for c in cells:
+            if in_head or c.tag == "th" or colnum_row:
+                role = "header"
+            elif sum(ch.isalpha() for ch in _plain(c.inner)) >= 2:
+                role = "label"
+            else:
+                role = "data"
+            out.extend((n, role) for n in c.numbers)
+    return out
 
 
 def _structure(rows: list[list[Cell]]) -> list[Finding]:
@@ -123,9 +156,6 @@ def _structure(rows: list[list[Cell]]) -> list[Finding]:
                     pos += c.colspan
             if pos_ok and vals and len(vals) == len(body) and not any(vals):
                 findings.append(Finding("empty_body_column", f"column {col + 1} is empty in every body row"))
-        numeric_widths = Counter(len([c for c in r if c.numbers]) for r in body if any(c.numbers for c in r))
-        if len(numeric_widths) > 2:
-            findings.append(Finding("ragged_numeric_rows", f"numeric cells per row vary: {dict(numeric_widths)}"))
     return findings
 
 
@@ -158,8 +188,14 @@ def verify_table(
     html: str,
     native_tokens: Iterable[NativeToken],
     context_numbers: Iterable[str] = (),
+    native_is_ocr: bool = False,
 ) -> TableCheck:
     """Compare one Surya table with native tokens from the same region.
+
+    ``native_is_ocr`` marks a scanned page whose text layer is itself OCR.
+    Such a layer is a weak witness: agreement caps the table at
+    ``single-route`` (recorded as ``ocr_layer_agreement``), it never drives a
+    repair, and only a few isolated digit disagreements are tolerated.
 
     ``native_tokens`` should be clipped to the table's region in PDF
     coordinates. ``context_numbers`` are numbers that legitimately appear in
@@ -169,7 +205,8 @@ def verify_table(
     native = list(native_tokens)
     html, merged = split_estimate_se(html)
     rows = parse_rows(html)
-    surya = [n for r in rows for c in r for n in c.numbers]
+    roled = numbers_with_roles(html)
+    surya = [n for n, _role in roled]
     check = TableCheck("verified", html, surya_numbers=len(surya), native_numbers=len(native))
     if merged:
         check.findings.append(Finding("merged_estimate_se", f"split {merged} estimate/uncertainty cells"))
@@ -189,11 +226,15 @@ def verify_table(
         by_text.setdefault(t.text, []).append(t)
 
     unmatched: list[str] = []
-    for n in surya:
+    non_data: list[str] = []
+    # Match data cells first so a shared value is credited to the data cell.
+    for n, role in sorted(roled, key=lambda x: x[1] != "data"):
         if pool[n] > 0:
             pool[n] -= 1
-        else:
+        elif role == "data":
             unmatched.append(n)
+        else:
+            non_data.append(n)
 
     conflicts: list[str] = []
     repairable: list[str] = []
@@ -232,12 +273,31 @@ def verify_table(
 
     dup = _duplicate_rows(rows)
     check.findings.extend(dup)
+    if non_data:
+        check.findings.append(Finding(
+            "label_or_header_mismatch", "numbers in labels or header rows absent from the text layer", non_data))
     if unmatched:
-        check.findings.append(Finding("surya_unmatched", "numbers absent from the text layer", unmatched))
+        check.findings.append(Finding("surya_unmatched", "data numbers absent from the text layer", unmatched))
     if missing:
         check.findings.append(Finding("native_missing", "text-layer numbers absent from Surya (truncation)", missing))
     if conflicts:
         check.findings.append(Finding("sign_conflict", "sign disagreement not settled by an authoritative glyph", conflicts))
+
+    if native_is_ocr:
+        # Undo any repair: an OCR text layer is not authoritative for signs.
+        if check.repairs:
+            check.html = html
+            conflicts.extend(r["before"] for r in check.repairs)
+            check.repairs = []
+        disagreements = len(unmatched) + len(missing) + len(conflicts)
+        if dup or disagreements > max(2, len(surya) // 50):
+            check.status = "unresolved"
+        else:
+            check.status = "single-route"
+            check.findings.append(Finding(
+                "ocr_layer_agreement",
+                f"scan: Surya agrees with the OCR text layer except {disagreements} value(s)"))
+        return check
 
     if unmatched or missing or conflicts or dup:
         check.status = "unresolved"
