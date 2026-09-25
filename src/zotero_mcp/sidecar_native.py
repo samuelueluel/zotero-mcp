@@ -126,6 +126,40 @@ def validated_minus_fonts(profile: dict[str, dict[str, int]]) -> set[str]:
     }
 
 
+def image_bbox_to_pdf(
+    bbox: Iterable[float],
+    image_size: tuple[float, float],
+    page_size: tuple[float, float],
+    rotated_cw: bool = False,
+    pad: float = 2.0,
+) -> tuple[float, float, float, float]:
+    """Map a Surya pixel bbox back to PDF points.
+
+    ``image_size`` is the size of the image Surya saw. When ``rotated_cw`` is
+    true that image is the page render rotated 90 degrees clockwise (sideways
+    tables turned upright); the bbox is un-rotated before scaling.
+    ``page_size`` is the unrotated PDF page (width, height) in points.
+    """
+    x0, y0, x1, y1 = bbox
+    img_w, img_h = image_size
+    page_w, page_h = page_size
+    if rotated_cw:
+        # Clockwise rotation maps original (x, y) -> (H - y, x), where H is the
+        # original render height == rotated image width.
+        scale = img_h / page_w
+        ox0, ox1 = y0 / scale, y1 / scale
+        oy0, oy1 = (img_w - x1) / scale, (img_w - x0) / scale
+    else:
+        scale = img_w / page_w
+        ox0, oy0, ox1, oy1 = x0 / scale, y0 / scale, x1 / scale, y1 / scale
+    return (
+        max(0.0, ox0 - pad),
+        max(0.0, oy0 - pad),
+        min(page_w, ox1 + pad),
+        min(page_h, oy1 + pad),
+    )
+
+
 def native_number_tokens(
     page,
     page_number: int,
@@ -155,7 +189,10 @@ def native_number_tokens(
             sign_source = "none"
             start = i
             nxt = line[i + 1] if i + 1 < n else None
-            if nxt is not None and _is_digit_start(nxt[0]):
+            prev = line[i - 1] if i > 0 else None
+            # A dash between digits is a range ("1993–98"), not a sign.
+            after_digit = prev is not None and (prev[0].isdigit() or prev[0] == ".")
+            if nxt is not None and _is_digit_start(nxt[0]) and not after_digit:
                 if ch in KNOWN_MINUS:
                     sign_source = "codepoint"
                 elif len(ch) == 1 and ord(ch) < 0x20 and nxt[1] != font:
