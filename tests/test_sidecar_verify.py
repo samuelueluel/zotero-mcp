@@ -114,6 +114,14 @@ def test_scan_never_repairs():
     assert not check.repairs and "-.007" not in check.html
 
 
+def test_formula_table_is_single_route_not_withheld():
+    cell = "<td><math>R_{0,Y} - R_{1,i}^*</math></td>"
+    html = f"<table><tr><td>Homeowners</td>{cell}{cell}</tr><tr><td>Renters</td>{cell}<td>0</td></tr></table>"
+    check = verify_table(html, [tok("1"), tok("2"), tok("0")])
+    assert check.status == "single-route"
+    assert any(f.kind == "math_table" for f in check.findings)
+
+
 def test_ranges_and_unicode_minus():
     assert text_numbers("1993–98 period") == ["1993", "98"]
     assert text_numbers("<td>\u2212.059</td>") == ["-.059"]

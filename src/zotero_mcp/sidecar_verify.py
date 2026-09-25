@@ -216,6 +216,17 @@ def verify_table(
         check.status = "single-route"
         return check
 
+    # Formula tables: digits are subscripts/exponents inside LaTeX, which the
+    # text layer cannot represent. Numeric comparison is meaningless; treat
+    # the table like display math.
+    all_cells = [c for r in rows for c in r]
+    math_cells = [c for c in all_cells if _MATH_RE.search(c.inner)]
+    if all_cells and len(math_cells) / len(all_cells) >= 0.25:
+        check.status = "single-route"
+        check.findings.append(Finding(
+            "math_table", f"{len(math_cells)} of {len(all_cells)} cells are LaTeX; no text-layer check"))
+        return check
+
     pool = Counter(t.text for t in native)
     for n in context_numbers:
         n = normalize_number(n)
