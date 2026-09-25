@@ -1206,3 +1206,75 @@ def test_result_evidence_budget_trim_clears_stale_table_obligations():
     assert row["referenced_tables_not_read"] == [2]
     assert {"code": "REFERENCED_TABLE_NOT_READ", "tables": [2]} in row["conflict_flags"]
     assert row["requires_follow_up"] is True
+
+
+def _flagged_sidecar_dependencies(*, pdf_page, window_extra):
+    import dataclasses
+
+    dependencies, _ = _result_dependencies(passage_text="Welfare results.")
+
+    def sidecar_reader(key, **kwargs):
+        return {
+            "ok": True,
+            "route": "mineru_sidecar",
+            "source_hash": "a" * 64,
+            "windows": [{"text": "Estimate -0.072*** (0.020)", **window_extra}],
+            "truncated": False,
+        }
+
+    original_pdf = dependencies.pdf_reader
+
+    def pdf_reader(key, queries, start, end, windows, max_chars):
+        out = original_pdf(key, queries, start, end, windows, max_chars)
+        for row in out["queries"]:
+            for match in row["matches"]:
+                match["page"] = pdf_page
+        return out
+
+    return dataclasses.replace(dependencies, sidecar_reader=sidecar_reader, pdf_reader=pdf_reader)
+
+
+def _collect_one(dependencies):
+    return ResultEvidenceService(dependencies).collect(
+        ResultEvidenceRequest(
+            requests=[
+                {
+                    "item_key": ITEM,
+                    "sidecar_queries": ["Estimate"],
+                    "pdf_queries": ["Estimate"],
+                }
+            ]
+        )
+    )["items"][0]
+
+
+def test_result_evidence_requires_pdf_check_for_unresolved_sidecar_page():
+    row = _collect_one(_flagged_sidecar_dependencies(
+        pdf_page=6,
+        window_extra={"block_status": "unresolved", "requires_pdf_check": True,
+                      "check_pages": [41], "pdf_pages": [41]},
+    ))
+    flag = next(f for f in row["conflict_flags"] if f["code"] == "REQUIRES_PDF_CHECK")
+    assert flag["pages"] == [41] and flag["block_statuses"] == ["unresolved"]
+    assert row["pdf_check_pages_not_read"] == [41]
+    assert row["requires_follow_up"] is True
+
+
+def test_result_evidence_clears_pdf_check_when_page_was_read():
+    row = _collect_one(_flagged_sidecar_dependencies(
+        pdf_page=41,
+        window_extra={"block_status": "single-route", "requires_pdf_check": True,
+                      "check_pages": [41], "pdf_pages": [41]},
+    ))
+    assert "REQUIRES_PDF_CHECK" not in {f["code"] for f in row["conflict_flags"]}
+    assert "pdf_check_pages_not_read" not in row
+
+
+def test_result_evidence_flags_unpaged_legacy_sidecar():
+    row = _collect_one(_flagged_sidecar_dependencies(
+        pdf_page=6,
+        window_extra={"block_status": "legacy-unverified", "requires_pdf_check": True, "check_pages": []},
+    ))
+    flag = next(f for f in row["conflict_flags"] if f["code"] == "REQUIRES_PDF_CHECK")
+    assert flag["pages"] == [] and "find_in_pdf" in flag["reason"]
+    assert row["requires_follow_up"] is True

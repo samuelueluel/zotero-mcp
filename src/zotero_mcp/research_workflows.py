@@ -398,6 +398,54 @@ class ResultEvidenceDependencies:
     pdf_reader: Callable[[str, list[str], int | None, int | None, int, int], Mapping[str, Any]]
 
 
+def _page_list(value: Any) -> list[int]:
+    """Normalize page fields stored as lists or comma-joined strings."""
+    if isinstance(value, (list, tuple)):
+        raw = value
+    elif isinstance(value, str):
+        raw = [p for p in value.split(",") if p.strip()]
+    else:
+        return []
+    pages = []
+    for p in raw:
+        try:
+            pages.append(int(p))
+        except (TypeError, ValueError):
+            continue
+    return pages
+
+
+def _pdf_check_needs(records: list[Mapping[str, Any]]) -> tuple[set[int], list[str]]:
+    """[surya sidecars] PDF pages that shipped sidecar evidence says must be checked.
+
+    Returns ``(pages, statuses)``. A flagged unit with no page anchors (legacy
+    MinerU sidecar) contributes its status but no page, so the caller still
+    raises the flag without inventing a page.
+    """
+    pages: set[int] = set()
+    statuses: list[str] = []
+
+    def visit(unit: Mapping[str, Any]) -> None:
+        if not unit.get("requires_pdf_check"):
+            return
+        statuses.append(str(unit.get("block_status") or "unknown"))
+        pages.update(_page_list(unit.get("check_pages")) or _page_list(unit.get("pdf_pages")))
+
+    for record in records:
+        for chunk in record.get("chunks") or []:
+            if isinstance(chunk, Mapping):
+                visit(chunk)
+        for window in record.get("windows") or []:
+            if isinstance(window, Mapping):
+                visit(window)
+        continuation = record.get("continuation")
+        if isinstance(continuation, Mapping):
+            for window in continuation.get("windows") or []:
+                if isinstance(window, Mapping):
+                    visit(window)
+    return pages, statuses
+
+
 def _route_texts(record: Mapping[str, Any]) -> list[str]:
     texts: list[str] = []
     if record.get("route") == "indexed_passage":
@@ -839,6 +887,35 @@ class ResultEvidenceService:
                             "coverage": row.get("coverage"),
                         }
                     )
+        # [surya sidecars] unverified sidecar numbers need a PDF-page read.
+        sidecar_like = list(sidecar_records)
+        if isinstance(indexed, Mapping):
+            sidecar_like.append(indexed)
+        check_pages, check_statuses = _pdf_check_needs(sidecar_like)
+        pdf_read_pages: set[int] = set()
+        if pdf_record and pdf_record.get("ok"):
+            for row in pdf_record.get("queries") or []:
+                if isinstance(row, Mapping):
+                    for match in row.get("matches") or []:
+                        if isinstance(match, Mapping):
+                            pdf_read_pages.update(_page_list([match.get("page")]))
+        pdf_check_missing = sorted(check_pages - pdf_read_pages)
+        unpaged = bool(check_statuses) and not check_pages
+        record.pop("pdf_check_pages_not_read", None)
+        if pdf_check_missing or unpaged:
+            record["pdf_check_pages_not_read"] = pdf_check_missing
+            flags.append(
+                {
+                    "code": "REQUIRES_PDF_CHECK",
+                    "pages": pdf_check_missing,
+                    "block_statuses": sorted(set(check_statuses)),
+                    "reason": (
+                        "Sidecar evidence is single-route, unresolved, or legacy-unverified; "
+                        "read the PDF page (render tables) before relying on its numbers."
+                        + (" No page anchors: locate the page with find_in_pdf." if unpaged else "")
+                    ),
+                }
+            )
         record["route_errors"] = route_errors
         record["conflict_flags"] = flags
         visual_codes = {
@@ -849,7 +926,7 @@ class ResultEvidenceService:
         record["requires_visual_review"] = any(
             flag.get("code") in visual_codes for flag in flags
         )
-        record["requires_follow_up"] = bool(missing_tables)
+        record["requires_follow_up"] = bool(missing_tables) or bool(pdf_check_missing) or unpaged
         record["ok"] = not route_errors
 
     def collect(self, request: ResultEvidenceRequest) -> dict[str, Any]:
