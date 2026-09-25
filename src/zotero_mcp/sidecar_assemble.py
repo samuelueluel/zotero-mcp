@@ -51,6 +51,8 @@ def html_to_markdown(fragment: str) -> str:
     text = re.sub(r"<li\b[^>]*>", "\n- ", text, flags=re.I)
     text = _BR.sub("\n", text)
     text = _html.unescape(_TAG.sub("", text))
+    # Leading spaces would turn lines into Markdown code blocks.
+    text = "\n".join(line.strip() for line in text.splitlines())
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -66,6 +68,70 @@ def _status_line(block: dict) -> str | None:
     if status == "repaired":
         return f"[Table status: REPAIRED ({len(block['repairs'])} sign fix(es) from the PDF text layer). Check PDF p. {page} before quoting.]"
     return f"[Table status: SINGLE-ROUTE ({reasons}); numbers not independently confirmed. Check PDF p. {page} before quoting.]"
+
+
+#: Single-character OCR confusions the text layer may settle (unordered pairs).
+CONFUSABLE = {frozenset(p) for p in (("I", "J"), ("I", "l"), ("l", "1"), ("O", "0"), ("S", "5"), ("B", "8"))}
+_WORD = re.compile(r"[A-Za-z][A-Za-z0-9]*")
+_SEGMENT = re.compile(r"(<[^>]+>)")
+
+
+def _one_confusable_apart(a: str, b: str) -> bool:
+    if len(a) != len(b) or a == b or len(a) < 3:
+        return False
+    # Never change a short token's character class ("B" -> "8" in "Figure 8B").
+    if sum(c.isalpha() for c in a) < 2 or sum(c.isalpha() for c in b) < 2:
+        return False
+    diffs = [(x, y) for x, y in zip(a, b) if x != y]
+    return len(diffs) == 1 and frozenset(diffs[0]) in CONFUSABLE
+
+
+def repair_words(fragment: str, page, clip) -> tuple[str, list[dict]]:
+    """Fix Surya word misreads (``IPE`` for ``JPE``) from a born-digital text layer.
+
+    A word is replaced only when it is absent from the native words inside
+    the block and exactly one native word differs from it by a single
+    confusable character. Numbers are never touched here; math and tags are
+    skipped.
+    """
+    # Map dot-free form -> native surface form, so "J.P.E." matches "IPE".
+    native: dict[str, str] = {}
+    for w in page.get_text("words", clip=pymupdf.Rect(clip)):
+        surface = w[4].strip(",;:()[]\"'*\u201c\u201d").rstrip(".")
+        key = surface.replace(".", "")
+        if key:
+            native.setdefault(key, surface)
+    if not native:
+        return fragment, []
+    repairs: list[dict] = []
+    out = []
+    in_math = False
+    for seg in _SEGMENT.split(fragment):
+        if seg.startswith("<"):
+            low = seg.lower()
+            if low.startswith("<math"):
+                in_math = True
+            elif low.startswith("</math"):
+                in_math = False
+            out.append(seg)
+            continue
+        if in_math:
+            out.append(seg)
+            continue
+
+        def fix(m: re.Match) -> str:
+            word = m.group(0)
+            if word in native or not any(c.isalpha() for c in word):
+                return word
+            cands = [k for k in native if _one_confusable_apart(word, k)]
+            if len(cands) != 1:
+                return word
+            after = native[cands[0]]
+            repairs.append({"kind": "word", "before": word, "after": after, "route": "native_text_layer"})
+            return after
+
+        out.append(_WORD.sub(fix, seg))
+    return "".join(out), repairs
 
 
 def _check_text_numbers(fragment: str, tokens) -> tuple[str, list[dict]]:
@@ -125,6 +191,8 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                     rec["status"] = "single-route"
                     rec["findings"] = [{"kind": "math_single_route", "detail": "no text-layer check for LaTeX", "values": []}]
                 else:
+                    if not pm["scan_like"]:
+                        rec["html"], rec["repairs"] = repair_words(rec["html"], page, pdf_bbox)
                     status, findings = _check_text_numbers(rec["html"], tokens)
                     if pm["scan_like"] and status == "verified":
                         status = "single-route"
