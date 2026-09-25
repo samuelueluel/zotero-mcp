@@ -38,6 +38,7 @@ from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from . import mineru as _mineru  # [mineru patch] auto-MinerU before embedding (see zotero-mcp-mineru-patch.py)
+from . import sidecar_reliability as _reliability  # [surya sidecars] page anchors and block status
 
 # Re-exported so callers keep importing them from here, while the
 # ChromaDB-free definitions stay importable without this module (#485).
@@ -313,7 +314,8 @@ def _extract_fulltext_batch(reader, items):
 
     for item_id, item_key, sidecar in sidecars:
         if sidecar is not None:
-            yield item_id, (sidecar, "mineru-sidecar")
+            # [surya sidecars] a reliability.json beside the sidecar marks Surya output.
+            yield item_id, (sidecar, _reliability.sidecar_source(mineru_config["sidecar_dir"], item_key))
             continue
         mineru_fulltext = _mineru.try_auto_parse(item_key, reader)
         if mineru_fulltext:
@@ -517,6 +519,8 @@ def _page_for_offset(text: str, offset: int) -> int | None:
     breaks (page-aware extraction). Returns None otherwise so callers can omit
     a page field rather than report a misleading one.
     """
+    if _reliability.has_page_markers(text):
+        return _reliability.page_for_offset(text, offset)
     if _PAGE_SEPARATOR not in text:
         return None
     return text.count(_PAGE_SEPARATOR, 0, max(0, offset)) + 1
@@ -3358,6 +3362,15 @@ class ZoteroSemanticSearch:
                         page = _page_for_offset(doc_text, c0)
                         if page is not None:
                             cmeta["page"] = page
+                        # [surya sidecars] block status and PDF pages per chunk.
+                        _src = cmeta.get("fulltext_source")
+                        if _src in (_reliability.SURYA_SOURCE, _reliability.LEGACY_SOURCE):
+                            _rel = _reliability.chunk_reliability(chunk_text, _src)
+                            cmeta["block_status"] = _rel["block_status"]
+                            cmeta["check_pages"] = ",".join(map(str, _rel["check_pages"]))
+                            _pages = _reliability.pages_in_span(doc_text, c0, c1)
+                            if _pages:
+                                cmeta["pdf_pages"] = ",".join(map(str, _pages))
                         documents.append(self.chroma_client.truncate_text(
                             self._contextualize_chunk(item, doc_text, chunk_text, c0,
                                                       _ctx_pos, _ctx_crumbs)))
@@ -4678,6 +4691,14 @@ class ZoteroSemanticSearch:
                 for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page"):
                     if mk in meta:
                         enriched_result[mk] = meta[mk]
+                # [surya sidecars] reliability signal for every sidecar-backed hit.
+                if meta.get("fulltext_source") in (_reliability.SURYA_SOURCE, _reliability.LEGACY_SOURCE):
+                    _key = meta.get("parent_item_key") or meta.get("item_key") or ""
+                    _item_rel = None
+                    if meta.get("fulltext_source") == _reliability.SURYA_SOURCE:
+                        _item_rel = _reliability.load_item_reliability(
+                            _mineru.load_mineru_config()["sidecar_dir"], _key)
+                    enriched_result["reliability"] = _reliability.result_reliability(meta, _item_rel)
             if "char_start" not in enriched_result and passage_offset:
                 enriched_result["passage_offset"] = passage_offset
 

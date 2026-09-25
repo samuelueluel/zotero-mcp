@@ -597,6 +597,8 @@ def create_chroma_client(config_path: str | None = None) -> ChromaClient:
 
     return ChromaClient(
         collection_name=config["collection_name"],
+        # [surya sidecars] allow a shadow index in its own directory.
+        persist_directory=config.get("persist_directory") or None,
         embedding_model=config["embedding_model"],
         embedding_config=config["embedding_config"]
     )
