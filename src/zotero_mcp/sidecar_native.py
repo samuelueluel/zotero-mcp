@@ -132,6 +132,7 @@ def image_bbox_to_pdf(
     page_size: tuple[float, float],
     rotated_cw: bool = False,
     pad: float = 2.0,
+    rotation: int | None = None,
 ) -> tuple[float, float, float, float]:
     """Map a Surya pixel bbox back to PDF points.
 
@@ -143,7 +144,13 @@ def image_bbox_to_pdf(
     x0, y0, x1, y1 = bbox
     img_w, img_h = image_size
     page_w, page_h = page_size
-    if rotated_cw:
+    rotation = (90 if rotated_cw else 0) if rotation is None else rotation % 360
+    if rotation == 270:
+        # Counter-clockwise render: original (x, y) -> (y, W - x).
+        scale = img_h / page_w
+        ox0, ox1 = (img_h - y1) / scale, (img_h - y0) / scale
+        oy0, oy1 = x0 / scale, x1 / scale
+    elif rotation == 90:
         # Clockwise rotation maps original (x, y) -> (H - y, x), where H is the
         # original render height == rotated image width.
         scale = img_h / page_w
