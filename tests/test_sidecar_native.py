@@ -6,6 +6,7 @@ when the local Zotero storage is unavailable (CI, other machines).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,10 @@ from zotero_mcp.sidecar_native import (  # noqa: E402
     validated_minus_fonts,
 )
 
-HOUSING = Path.home() / "Zotero/storage/9SG7BZKC/Rossi-Hansberg et al. 2010. JPE. Housing externalities..pdf"
-DIAMOND = Path.home() / "Zotero/storage/2XQYTHXM/Diamond-McQuade-2019.pdf"
+# conftest points HOME at a scratch dir; the fixture PDFs live in the real one.
+REAL_HOME = Path(os.environ.get("ZOTERO_MCP_TEST_REAL_HOME") or Path.home())
+HOUSING = REAL_HOME / "Zotero/storage/9SG7BZKC/Rossi-Hansberg et al. 2010. JPE. Housing externalities..pdf"
+DIAMOND = REAL_HOME / "Zotero/storage/2XQYTHXM/Diamond-McQuade-2019.pdf"
 
 
 def _tokens(path: Path, page: int):

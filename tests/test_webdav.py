@@ -80,6 +80,8 @@ def test_download_attachment_from_webdav_escapes_attachment_key(tmp_path, monkey
 
 @skip_on_ci
 def test_download_attachment_file_falls_back_to_webdav(tmp_path, monkeypatch):
+    # Web-API mode: the local-storage lookup is gated off and cannot touch a real DB.
+    monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
     webdav_path = tmp_path / "nested" / "paper.pdf"
     webdav_path.parent.mkdir()
     webdav_path.write_bytes(b"%PDF-1.4")

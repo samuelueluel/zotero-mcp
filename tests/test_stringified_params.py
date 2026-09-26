@@ -26,12 +26,15 @@ import pytest
 
 @pytest.fixture(scope="module")
 def registered_tools():
-    os.environ.setdefault("ZOTERO_LOCAL", "true")
-    os.environ["ZOTERO_MCP_TOOLSETS"] = "all"
-    from zotero_mcp import server  # noqa: F401  (registers the tools)
-    from zotero_mcp._app import mcp
+    # Restore the environment afterwards: a leaked ZOTERO_LOCAL put every later
+    # test in local mode, where attachment lookups open the user's zotero.sqlite.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("ZOTERO_LOCAL", os.environ.get("ZOTERO_LOCAL", "true"))
+        mp.setenv("ZOTERO_MCP_TOOLSETS", "all")
+        from zotero_mcp import server  # noqa: F401  (registers the tools)
+        from zotero_mcp._app import mcp
 
-    return asyncio.run(mcp.list_tools())
+        yield asyncio.run(mcp.list_tools())
 
 
 def _sequence_params(tool):

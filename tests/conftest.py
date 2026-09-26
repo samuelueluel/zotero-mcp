@@ -6,6 +6,32 @@ from pathlib import Path
 
 import pytest
 
+# Keep the suite away from the user's real zotero-mcp state. Code under test,
+# and the CLI subprocesses some tests spawn, resolve ~/.config/zotero-mcp via
+# Path.home(); without this a plain `pytest` run opened the live Chroma index,
+# ran searches through the configured embedder and reranker, and took the live
+# update.lock. Set before any zotero_mcp import so module-level paths follow it.
+# Live tests (ZOTERO_MCP_LIVE_TESTS=1) keep the real home: they need the real
+# config. REAL_HOME stays available for read-only fixture files.
+REAL_HOME = Path(os.environ.get("ZOTERO_MCP_TEST_REAL_HOME") or Path.home())
+if os.environ.get("ZOTERO_MCP_LIVE_TESTS", "").strip() != "1":
+    import atexit
+    import shutil
+    import tempfile
+
+    _TEST_HOME = tempfile.mkdtemp(prefix="zotero-mcp-test-home-")
+    atexit.register(shutil.rmtree, _TEST_HOME, True)
+    os.environ["ZOTERO_MCP_TEST_REAL_HOME"] = str(REAL_HOME)
+    os.environ["HOME"] = _TEST_HOME
+    _dirs = {"XDG_CONFIG_HOME": ".config", "XDG_CACHE_HOME": ".cache", "XDG_DATA_HOME": ".local/share"}
+    if sys.platform == "win32":
+        os.environ["USERPROFILE"] = _TEST_HOME
+        _dirs.update(APPDATA="AppData/Roaming", LOCALAPPDATA="AppData/Local")
+    for _var, _sub in _dirs.items():
+        os.environ[_var] = os.path.join(_TEST_HOME, _sub)
+    for _var in ("ZOTERO_MCP_CONFIG", "ZOTERO_API_KEY", "ZOTERO_LOCAL"):
+        os.environ.pop(_var, None)
+
 # Always exercise the source tree that these tests live in, not whatever
 # `zotero_mcp` an editable install happens to resolve to. Without this, running
 # the suite from a git worktree silently imports the *main* checkout's package,
