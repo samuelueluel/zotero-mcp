@@ -17,7 +17,6 @@ Config (``~/.config/zotero-mcp/config.json`` -> ``semantic_search.surya``):
 
 from __future__ import annotations
 
-import collections
 import hashlib
 import json
 import os
@@ -29,7 +28,9 @@ from typing import Iterable
 
 import pymupdf
 
-RUNNER_VERSION = "surya-runner/1"
+from .sidecar_native import upright_rotation
+
+RUNNER_VERSION = "surya-runner/2"
 
 DEFAULTS = {
     "surya_ocr": str(Path.home() / "surya-spike-venv/bin/surya_ocr"),
@@ -61,15 +62,13 @@ def sha256_file(path: Path) -> str:
 
 
 def page_rotation(page) -> int:
-    """Clockwise degrees needed to make the page's dominant text upright."""
-    dirs: collections.Counter = collections.Counter()
-    for block in page.get_text("dict").get("blocks", []):
-        for line in block.get("lines", []):
-            dirs[tuple(round(x) for x in line["dir"])] += len(line["spans"])
-    if not dirs:
-        return 0
-    top = dirs.most_common(1)[0][0]
-    return {(0, -1): 90, (0, 1): 270, (-1, 0): 180}.get(top, 0)
+    """Clockwise degrees needed to make the page's dominant text upright.
+
+    Relative to the displayed page, which the renderer already rotates by
+    ``/Rotate``; runner/1 ignored that and fed Surya sideways images of
+    upright ``/Rotate 90`` pages.
+    """
+    return upright_rotation(page)
 
 
 def scan_like(page) -> bool:

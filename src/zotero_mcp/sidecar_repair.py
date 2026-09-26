@@ -4,10 +4,12 @@ Runs after :mod:`sidecar_assemble` and before figure enrichment (it rewrites
 the sidecar). Each ``unresolved`` table is cropped upright from the PDF and
 re-read once by a general VLM (Qwen3-VL on an OpenAI-compatible endpoint).
 The re-read is accepted only if it passes the same :func:`verify_table`
-check against the native text layer:
+check against the native text layer, prepared exactly as in assembly
+(:func:`sidecar_assemble.table_native`):
 
-- born-digital page: must come back ``verified`` or ``repaired``;
-- scanned page (OCR text layer): ``single-route`` via OCR-layer agreement.
+- born-digital text: must come back ``verified`` or ``repaired``;
+- OCR text layer (scanned page or invisible text over an image):
+  ``single-route`` via OCR-layer agreement, never via an unusable layer.
 
 Anything else leaves the block ``unresolved`` with its numbers withheld and a
 ``vlm_repair_failed`` finding. No second attempt, no free-form correction.
@@ -25,11 +27,11 @@ from pathlib import Path
 import pymupdf
 import requests
 
-from .sidecar_native import native_number_tokens, symbol_minus_fonts, validated_minus_fonts
-from .sidecar_assemble import write_outputs
+from .sidecar_native import glyph_profile, upright_rotation
+from .sidecar_assemble import PageText, owner_keys, table_native, write_outputs
 from .sidecar_verify import verify_table
 
-REPAIR_VERSION = "sidecar-repair/1"
+REPAIR_VERSION = "sidecar-repair/2"
 CROP_ZOOM = 200 / 72
 PROMPT = (
     "Transcribe this table exactly as one HTML <table>. One <td> per printed cell; keep the "
@@ -40,8 +42,16 @@ PROMPT = (
 _TABLE_RE = re.compile(r"<table\b.*?</table>", re.S | re.I)
 
 
-def crop_png(page, pdf_bbox, rotation: int) -> bytes:
+def crop_png(page, pdf_bbox, rotation: int | None = None) -> bytes:
+    """Render the table region upright.
+
+    ``rotation`` defaults to the page's upright rotation relative to the
+    displayed page. The block's stored rotation describes the image Surya saw,
+    which for runner/1 was wrong on ``/Rotate 90`` pages, so it is not used.
+    """
     rect = pymupdf.Rect(pdf_bbox) & page.rect
+    if rotation is None:
+        rotation = upright_rotation(page)
     matrix = pymupdf.Matrix(CROP_ZOOM, CROP_ZOOM).prerotate(rotation)
     return page.get_pixmap(matrix=matrix, clip=rect).tobytes("png")
 
@@ -68,23 +78,29 @@ def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
     if not targets:
         return summary
     doc = pymupdf.open(record["pdf_path"])
-    minus_fonts = validated_minus_fonts(symbol_minus_fonts(doc))
+    profile = glyph_profile(doc)
+    texts: dict[int, PageText] = {}
     for b in targets:
         page = doc[b["page"] - 1]
         try:
-            html = ask_vlm(crop_png(page, b["pdf_bbox"], b.get("rotation", 0)), vlm_url)
+            html = ask_vlm(crop_png(page, b["pdf_bbox"]), vlm_url)
         except Exception as exc:  # noqa: BLE001 - recorded, block stays unresolved
             html, error = None, str(exc)[:200]
         else:
             error = None if html else "no <table> in model output"
         if html:
-            tokens = native_number_tokens(page, b["page"], clip=b["pdf_bbox"], minus_fonts=minus_fonts)
-            check = verify_table(html, tokens, native_is_ocr=b.get("scan_like", False))
-            ok = check.status in ("verified", "repaired") or (b.get("scan_like") and check.status == "single-route")
+            text = texts.setdefault(b["page"], PageText(page, b["page"], profile))
+            owners = owner_keys([x for x in blocks if x["page"] == b["page"]])
+            tokens, ocr = table_native(text, b["pdf_bbox"], owners, b.get("scan_like", False))
+            check = verify_table(html, tokens, native_is_ocr=ocr)
+            if ocr:
+                ok = check.status == "single-route" and any(f.kind == "ocr_layer_agreement" for f in check.findings)
+            else:
+                ok = check.status in ("verified", "repaired")
             if ok:
                 b.setdefault("surya_html", b["html"])
                 b["html"] = check.html
-                b["status"] = "repaired" if not b.get("scan_like") else "single-route"
+                b["status"] = "single-route" if ocr else "repaired"
                 b["findings"] = [{"kind": f.kind, "detail": f.detail, "values": f.values[:40]}
                                  for f in check.findings]
                 b["repairs"] = [{"kind": "table", "route": "vlm_table_reread", "model_url": vlm_url,

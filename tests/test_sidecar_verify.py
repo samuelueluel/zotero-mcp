@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from zotero_mcp.sidecar_native import NativeToken
 from zotero_mcp.sidecar_verify import (
+    cell_numbers,
     split_estimate_se,
     text_numbers,
     verify_table,
@@ -72,12 +73,20 @@ def test_truncation_is_detected():
     assert sorted(missing.values) == [".5", ".6"]
 
 
-def test_duplicate_panel_is_detected():
-    row = "<tr><td>Log price</td><td>-.0019</td><td>-.0037</td><td>.0011</td></tr>"
-    html = f"<table>{row}{row}</table>"
-    native = [tok(x) for x in ("-.0019", "-.0037", ".0011") * 2]
-    check = verify_table(html, native)
+DUP_ROW = "<tr><td>Log price</td><td>-.0019</td><td>-.0037</td><td>.0011</td></tr>"
+
+
+def test_unbacked_duplicate_panel_is_unresolved():
+    check = verify_table(f"<table>{DUP_ROW}{DUP_ROW}</table>", [tok(x) for x in ("-.0019", "-.0037", ".0011")])
     assert check.status == "unresolved"
+    assert any(f.kind == "duplicate_rows" for f in check.findings)
+    assert any(f.kind == "surya_unmatched" for f in check.findings)
+
+
+def test_duplicate_rows_backed_by_text_layer_verify():
+    native = [tok(x) for x in ("-.0019", "-.0037", ".0011") * 2]
+    check = verify_table(f"<table>{DUP_ROW}{DUP_ROW}</table>", native)
+    assert check.status == "verified"
     assert any(f.kind == "duplicate_rows" for f in check.findings)
 
 
@@ -131,3 +140,40 @@ def test_withhold_replaces_only_numeric_data_cells():
     html = withhold_numbers(TABLE.format(a="-.007", b="-.218"), page=25)
     assert "Age" in html and "Coef" in html
     assert "-.007" not in html and "withheld" in html and "p. 25" in html
+
+
+def test_detached_minus_opening_a_cell_is_a_sign():
+    assert cell_numbers("– 0.15") == ["-0.15"]
+    assert cell_numbers("0.24 – 0.15") == ["0.24", "0.15"]  # a range, not a sign
+    check = verify_table(TABLE.format(a="– .007", b="-.218"), [tok(x) for x in ("-.007", "-.218", "-.815", "-37.652")])
+    assert check.status == "verified"
+
+
+def test_comma_groups_only_three_digits():
+    assert text_numbers("(0.48,0.51)") == ["0.48", "0.51"]
+    assert text_numbers("5,037 and 12,34") == ["5,037", "12", "34"]
+
+
+def test_spaced_exponent_minus():
+    assert cell_numbers("9.38 E – 06") == ["9.38", "-06"]
+
+
+def test_note_paragraph_outside_rows_is_not_data():
+    html = TABLE.format(a="-.007", b="-.218") + "<p>Notes: n = 495; significant at the 1% level.</p>"
+    native = [tok(x) for x in ("-.007", "-.218", "-.815", "-37.652")]
+    check = verify_table(html, native)
+    assert check.status == "verified"
+    assert any(f.kind == "label_or_header_mismatch" for f in check.findings)
+
+
+def test_ocr_layer_one_to_one_disagreement_is_single_route():
+    # Surya -9.000 against an OCR layer's -9.008: the weak witness cannot settle it.
+    native = [tok(x) for x in ("-.007", "-.218", "-.815", "-37.658")]
+    check = verify_table(TABLE.format(a="-.007", b="-.218"), native, native_is_ocr=True)
+    assert check.status == "single-route"
+
+
+def test_born_digital_digit_misread_is_unresolved():
+    native = [tok(x) for x in ("-.007", "-.218", "-.815", "-37.658")]
+    check = verify_table(TABLE.format(a="-.007", b="-.218"), native)
+    assert check.status == "unresolved"

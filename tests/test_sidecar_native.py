@@ -58,3 +58,84 @@ def test_body_font_leading_two_stays_positive():
     assert by_text["-3,636"].sign_source == "font_glyph"
     assert by_text["-3,636"].sign_source in AUTHORITATIVE_SIGN_SOURCES
     assert "23,403" in by_text and by_text["23,403"].negative is False
+
+
+# Synthetic text-layer lines: (char, font, bbox) with 5 pt wide, 10 pt tall
+# glyphs; "|" is a 40 pt column gap.
+def _line(text: str, font: str = "Body"):
+    out, x = [], 0.0
+    for ch in text:
+        if ch == "|":
+            x += 40
+            continue
+        out.append((ch, font, (x, 0.0, x + 5, 10.0)))
+        x += 5
+    return out
+
+
+def _start(line, text: str) -> int:
+    return "".join(c[0] for c in line).rindex(text)
+
+
+def test_running_text_line_is_prose():
+    from zotero_mcp.sidecar_native import is_prose
+    assert is_prose(_line("Note: The sample of apartments in Seattle covers the period September 1988"))
+    assert not is_prose(_line("Model VI Vacant Tax delinquent Foreclosed|0.252*|0.121"))
+    assert not is_prose(_line("Adjusted R2"))
+
+
+def test_integer_range_end_is_a_label():
+    from zotero_mcp.sidecar_native import _range_end
+    line = _line("1988-11")
+    assert _range_end(line, _start(line, "11"), "11")
+    line = _line("0.12-0.35")
+    assert not _range_end(line, _start(line, "35"), "35")  # decimal interval stays data
+    line = _line("Age|-5")
+    assert not _range_end(line, _start(line, "5"), "5")
+
+
+def test_number_after_word_and_operator_is_a_label():
+    from zotero_mcp.sidecar_native import _after_word
+    for text, number in (("n = 495", "495"), ("Corporate q < 1", "1"), ("Table 6", "6")):
+        line = _line(text)
+        assert _after_word(line, _start(line, number)), text
+    line = _line("Model I|0.006")
+    assert not _after_word(line, _start(line, "0.006"))
+
+
+BOEHM = REAL_HOME / "Zotero/storage/9I4FUAEH/Boehm-Pandalai-Nayar-2020.pdf"
+RIDDEL = REAL_HOME / "Zotero/storage/52PHHZ4D/Riddel-2004.pdf"
+
+
+def _doc(path: Path):
+    if not path.is_file():
+        pytest.skip(f"fixture PDF not present: {path.name}")
+    return pymupdf.open(path)
+
+
+def test_minus_fonts_need_a_bar_shaped_glyph():
+    from zotero_mcp.sidecar_native import glyph_profile
+    diamond = glyph_profile(_doc(DIAMOND))
+    assert "AdvTT61dabe7c" in diamond.minus_fonts
+    boehm = glyph_profile(_doc(BOEHM))
+    # CMEX10 digits are bracket pieces: operators, never a sign.
+    assert "CMEX10" in boehm.symbol_fonts and "CMEX10" not in boehm.minus_fonts
+
+
+def test_paren_minus_font_riddel():
+    from zotero_mcp.sidecar_native import glyph_profile
+    doc = _doc(RIDDEL)
+    profile = glyph_profile(doc)
+    assert profile.paren_minus_fonts == {"AdvPSSPS-AS"}
+    texts = {t.text for t in native_number_tokens(doc[7], 8, profile=profile) if t.sign_source == "font_glyph"}
+    assert {"-0.265", "-1.868"} <= texts
+
+
+def test_rotated_page_clip_uses_displayed_coordinates():
+    from zotero_mcp.sidecar_native import glyph_profile
+    doc = _doc(BOEHM)
+    page = doc[84]
+    assert page.rotation == 90
+    toks = native_number_tokens(page, 85, clip=(108, 78, 710, 284), profile=glyph_profile(doc))
+    texts = [t.text for t in toks]
+    assert len(texts) > 60 and {"5411", "5415", "55"} <= set(texts)

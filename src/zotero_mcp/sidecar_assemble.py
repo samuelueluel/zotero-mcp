@@ -25,17 +25,75 @@ from pathlib import Path
 import pymupdf
 
 from .sidecar_native import (
+    glyph_profile,
     image_bbox_to_pdf,
+    invisible_text_fraction,
     native_number_tokens,
-    symbol_minus_fonts,
-    validated_minus_fonts,
+    page_lines,
 )
-from .sidecar_verify import text_numbers, verify_table, withhold_numbers
+from .sidecar_verify import (
+    INFORMATIONAL,
+    STRUCTURAL,
+    numeric_key,
+    text_numbers,
+    verify_table,
+    withhold_numbers,
+)
 
-ASSEMBLER_VERSION = "sidecar-assemble/1"
+ASSEMBLER_VERSION = "sidecar-assemble/2"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
+#: Blocks whose numbers belong to them, not to a table they overlap.
+OWNER_LABELS = {"Caption", "Footnote", "Text", "SectionHeader", "ListGroup", "PageHeader", "PageFooter"}
+#: Share of invisible text-layer characters that marks a region's text as OCR.
+OCR_LAYER_SHARE = 0.5
+
+
+class PageText:
+    """One page's text layer, extracted once and shared by every block check."""
+
+    def __init__(self, page, page_no: int, profile):
+        self.page, self.page_no, self.profile = page, page_no, profile
+        self._lines = self._trace = None
+
+    @property
+    def lines(self):
+        if self._lines is None:
+            self._lines = page_lines(self.page)
+        return self._lines
+
+    def tokens(self, clip):
+        return native_number_tokens(self.page, self.page_no, clip=clip, profile=self.profile, lines=self.lines)
+
+    def ocr_layer(self, clip) -> bool:
+        """True when the text under ``clip`` is mostly invisible OCR text over an image."""
+        if self._trace is None:
+            self._trace = self.page.get_texttrace()
+        return invisible_text_fraction(self.page, clip, trace=self._trace) >= OCR_LAYER_SHARE
+
+
+def owner_keys(blocks: list[dict]) -> list[tuple[list[float], set[str]]]:
+    """``(pdf_bbox, number keys)`` for the blocks on one page that can own numbers."""
+    return [
+        (b["pdf_bbox"], {numeric_key(n.lstrip("-")) for n in text_numbers(b.get("html", ""))})
+        for b in blocks if b["label"] in OWNER_LABELS
+    ]
+
+
+def table_native(text: PageText, pdf_bbox, owners, scan_like: bool):
+    """Text-layer tokens for a table region and whether they are an OCR layer.
+
+    A token that another sidecar block over the same spot also contains (a
+    caption or note Surya emitted separately) is flagged ``owned``.
+    """
+    tokens = text.tokens(pdf_bbox)
+    for t in tokens:
+        cx, cy = (t.bbox[0] + t.bbox[2]) / 2, (t.bbox[1] + t.bbox[3]) / 2
+        key = numeric_key(t.magnitude)
+        t.owned = any(x0 <= cx <= x1 and y0 <= cy <= y1 and key in keys
+                      for (x0, y0, x1, y1), keys in owners)
+    return tokens, scan_like or text.ocr_layer(pdf_bbox)
 
 _MATH_BLOCK = re.compile(r'<math\b[^>]*display="block"[^>]*>(.*?)</math>', re.S | re.I)
 _MATH_INLINE = re.compile(r"<math\b[^>]*>(.*?)</math>", re.S | re.I)
@@ -63,7 +121,7 @@ def _status_line(block: dict) -> str | None:
         return None
     page = block["page"]
     reasons = ", ".join(sorted({f["kind"] for f in block["findings"]
-                                if f["kind"] not in ("merged_estimate_se", "label_or_header_mismatch")})) or "no independent check"
+                                if f["kind"] not in INFORMATIONAL | STRUCTURAL})) or "no independent check"
     if status == "unresolved":
         return f"[Table status: UNRESOLVED ({reasons}); unverified numbers withheld. Verify on PDF p. {page}.]"
     if status == "repaired":
@@ -100,7 +158,12 @@ def repair_words(fragment: str, page, clip) -> tuple[str, list[dict]]:
     """
     # Map dot-free form -> native surface form, so "J.P.E." matches "IPE".
     native: dict[str, str] = {}
-    for w in page.get_text("words", clip=pymupdf.Rect(clip)):
+    rect = pymupdf.Rect(clip)
+    if page.rotation:
+        # Text extraction clips in unrotated space; the block box is on the displayed page.
+        rect = rect * page.derotation_matrix
+        rect.normalize()
+    for w in page.get_text("words", clip=rect):
         surface = w[4].strip(",;:()[]\"'*\u201c\u201d").rstrip(".")
         key = surface.replace(".", "")
         if key:
@@ -171,21 +234,22 @@ def save_figure_crop(page, pdf_bbox, out_dir: Path, item_key: str, name: str) ->
 
 def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch_dir: Path) -> dict:
     doc = pymupdf.open(meta["pdf_path"])
-    minus_fonts = validated_minus_fonts(symbol_minus_fonts(doc))
+    profile = glyph_profile(doc)
     blocks: list[dict] = []
     for stem in sorted(meta["pages"], key=lambda s: meta["pages"][s]["page"]):
         pm = meta["pages"][stem]
         page_no = pm["page"]
         page = doc[page_no - 1]
+        text = PageText(page, page_no, profile)
         pres = (results.get(stem) or [{}])[0]
+        page_recs = []
         for order, b in enumerate(pres.get("blocks", [])):
-            label = b.get("label", "Text")
             pdf_bbox = image_bbox_to_pdf(b["bbox"], pm["image_size"], pm["page_size"], rotation=pm["rotation"])
-            rec = {
+            page_recs.append(({
                 "id": f"{item_key}:p{page_no}:b{order}",
                 "page": page_no,
                 "order": order,
-                "label": label,
+                "label": b.get("label", "Text"),
                 "pdf_bbox": [round(x, 2) for x in pdf_bbox],
                 "rotation": pm["rotation"],
                 "scan_like": pm["scan_like"],
@@ -194,31 +258,36 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 "findings": [],
                 "repairs": [],
                 "surya_error": bool(b.get("error")),
-            }
+            }, b, pdf_bbox))
+        owners = owner_keys([rec for rec, _b, _bb in page_recs])
+        for rec, b, pdf_bbox in page_recs:
+            label, order = rec["label"], rec["order"]
             if label in FIGURE_LABELS:
                 rec["status"] = "not-text"
                 rec["image"] = save_figure_crop(page, pdf_bbox, out_dir, item_key, f"p{page_no:03d}_b{order}.png")
             elif label in SKIP_LABELS or b.get("skipped"):
                 rec["status"] = "not-text"
+            elif label == "Table":
+                tokens, ocr = table_native(text, pdf_bbox, owners, pm["scan_like"])
+                check = verify_table(rec["html"], tokens, native_is_ocr=ocr)
+                rec["status"] = check.status
+                rec["html"] = check.html
+                rec["findings"] = [{"kind": f.kind, "detail": f.detail, "values": f.values[:40]} for f in check.findings]
+                rec["repairs"] = check.repairs
+                rec["counts"] = {"surya": check.surya_numbers, "native": check.native_numbers}
+                if ocr and not pm["scan_like"]:
+                    rec["ocr_layer"] = True
+            elif label == "Equation":
+                rec["status"] = "single-route"
+                rec["findings"] = [{"kind": "math_single_route", "detail": "no text-layer check for LaTeX", "values": []}]
             else:
-                tokens = native_number_tokens(page, page_no, clip=pdf_bbox, minus_fonts=minus_fonts)
-                if label == "Table":
-                    check = verify_table(rec["html"], tokens, native_is_ocr=pm["scan_like"])
-                    rec["status"] = check.status
-                    rec["html"] = check.html
-                    rec["findings"] = [{"kind": f.kind, "detail": f.detail, "values": f.values[:40]} for f in check.findings]
-                    rec["repairs"] = check.repairs
-                    rec["counts"] = {"surya": check.surya_numbers, "native": check.native_numbers}
-                elif label == "Equation":
-                    rec["status"] = "single-route"
-                    rec["findings"] = [{"kind": "math_single_route", "detail": "no text-layer check for LaTeX", "values": []}]
-                else:
-                    if not pm["scan_like"]:
-                        rec["html"], rec["repairs"] = repair_words(rec["html"], page, pdf_bbox)
-                    status, findings = _check_text_numbers(rec["html"], tokens)
-                    if pm["scan_like"] and status == "verified":
-                        status = "single-route"
-                    rec["status"], rec["findings"] = status, findings
+                ocr = pm["scan_like"] or text.ocr_layer(pdf_bbox)
+                if not ocr:
+                    rec["html"], rec["repairs"] = repair_words(rec["html"], page, pdf_bbox)
+                status, findings = _check_text_numbers(rec["html"], text.tokens(pdf_bbox))
+                if ocr and status == "verified":
+                    status = "single-route"
+                rec["status"], rec["findings"] = status, findings
             if rec["surya_error"]:
                 rec["status"] = "unresolved"
                 rec["findings"].append({"kind": "surya_block_error", "detail": "", "values": []})
