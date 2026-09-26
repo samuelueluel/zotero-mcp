@@ -336,6 +336,8 @@ def stage_vlm(jobs, state, run_dir, sidecar_dir, stages) -> None:
                     state.mark(k, "repair", repair=out, level=rel["level"], tables=rel["tables"])
                     if out["attempted"]:
                         log(run_dir, f"repair {k}: {out['accepted']}/{out['attempted']} accepted -> {rel['level']}")
+                    if out.get("second_read"):
+                        log(run_dir, f"second read {k}: {out['agreed']}/{out['second_read']} scan tables agree")
                 except Exception as exc:  # noqa: BLE001
                     state.error(k, "repair", f"{type(exc).__name__}: {exc}")
                     log(run_dir, f"repair {k} FAILED: {exc}")

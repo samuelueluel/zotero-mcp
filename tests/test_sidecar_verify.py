@@ -362,3 +362,18 @@ def test_header_structure_status_line():
     line = _status_line(block)
     assert "SINGLE-ROUTE (column headers do not line up with the page)" in line
     assert "numbers match the PDF text layer" in line
+
+
+def test_readings_agree_ignores_row_layout_but_not_column_shifts():
+    from zotero_mcp.sidecar_verify import readings_agree
+    one_cell = "<table><tr><td>a</td><td>0.12<br/>(0.03)</td><td>5</td></tr></table>"
+    two_rows = "<table><tr><td>a</td><td>0.12</td><td>5</td></tr><tr><td></td><td>(0.03)</td><td></td></tr></table>"
+    shifted = "<table><tr><td>a</td><td></td><td>0.12<br/>(0.03)</td><td>5</td></tr></table>"
+    empty_dropped = "<table><tr><td>a</td><td>0.12</td><td></td></tr><tr><td>b</td><td></td><td>7</td></tr></table>"
+    left_shift = "<table><tr><td>a</td><td>0.12</td></tr><tr><td>b</td><td>7</td></tr></table>"
+    assert readings_agree(one_cell, two_rows)
+    # An extra empty column moves every value alike: the numbers still agree.
+    assert readings_agree(one_cell, shifted)
+    # One row shifting against the others does not.
+    assert not readings_agree(empty_dropped, left_shift)
+    assert not readings_agree("<table></table>", "<table></table>")

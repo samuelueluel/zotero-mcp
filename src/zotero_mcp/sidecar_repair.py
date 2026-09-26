@@ -21,6 +21,12 @@ ways the text layer cannot catch, so the page must be looked at before use.
 
 Anything else leaves the block ``unresolved`` with its numbers withheld and a
 ``vlm_repair_failed`` finding. No second attempt, no free-form correction.
+
+Second reading: each ``single-route`` table on a scanned page or OCR text
+layer is also read by the VLM. If both readings hold the same numbers column
+by column (:func:`sidecar_verify.readings_agree`), the table keeps its status
+and gains a ``vlm_agreement`` finding; otherwise nothing visible changes.
+The model's reading is never used as the table text.
 This module never starts or stops inference services.
 """
 
@@ -37,9 +43,9 @@ import requests
 
 from .sidecar_native import glyph_profile, upright_rotation
 from .sidecar_assemble import PageText, neighbour_html, owner_keys, table_native, write_outputs
-from .sidecar_verify import verify_table
+from .sidecar_verify import readings_agree, verify_table
 
-REPAIR_VERSION = "sidecar-repair/3"
+REPAIR_VERSION = "sidecar-repair/4"
 _STAR_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.S | re.I)
 CROP_ZOOM = 200 / 72
 PROMPT = (
@@ -104,12 +110,35 @@ def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
     record = json.loads((sidecar_dir / f"{item_key}.blocks.json").read_text(encoding="utf-8"))
     meta, blocks = record["meta"], record["blocks"]
     targets = [b for b in blocks if b["label"] == "Table" and b["status"] == "unresolved"]
-    summary = {"item_key": item_key, "attempted": len(targets), "accepted": 0, "rejected": 0}
-    if not targets:
+    second = [b for b in blocks if b["label"] == "Table" and b["status"] == "single-route"
+              and (b.get("scan_like") or b.get("ocr_layer"))
+              and not any(f["kind"] in ("vlm_agreement", "vlm_rewrite") for f in b["findings"])
+              and "vlm_second_read" not in b]
+    summary = {"item_key": item_key, "attempted": len(targets), "accepted": 0, "rejected": 0,
+               "second_read": len(second), "agreed": 0}
+    if not targets and not second:
         return summary
     doc = pymupdf.open(record["pdf_path"])
     profile = glyph_profile(doc)
     texts: dict[int, PageText] = {}
+    for b in second:
+        try:
+            html = ask_vlm(crop_png(doc[b["page"] - 1], b["pdf_bbox"]), vlm_url)
+        except Exception as exc:  # noqa: BLE001 - recorded, block keeps its status
+            html = None
+            b["vlm_second_read"] = {"error": str(exc)[:200]}
+        if html is None:
+            b.setdefault("vlm_second_read", {"error": "no <table> in model output"})
+        elif readings_agree(b["html"], html):
+            b["findings"].append({
+                "kind": "vlm_agreement",
+                "detail": "a second model read the page image independently and agrees on every number, "
+                          "column by column; no PDF text layer confirms them",
+                "values": []})
+            b["vlm_second_read"] = {"agree": True, "model_url": vlm_url}
+            summary["agreed"] += 1
+        else:
+            b["vlm_second_read"] = {"agree": False, "model_url": vlm_url, "html": html}  # audits only
     for b in targets:
         page = doc[b["page"] - 1]
         try:

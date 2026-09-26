@@ -62,3 +62,34 @@ def test_star_disagreement():
     assert sidecar_repair.star_disagreement(surya, dropped, "a .5") is not None  # no stars in the text layer
     assert sidecar_repair.star_disagreement(surya, surya, "") is None
     assert sidecar_repair.star_disagreement(dropped, surya, "a .5***") is None  # the text layer backs the re-read
+
+
+def _scan_setup(tmp_path, html):
+    _setup(tmp_path)
+    p = tmp_path / "KEY00001.blocks.json"
+    rec = json.loads(p.read_text())
+    rec["blocks"][0].update(status="single-route", scan_like=True, findings=[], html=html)
+    p.write_text(json.dumps(rec))
+
+
+def test_second_reading_adds_agreement_on_scans(monkeypatch, tmp_path):
+    html = "<table><tr><td>Age</td><td>.512</td><td>.634</td></tr></table>"
+    _scan_setup(tmp_path, html)
+    monkeypatch.setattr(sidecar_repair, "ask_vlm", lambda png, url: html.replace(".512", "0.512"))
+    out = sidecar_repair.repair_item("KEY00001", tmp_path, "http://x")
+    assert out["second_read"] == 1 and out["agreed"] == 1
+    block = json.loads((tmp_path / "KEY00001.blocks.json").read_text())["blocks"][0]
+    assert block["status"] == "single-route" and block["html"] == html
+    assert any(f["kind"] == "vlm_agreement" for f in block["findings"])
+    assert "second model agree on every number" in (tmp_path / "KEY00001.md").read_text()
+
+
+def test_second_reading_disagreement_changes_nothing_visible(monkeypatch, tmp_path):
+    html = "<table><tr><td>Age</td><td>.512</td><td>.634</td></tr></table>"
+    _scan_setup(tmp_path, html)
+    monkeypatch.setattr(sidecar_repair, "ask_vlm", lambda png, url: html.replace(".634", ".684"))
+    out = sidecar_repair.repair_item("KEY00001", tmp_path, "http://x")
+    assert out["agreed"] == 0
+    block = json.loads((tmp_path / "KEY00001.blocks.json").read_text())["blocks"][0]
+    assert block["status"] == "single-route" and block["html"] == html and not block["findings"]
+    assert block["vlm_second_read"]["agree"] is False

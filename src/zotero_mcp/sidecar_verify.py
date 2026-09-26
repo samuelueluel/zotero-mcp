@@ -769,6 +769,31 @@ def fill_from_text_layer(
     return _set_cells(html, edits), repairs
 
 
+def column_streams(html: str) -> list[tuple[str, ...]]:
+    """Numbers of each logical column read top to bottom, stub column left out.
+
+    Independent of row layout: an estimate and its standard error in one
+    cell or in two rows give the same stream. Empty cells do not count, but a
+    value shifted into a neighbouring column changes two streams.
+    """
+    cols: dict[int, list[str]] = {}
+    for row in _layout(html):
+        if row.header:
+            continue
+        for _ci, col, c in row.placed:
+            if col == 0:
+                continue
+            for n in cell_numbers(_SCRIPT_RE.sub(" ", c.inner)):
+                cols.setdefault(col, []).append(numeric_key(n))
+    return [tuple(cols[k]) for k in sorted(cols)]
+
+
+def readings_agree(html_a: str, html_b: str) -> bool:
+    """Two readings of one table hold the same numbers, column by column, in order."""
+    a = column_streams(html_a)
+    return bool(a) and any(a) and a == column_streams(html_b)
+
+
 def split_estimate_se(html: str) -> tuple[str, int]:
     count = 0
 
