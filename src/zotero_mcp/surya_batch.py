@@ -9,6 +9,11 @@ Stages, in order, with per-item state so an interrupted run resumes:
                 Must follow repair: repair rewrites the sidecar.
 4. ``index``    ``update-db --fulltext --item-key ...`` against the given config.
 
+``--seed-from RUN`` replaces the ``ocr`` stage: each paper's sidecar is
+reassembled from that run's recorded OCR chunk (same PDF hash required), so a
+verifier or assembler change can be rolled out without re-running Surya. An
+item the seed run cannot supply is an error, never a fresh OCR.
+
 Only one GPU server runs at a time, and every server this driver starts is
 stopped on exit (including SIGTERM). The driver refuses the live config
 (``~/.config/zotero-mcp/config.json``) unless ``--allow-live`` is given.
@@ -17,6 +22,7 @@ Usage::
 
     python -m zotero_mcp.surya_batch --config ~/.config/zotero-mcp-shadow/config.json \\
         --collection TRGBCDX5 --run detroit-1 [--limit 3] [--stages ocr,repair,enrich,index]
+    python -m zotero_mcp.surya_batch --config ... --collection TRGBCDX5 --run detroit-2 --seed-from detroit-1
 """
 
 from __future__ import annotations
@@ -241,6 +247,38 @@ def heal_sidecars(jobs, state, run_dir, sidecar_dir) -> None:
 
 # ---------------------------------------------------------------- stages
 
+def stage_seed(jobs, state, run_dir, sidecar_dir, seed_dir: Path) -> None:
+    """Reassemble sidecars from another run's OCR instead of running Surya."""
+    seed = State(seed_dir / "state.json")
+    todo = [j for j in jobs if not state.done(j.item_key, "ocr")]
+    if not todo:
+        return
+    log(run_dir, f"seed: reassembling {len(todo)} items from {seed_dir.name}")
+    for j in todo:
+        k = j.item_key
+        src = seed.data["items"].get(k, {})
+        batch = src.get("batch")
+        if not batch or "ocr" not in src.get("done", []):
+            state.error(k, "ocr", f"seed run {seed_dir.name} has no OCR for this item")
+            log(run_dir, f"seed {k}: no OCR in {seed_dir.name}; skipped")
+            continue
+        if src.get("pdf_sha256") != state.item(k).get("pdf_sha256"):
+            state.error(k, "ocr", f"PDF changed since seed run {seed_dir.name}")
+            log(run_dir, f"seed {k}: PDF changed since {seed_dir.name}; skipped")
+            continue
+        try:
+            rel = reassemble(k, Path(batch), sidecar_dir)
+        except Exception as exc:  # noqa: BLE001 - record and continue
+            state.error(k, "ocr", f"{type(exc).__name__}: {exc}")
+            log(run_dir, f"seed {k} FAILED: {exc}")
+            continue
+        state.mark(k, "ocr", batch=batch, seeded_from=seed_dir.name, level=rel["level"], tables=rel["tables"])
+    tables = Counter()
+    for j in todo:
+        tables.update(state.item(j.item_key).get("tables") or {})
+    log(run_dir, f"seed done: tables={dict(tables)}")
+
+
 def stage_ocr(jobs, state, cfg, run_dir, sidecar_dir, max_pages) -> None:
     todo = [j for j in jobs if not state.done(j.item_key, "ocr")]
     if not todo:
@@ -368,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--chunk-pages", type=int, default=160)
     ap.add_argument("--limit", type=int)
     ap.add_argument("--allow-live", action="store_true")
+    ap.add_argument("--seed-from", metavar="RUN", help="reassemble from this run's OCR instead of running Surya")
     args = ap.parse_args(argv)
 
     config_path = args.config.expanduser().resolve()
@@ -384,6 +423,11 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = Path(cfg["work_dir"]).expanduser() / "runs" / args.run
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg["work_dir"] = str(run_dir / "ocr")
+    seed_dir = None
+    if args.seed_from:
+        seed_dir = run_dir.parent / args.seed_from
+        if seed_dir == run_dir or not (seed_dir / "state.json").is_file():
+            raise SystemExit(f"--seed-from {args.seed_from}: no such other run under {run_dir.parent}")
 
     lock = (run_dir / "lock").open("w")
     try:
@@ -407,7 +451,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if {"repair", "enrich"} & set(stages):
             heal_sidecars(jobs, state, run_dir, sidecar_dir)
-        if "ocr" in stages:
+        if "ocr" in stages and seed_dir is not None:
+            stage_seed(jobs, state, run_dir, sidecar_dir, seed_dir)
+        elif "ocr" in stages:
             stage_ocr(jobs, state, cfg, run_dir, sidecar_dir, args.chunk_pages)
         if {"repair", "enrich"} & set(stages):
             stage_vlm(jobs, state, run_dir, sidecar_dir, stages)

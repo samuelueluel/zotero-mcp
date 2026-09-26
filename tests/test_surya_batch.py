@@ -152,3 +152,23 @@ def test_abort_reason_reaches_run_log(tmp_path, monkeypatch):
         surya_batch.main(["--config", str(cfg), "--item", "A", "--run", "t", "--stages", "ocr"])
     log = (tmp_path / "work" / "runs" / "t" / "run.log").read_text()
     assert "ABORTED: RuntimeError: podman run zotero-surya failed: no space left" in log
+
+
+def test_seed_reassembles_from_the_seed_run_and_never_runs_ocr(tmp_path, monkeypatch):
+    (tmp_path / "seed").mkdir()
+    seed = surya_batch.State(tmp_path / "seed" / "state.json")
+    seed.mark("A", "ocr", batch="/chunks/1", pdf_sha256="h")
+    seed.mark("B", "ocr", batch="/chunks/1", pdf_sha256="old")  # PDF changed since
+    s = surya_batch.State(tmp_path / "state.json")
+    for k, h in (("A", "h"), ("B", "new"), ("C", "c")):  # C is not in the seed run
+        s.item(k)["pdf_sha256"] = h
+    calls = []
+    monkeypatch.setattr(surya_batch, "reassemble",
+                        lambda k, batch, d: calls.append((k, str(batch))) or {"level": "ok", "tables": {"verified": 2}})
+    monkeypatch.setattr(surya_batch, "run_batch", lambda *a, **k: pytest.fail("OCR must not run"))
+    surya_batch.stage_seed(_jobs("A", "B", "C"), s, tmp_path, tmp_path, tmp_path / "seed")
+    assert calls == [("A", "/chunks/1")]
+    assert s.done("A", "ocr") and s.item("A")["seeded_from"] == "seed"
+    assert not s.done("B", "ocr") and not s.done("C", "ocr")
+    assert "PDF changed" in s.item("B")["errors"][0]["msg"]
+    assert "no OCR" in s.item("C")["errors"][0]["msg"]
