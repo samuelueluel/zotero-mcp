@@ -177,3 +177,61 @@ def test_born_digital_digit_misread_is_unresolved():
     native = [tok(x) for x in ("-.007", "-.218", "-.815", "-37.658")]
     check = verify_table(TABLE.format(a="-.007", b="-.218"), native)
     assert check.status == "unresolved"
+
+
+def ptok(text: str, x: float, y: float) -> NativeToken:
+    t = tok(text)
+    t.bbox = (x, y, x + 20, y + 8)
+    return t
+
+
+# A 3x3 grid printed at x = 100/200/300, y = 10/30/50.
+GRID = [["1.11", "2.22", "3.33"], ["4.44", "5.55", "6.66"], ["7.77", "8.88", "9.99"]]
+PRINTED = [ptok(v, 100 + 100 * c, 10 + 20 * r) for r, row in enumerate(GRID) for c, v in enumerate(row)]
+
+
+def _html(rows):
+    return "<table>" + "".join(
+        "<tr><td>row</td>" + "".join(f"<td>{v}</td>" for v in row) + "</tr>" for row in rows) + "</table>"
+
+
+def test_positions_agree():
+    from zotero_mcp.sidecar_verify import misplaced_cells
+    assert misplaced_cells(_html(GRID), PRINTED) == []
+    assert verify_table(_html(GRID), PRINTED).status == "verified"
+
+
+def test_value_moved_to_another_row_is_misplaced():
+    from zotero_mcp.sidecar_verify import misplaced_cells
+    rows = [["1.11", "2.22", "6.66"], ["4.44", "5.55", "3.33"], GRID[2]]
+    assert set(misplaced_cells(_html(rows), PRINTED)) >= {"6.66", "3.33"}
+    check = verify_table(_html(rows), PRINTED)
+    assert check.status == "unresolved" and any(f.kind == "misplaced_cells" for f in check.findings)
+
+
+def test_row_shifted_into_an_empty_column_is_misplaced():
+    from zotero_mcp.sidecar_verify import misplaced_cells
+    printed = [t for t in PRINTED if t.text != "4.44"]  # row 2 prints nothing in column 1
+    rows = [GRID[0], ["", "5.55", "6.66"], GRID[2]]
+    assert misplaced_cells(_html(rows), printed) == []
+    shifted = "<tr><td>row</td><td>5.55</td><td>6.66</td><td></td></tr>"
+    html = _html([GRID[0]]) .replace("</table>", shifted) + _html([GRID[2]]).replace("<table>", "")
+    assert misplaced_cells(html, printed)
+
+
+def test_ragged_row_that_keeps_its_columns_passes():
+    from zotero_mcp.sidecar_verify import misplaced_cells
+    printed = [t for t in PRINTED if t.text != "4.44"]
+    ragged = "<tr><td>row</td><td>5.55</td><td>6.66</td></tr>"  # leading empty cell dropped
+    html = _html([GRID[0]]).replace("</table>", ragged) + _html([GRID[2]]).replace("<table>", "")
+    assert misplaced_cells(html, printed) == []
+
+
+def test_lost_labels():
+    from zotero_mcp.sidecar_verify import lost_label_words
+    html = "<table><tr><td>Whole city</td><td>1.2</td></tr><tr><td>Signi\ufb01cant</td></tr></table>"
+    assert lost_label_words(html, ["Whole city 1.2", "Alderman Districts 2.3", "signi cant"]) == [
+        "alderman", "districts"]
+    # Broken text-layer words: a lost ligature, a glued footnote letter.
+    assert lost_label_words("<table><tr><td>Significant income<sup>b</sup></td></tr></table>",
+                            ["signi cant incomeb"]) == []

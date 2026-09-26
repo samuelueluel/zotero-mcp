@@ -37,8 +37,10 @@ def test_accepts_reread_that_passes_check(monkeypatch, tmp_path):
     out = sidecar_repair.repair_item("KEY00001", tmp_path, "http://x")
     assert out["accepted"] == 1
     block = json.loads((tmp_path / "KEY00001.blocks.json").read_text())["blocks"][0]
-    assert block["status"] == "repaired" and block["repairs"][0]["route"] == "vlm_table_reread"
-    assert "REPAIRED" in (tmp_path / "KEY00001.md").read_text()
+    # A whole-table rewrite can pin right numbers on wrong labels: never "repaired".
+    assert block["status"] == "single-route" and block["repairs"][0]["route"] == "vlm_table_reread"
+    assert any(f["kind"] == "vlm_rewrite" for f in block["findings"])
+    assert "labels are unchecked" in (tmp_path / "KEY00001.md").read_text()
 
 
 def test_rejects_reread_that_fails_check(monkeypatch, tmp_path):
@@ -51,3 +53,12 @@ def test_rejects_reread_that_fails_check(monkeypatch, tmp_path):
     assert block["status"] == "unresolved"
     assert any(f["kind"] == "vlm_repair_failed" for f in block["findings"])
     assert "withheld" in (tmp_path / "KEY00001.md").read_text()
+    assert block["vlm_rejected"]["html"].count(".999") == 1
+
+
+def test_star_disagreement():
+    surya = "<table><tr><td>a</td><td>.5</td><td>***</td></tr></table>"
+    dropped = "<table><tr><td>a</td><td>.5</td></tr></table>"
+    assert sidecar_repair.star_disagreement(surya, dropped, "a .5") is not None  # no stars in the text layer
+    assert sidecar_repair.star_disagreement(surya, surya, "") is None
+    assert sidecar_repair.star_disagreement(dropped, surya, "a .5***") is None  # the text layer backs the re-read

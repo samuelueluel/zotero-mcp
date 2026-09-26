@@ -23,6 +23,7 @@ not withhold a table.
 
 from __future__ import annotations
 
+import html as _html
 import re
 from dataclasses import dataclass, field
 from typing import Iterable
@@ -39,6 +40,7 @@ _ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.S | re.I)
 _CELL_RE = re.compile(r"<(t[dh])\b([^>]*)>(.*?)</\1>", re.S | re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _SPAN_RE = re.compile(r'colspan\s*=\s*"?(\d+)', re.I)
+_ROWSPAN_RE = re.compile(r'rowspan\s*=\s*"?(\d+)', re.I)
 _EST_SE_RE = re.compile(r"(\d\**)\s*(?=[\[(][-\u2212]?\.?\d)")
 
 
@@ -101,6 +103,11 @@ class Cell:
         return int(m.group(1)) if m else 1
 
     @property
+    def rowspan(self) -> int:
+        m = _ROWSPAN_RE.search(self.attrs)
+        return int(m.group(1)) if m else 1
+
+    @property
     def numbers(self) -> list[str]:
         return cell_numbers(self.inner)
 
@@ -137,6 +144,13 @@ STRUCTURAL = {"empty_body_column", "merged_estimate_se", "label_or_header_mismat
 #: Findings that never change status and are left out of the status line.
 INFORMATIONAL = {"merged_estimate_se", "label_or_header_mismatch", "format_variant", "split_token",
                  "ocr_detached_dash", "native_label_unmatched", "native_outside_table"}
+#: A table needs at least this many anchors (values unique on both sides) for
+#: the position check.
+MIN_ANCHORS = 4
+#: Printed words missing from the table and its neighbours: at least this many,
+#: and this share of the region's distinct words, mean lost labels or headers.
+LOST_WORDS_MIN = 2
+LOST_WORDS_SHARE = 0.08
 
 _THEAD_RE = re.compile(r"<thead\b[^>]*>(.*?)</thead>", re.S | re.I)
 _SCRIPT_RE = re.compile(r"<(sup|sub)\b[^>]*>(.*?)</\1>", re.S | re.I)
@@ -280,6 +294,177 @@ def _duplicate_rows(rows: list[list[Cell]]) -> list[Finding]:
     return [Finding("duplicate_rows", "; ".join(dups))] if dups else []
 
 
+def _data_grid(html: str) -> list[tuple[int, int, int, int, int, str]]:
+    """``(segment, row, line, col_from_left, col_from_right, number)`` per data number.
+
+    Rowspans and colspans are expanded to logical columns. ``line`` is the
+    number's position inside its cell (an estimate over its standard error).
+    ``col_from_right`` counts from the row's last occupied column, for ragged
+    rows that drop leading empty cells. A header row (thead, all ``th``, or
+    column numbers) starts a new ``segment``: stacked panels often print
+    their columns at different positions.
+    """
+    head_spans = [m.span(1) for m in _THEAD_RE.finditer(html)]
+    carry: dict[int, int] = {}  # column -> further rows a rowspan occupies
+    out = []
+    segment, in_header = 0, False
+    for r, rm in enumerate(_ROW_RE.finditer(html)):
+        in_head = any(a <= rm.start(1) < b for a, b in head_spans)
+        cells = [Cell(t.lower(), a, inner) for t, a, inner in _CELL_RE.findall(rm.group(1))]
+        numeric = [c for c in cells if c.numbers]
+        colnum_row = bool(numeric) and all(_COLNUM_RE.match(_plain(c.inner)) for c in numeric)
+        placed, new_carry, col = [], {}, 0
+        for c in cells:
+            while carry.get(col, 0) > 0:
+                col += 1
+            placed.append((col, c))
+            if c.rowspan > 1:
+                new_carry.update({col + k: c.rowspan - 1 for k in range(c.colspan)})
+            col += c.colspan
+        width = max([col] + [k + 1 for k, v in carry.items() if v > 0])
+        carry = {k: v - 1 for k, v in carry.items() if v > 1}
+        carry.update(new_carry)
+        if in_head or colnum_row or (cells and all(c.tag == "th" for c in cells)):
+            if not in_header:
+                segment += 1
+            in_header = True
+            continue
+        in_header = False
+        for col, c in placed:
+            if col == 0:
+                continue  # the stub column: row labels such as R^2/1000
+            if c.tag == "th" or sum(ch.isalpha() for ch in _label_text(c.inner)) >= 2:
+                continue
+            if _SPACED_THOUSANDS_RE.fullmatch(_plain(c.inner)):
+                continue  # "114 598.30": one value that both sides split in two
+            for line, n in enumerate(cell_numbers(_SCRIPT_RE.sub(" ", c.inner))):
+                out.append((segment, r, line, col, width - col - c.colspan, n))
+    return out
+
+
+def _clusters(spans: list[tuple[float, float]]) -> list[int]:
+    """Cluster id per interval: intervals that overlap, directly or through a chain, share one."""
+    order = sorted(range(len(spans)), key=lambda i: spans[i][0])
+    ids, cid, end = [0] * len(spans), -1, float("-inf")
+    for i in order:
+        a, b = spans[i]
+        if a >= end:
+            cid += 1
+        ids[i] = cid
+        end = max(end, b) if a < end else b
+    return ids
+
+
+def misplaced_cells(html: str, native_tokens: Iterable[NativeToken]) -> list[str]:
+    """Data values the HTML puts in a different row or column than the page prints them.
+
+    Anchors are values that occur once among the table's data cells and once
+    among the text layer's data tokens, so their printed position is known.
+    Two tests:
+
+    - row: numbers in one HTML row (and line of a cell) share a printed line;
+    - column: each HTML column (and line of a cell: an estimate and its
+      standard error may print side by side) maps to one printed column
+      band. A row passes when its cells line up counting columns from the
+      left or from the right (ragged rows that drop empty cells are common
+      and harmless when every value keeps its column).
+
+    Values are reported, not repaired. Needs ``MIN_ANCHORS`` anchors.
+    """
+    grid = _data_grid(html)
+    by_key: dict[str, list[NativeToken]] = {}
+    for t in native_tokens:
+        if t.role == "data" and not t.owned:
+            by_key.setdefault(numeric_key(t.text), []).append(t)
+    counts: dict[str, int] = {}
+    for *_pos, n in grid:
+        counts[numeric_key(n)] = counts.get(numeric_key(n), 0) + 1
+    # Years are left out: they head columns in rows Surya does not mark as a header.
+    anchors = [(r, line, (seg, cl, line), (seg, cr, line), n, by_key[k][0]) for seg, r, line, cl, cr, n in grid
+               if counts[k := numeric_key(n)] == 1 and len(by_key.get(k, ())) == 1 and not _YEAR_RE.fullmatch(n)]
+    if len(anchors) < MIN_ANCHORS:
+        return []
+    boxes = [a[5].bbox for a in anchors]
+    if sum(a[5].vertical for a in anchors) * 2 > len(anchors):
+        boxes = [(b[1], b[0], b[3], b[2]) for b in boxes]  # sideways table
+    line_of = _clusters([(b[1], b[3]) for b in boxes])
+    band_of = _clusters([(b[0], b[2]) for b in boxes])
+    bad: set[int] = set()
+
+    rows: dict[tuple[int, int], list[int]] = {}
+    for i, a in enumerate(anchors):
+        rows.setdefault((a[0], a[1]), []).append(i)
+    for idx in rows.values():
+        tally: dict[int, int] = {}
+        for i in idx:
+            tally[line_of[i]] = tally.get(line_of[i], 0) + 1
+        if len(tally) < 2:
+            continue
+        top = max(tally, key=tally.get)
+        bad |= {i for i in idx if line_of[i] != top} if tally[top] * 2 > len(idx) else set(idx)
+
+    def dominant(side: int) -> dict[int, int]:
+        seen: dict[int, dict[int, int]] = {}
+        for i, a in enumerate(anchors):
+            col = seen.setdefault(a[side], {})
+            col[band_of[i]] = col.get(band_of[i], 0) + 1
+        return {c: max(t, key=t.get) for c, t in seen.items()
+                if max(t.values()) >= 2 and max(t.values()) * 2 > sum(t.values())}
+
+    left, right = dominant(2), dominant(3)
+    # Only a value squarely in another column's band is out of place; one
+    # centred across two columns (an N under a mean/SD pair) forms a band of
+    # its own or merges them.
+    columns = set(left.values()) | set(right.values())
+    by_row: dict[int, list[int]] = {}
+    for i, a in enumerate(anchors):
+        by_row.setdefault(a[0], []).append(i)
+    for idx in by_row.values():
+        off_l = {i for i in idx if anchors[i][2] in left and band_of[i] != left[anchors[i][2]]
+                 and band_of[i] in columns}
+        off_r = {i for i in idx if anchors[i][3] in right and band_of[i] != right[anchors[i][3]]
+                 and band_of[i] in columns}
+        if off_l and off_r:
+            bad |= off_l if len(off_l) <= len(off_r) else off_r
+    return [anchors[i][4] for i in sorted(bad)]
+
+
+_WORD_RE = re.compile(r"[A-Za-z]{3,}")
+_YEAR_RE = re.compile(r"(19|20)\d\d")
+_SPACED_THOUSANDS_RE = re.compile(r"-?\d{1,3}(?:[ \u00a0\u2009\u202f]\d{3})+(?:\.\d+)?")
+
+
+def _words(text: str) -> set[str]:
+    return {w.lower() for w in _WORD_RE.findall(text)}
+
+
+def _letters(text: str) -> str:
+    return re.sub(r"[^a-z]", "", text.lower())
+
+
+def lost_label_words(html: str, printed_words: Iterable[str], context_html: Iterable[str] = ()) -> list[str]:
+    """Words printed in the table region that neither the table nor a neighbouring
+    block (caption, note) holds: dropped row labels, panel or column headers.
+
+    A printed word counts as held when its letters occur anywhere in the
+    letters of the HTML, which absorbs the text layer's broken words: a lost
+    ligature (``signi cant``, ``xed``), a hyphenated break, a footnote letter
+    glued on (``incomeb``) or a subscript run together (``yit``). A letter
+    glued to either end (``drentt`` for Δ Rent_t) is trimmed, and words under
+    five letters are ignored. Words are returned only past ``LOST_WORDS_MIN``
+    and ``LOST_WORDS_SHARE``.
+    """
+    printed = _words(" ".join(printed_words))
+    if not printed:
+        return []
+    have = " ".join(_letters(_html.unescape(_TAG_RE.sub(" ", h))) for h in (html, *context_html))
+    lost = sorted(w for w in printed if len(w) >= 5 and not any(
+        w[a:len(w) - b] in have for a in (0, 1) for b in (0, 1)))
+    if len(lost) >= LOST_WORDS_MIN and len(lost) >= LOST_WORDS_SHARE * len(printed):
+        return lost
+    return []
+
+
 def split_estimate_se(html: str) -> tuple[str, int]:
     count = 0
 
@@ -297,6 +482,8 @@ def verify_table(
     native_tokens: Iterable[NativeToken],
     context_numbers: Iterable[str] = (),
     native_is_ocr: bool = False,
+    printed_words: Iterable[str] | None = None,
+    context_html: Iterable[str] = (),
 ) -> TableCheck:
     """Compare one Surya table with native tokens from the same region.
 
@@ -311,6 +498,12 @@ def verify_table(
     An OCR layer that holds under half as many numbers as the table and
     agrees on under half of its own is no witness at all (``ocr_layer_unusable``):
     the table is ``single-route``, as on a scan without a text layer.
+
+    On a born-digital page, values that agree but sit in the wrong row or
+    column (:func:`misplaced_cells`) make the table ``unresolved``, and
+    ``printed_words`` (the region's text-layer words) missing from the table
+    and ``context_html`` (:func:`lost_label_words`) cap it at ``single-route``:
+    the numbers are right but what they belong to is not.
 
     ``native_tokens`` should be clipped to the table's region in displayed-page
     coordinates. ``context_numbers`` are numbers that legitimately appear in
@@ -535,6 +728,15 @@ def verify_table(
         check.status = "unresolved"
     elif check.repairs:
         check.status = "repaired"
+    if check.status in ("verified", "repaired"):
+        if moved := misplaced_cells(check.html, native):
+            check.status = "unresolved"
+            check.findings.append(Finding(
+                "misplaced_cells", "values in a different row or column than the page prints them", moved))
+        elif printed_words is not None and (lost := lost_label_words(check.html, printed_words, context_html)):
+            check.status = "single-route"
+            check.findings.append(Finding(
+                "label_text_lost", "printed labels or headers missing from the table", lost))
     return check
 
 

@@ -40,7 +40,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/2"
+ASSEMBLER_VERSION = "sidecar-assemble/3"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -65,6 +65,16 @@ class PageText:
 
     def tokens(self, clip):
         return native_number_tokens(self.page, self.page_no, clip=clip, profile=self.profile, lines=self.lines)
+
+    def words(self, clip) -> list[str]:
+        """Text-layer text inside ``clip``, one string per line."""
+        out = []
+        for _vertical, chars in self.lines:
+            inside = [c[0] for c in chars
+                      if clip[0] <= (c[2][0] + c[2][2]) / 2 <= clip[2] and clip[1] <= (c[2][1] + c[2][3]) / 2 <= clip[3]]
+            if inside:
+                out.append("".join(inside))
+        return out
 
     def ocr_layer(self, clip) -> bool:
         """True when the text under ``clip`` is mostly invisible OCR text over an image."""
@@ -94,6 +104,25 @@ def table_native(text: PageText, pdf_bbox, owners, scan_like: bool):
         t.owned = any(x0 <= cx <= x1 and y0 <= cy <= y1 and key in keys
                       for (x0, y0, x1, y1), keys in owners)
     return tokens, scan_like or text.ocr_layer(pdf_bbox)
+
+
+#: Blocks this close to a table (points) can hold its title and notes.
+NEIGHBOUR_MARGIN = 30
+_NOTE_START = re.compile(r"^\s*(?:<[^>]+>\s*)*(?:notes?|sources?)\b", re.I)
+
+
+def neighbour_html(pdf_bbox, blocks) -> list[str]:
+    """HTML of the blocks next to a table that can hold its own text: caption,
+    title, footnotes, and text blocks that open as a note.
+
+    ``blocks`` are ``(html, pdf_bbox, label)`` triples for the page's other
+    blocks. Body paragraphs are left out: they discuss the table's labels and
+    would hide labels the table lost.
+    """
+    m = NEIGHBOUR_MARGIN
+    return [h for h, b, label in blocks
+            if (label in ("Caption", "Footnote", "SectionHeader") or (label == "Text" and _NOTE_START.match(h)))
+            and b[0] - m <= pdf_bbox[2] and pdf_bbox[0] <= b[2] + m and b[1] - m <= pdf_bbox[3] and pdf_bbox[1] <= b[3] + m]
 
 _MATH_BLOCK = re.compile(r'<math\b[^>]*display="block"[^>]*>(.*?)</math>', re.S | re.I)
 _MATH_INLINE = re.compile(r"<math\b[^>]*>(.*?)</math>", re.S | re.I)
@@ -129,6 +158,13 @@ def _status_line(block: dict) -> str | None:
         how = "re-read by a second model and matched to the PDF text layer" if "vlm_table_reread" in routes \
             else f"{len(block['repairs'])} sign fix(es) from the PDF text layer"
         return f"[Table status: REPAIRED ({how}). Check PDF p. {page} before quoting.]"
+    kinds = {f["kind"] for f in block["findings"]}
+    if "vlm_rewrite" in kinds or "label_text_lost" in kinds:
+        lost = next((f["values"] for f in block["findings"] if f["kind"] == "label_text_lost"), [])
+        why = ("re-read by a second model" if "vlm_rewrite" in kinds else
+               "printed labels missing: " + ", ".join(lost[:6]))
+        return (f"[Table status: SINGLE-ROUTE ({why}); numbers match the PDF text layer, but row and column "
+                f"labels are unchecked. Check PDF p. {page} before quoting.]")
     return f"[Table status: SINGLE-ROUTE ({reasons}); numbers not independently confirmed. Check PDF p. {page} before quoting.]"
 
 
@@ -269,7 +305,11 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 rec["status"] = "not-text"
             elif label == "Table":
                 tokens, ocr = table_native(text, pdf_bbox, owners, pm["scan_like"])
-                check = verify_table(rec["html"], tokens, native_is_ocr=ocr)
+                check = verify_table(
+                    rec["html"], tokens, native_is_ocr=ocr,
+                    printed_words=None if ocr else text.words(pdf_bbox),
+                    context_html=neighbour_html(
+                        pdf_bbox, [(r["html"], bb, r["label"]) for r, _b, bb in page_recs if r is not rec]))
                 rec["status"] = check.status
                 rec["html"] = check.html
                 rec["findings"] = [{"kind": f.kind, "detail": f.detail, "values": f.values[:40]} for f in check.findings]

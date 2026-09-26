@@ -7,9 +7,17 @@ The re-read is accepted only if it passes the same :func:`verify_table`
 check against the native text layer, prepared exactly as in assembly
 (:func:`sidecar_assemble.table_native`):
 
-- born-digital text: must come back ``verified`` or ``repaired``;
+- born-digital text: must come back ``verified`` or ``repaired``, which
+  includes the position and label checks;
 - OCR text layer (scanned page or invisible text over an image):
-  ``single-route`` via OCR-layer agreement, never via an unusable layer.
+  ``single-route`` via OCR-layer agreement, never via an unusable layer;
+- significance stars must match Surya's, unless the text layer's star count
+  backs the re-read (:func:`star_disagreement`).
+
+An accepted re-read is ``single-route`` with a ``vlm_rewrite`` finding, never
+``repaired``: its numbers passed the check, but a model that rewrote the
+whole table can attach them to the wrong labels (a rowspan one row off) in
+ways the text layer cannot catch, so the page must be looked at before use.
 
 Anything else leaves the block ``unresolved`` with its numbers withheld and a
 ``vlm_repair_failed`` finding. No second attempt, no free-form correction.
@@ -28,10 +36,11 @@ import pymupdf
 import requests
 
 from .sidecar_native import glyph_profile, upright_rotation
-from .sidecar_assemble import PageText, owner_keys, table_native, write_outputs
+from .sidecar_assemble import PageText, neighbour_html, owner_keys, table_native, write_outputs
 from .sidecar_verify import verify_table
 
-REPAIR_VERSION = "sidecar-repair/2"
+REPAIR_VERSION = "sidecar-repair/3"
+_STAR_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.S | re.I)
 CROP_ZOOM = 200 / 72
 PROMPT = (
     "Transcribe this table exactly as one HTML <table>. One <td> per printed cell; keep the "
@@ -69,6 +78,27 @@ def ask_vlm(png: bytes, url: str, timeout: float = 900) -> str | None:
     return m.group(0) if m else None
 
 
+def _stars(html: str) -> int:
+    """Significance stars in the table's cells."""
+    return sum(re.sub(r"<[^>]+>", "", c).count("*") for c in _STAR_RE.findall(html))
+
+
+def star_disagreement(surya_html: str, reread_html: str, printed_text: str) -> str | None:
+    """Why the re-read's stars cannot be trusted, or None.
+
+    Stars are not numbers, so the numeric check never sees them. A re-read
+    that drops a star column or turns ``***`` into ``*`` still passes it.
+    A different star count is accepted only when the text layer prints the
+    re-read's count; many fonts draw stars as glyphs the layer omits (a
+    count of zero), and then nothing settles it.
+    """
+    before, after = _stars(surya_html), _stars(reread_html)
+    printed = printed_text.count("*")
+    if before == after or (printed and printed == after):
+        return None
+    return f"stars: Surya {before}, re-read {after}, text layer {printed_text.count('*')}"
+
+
 def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
     sidecar_dir = Path(sidecar_dir)
     record = json.loads((sidecar_dir / f"{item_key}.blocks.json").read_text(encoding="utf-8"))
@@ -90,26 +120,39 @@ def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
             error = None if html else "no <table> in model output"
         if html:
             text = texts.setdefault(b["page"], PageText(page, b["page"], profile))
-            owners = owner_keys([x for x in blocks if x["page"] == b["page"]])
+            page_blocks = [x for x in blocks if x["page"] == b["page"]]
+            owners = owner_keys(page_blocks)
             tokens, ocr = table_native(text, b["pdf_bbox"], owners, b.get("scan_like", False))
-            check = verify_table(html, tokens, native_is_ocr=ocr)
+            printed = None if ocr else text.words(b["pdf_bbox"])
+            check = verify_table(html, tokens, native_is_ocr=ocr, printed_words=printed,
+                                 context_html=neighbour_html(
+                                     b["pdf_bbox"], [(x["html"], x["pdf_bbox"], x["label"]) for x in page_blocks if x is not b]))
             if ocr:
                 ok = check.status == "single-route" and any(f.kind == "ocr_layer_agreement" for f in check.findings)
             else:
                 ok = check.status in ("verified", "repaired")
-            if ok:
+            stars = star_disagreement(b.get("surya_html", b["html"]), check.html, " ".join(printed or ()))
+            if ok and not stars:
                 b.setdefault("surya_html", b["html"])
                 b["html"] = check.html
-                b["status"] = "single-route" if ocr else "repaired"
+                b["status"] = "single-route"
                 b["findings"] = [{"kind": f.kind, "detail": f.detail, "values": f.values[:40]}
                                  for f in check.findings]
+                b["findings"].append({
+                    "kind": "vlm_rewrite",
+                    "detail": "table re-read by a second model; numbers match the text layer, "
+                              "row and column labels unchecked",
+                    "values": []})
                 b["repairs"] = [{"kind": "table", "route": "vlm_table_reread", "model_url": vlm_url,
                                  "check_status": check.status}, *check.repairs]
                 b["counts"] = {"surya": check.surya_numbers, "native": check.native_numbers}
                 summary["accepted"] += 1
                 continue
-            error = f"re-read failed the check ({check.status}: " + ", ".join(
-                sorted({f.kind for f in check.findings})) + ")"
+            error = "re-read failed the check (" + (stars if ok else f"{check.status}: " + ", ".join(
+                sorted({f.kind for f in check.findings}))) + ")"
+            # Kept for audits; never rendered.
+            b["vlm_rejected"] = {"html": check.html, "findings": [
+                {"kind": f.kind, "detail": f.detail, "values": f.values[:40]} for f in check.findings]}
         b["findings"].append({"kind": "vlm_repair_failed", "detail": error or "", "values": []})
         summary["rejected"] += 1
     provenance = {k: v for k, v in record.items() if k not in ("item_key", "meta", "blocks")}

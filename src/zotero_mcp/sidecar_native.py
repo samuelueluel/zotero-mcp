@@ -95,6 +95,8 @@ class NativeToken:
     #: that geometry did not confirm as a sign. In an OCR text layer, whose
     #: character boxes are synthetic, that dash may be the number's sign.
     dash_before: bool = False
+    #: On a line that runs top to bottom on the displayed page (a sideways table).
+    vertical: bool = False
 
     @property
     def magnitude(self) -> str:
@@ -728,6 +730,7 @@ def native_number_tokens(
                             else "".join(c[0] for c in line[last_end + 1:start]),
                             glued=glued,
                             dash_before=dash_before,
+                            vertical=bool(vertical),
                         ), vertical, paren))
                         last_end = idx[-1]
                     else:
