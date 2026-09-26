@@ -769,6 +769,51 @@ def fill_from_text_layer(
     return _set_cells(html, edits), repairs
 
 
+_STARS_RE = re.compile(r"[*\u2217]+")
+
+
+def fix_stars(html: str, native_tokens: Iterable[NativeToken]) -> tuple[str, list[dict]]:
+    """Set significance stars from the text layer where it prints them.
+
+    Only anchored estimates (values unique in both the table and the text
+    layer, first line of their cell) whose text-layer token has stars
+    directly after it: there the text layer is exact, while Surya often
+    reads ``**`` as ``***``. A token without adjacent stars settles nothing
+    (stars set apart as a superscript, printed after the standard error, or
+    drawn as glyphs the text layer omits), so its cell is left alone.
+    """
+    stars_of: dict[tuple[int, int], tuple[str, str]] = {}
+    for (_seg, r, line, col, _cr, n), t in _anchor_list(_data_grid(html), native_tokens):
+        want = "".join(ch for ch in t.post if ch in "*\u2217").replace("\u2217", "*")
+        if line == 0 and want:
+            stars_of[(r, col)] = (n, want)
+    if not stars_of:
+        return html, []
+    edits: dict[tuple[int, int], str] = {}
+    repairs: list[dict] = []
+    for row in _layout(html):
+        for ci, col, c in row.placed:
+            if (row.index, col) not in stars_of:
+                continue
+            n, want = stars_of[(row.index, col)]
+            runs = list(_STARS_RE.finditer(c.inner))
+            have = "".join(m.group(0) for m in runs)
+            if have == want or len(runs) > 1:
+                continue
+            if runs:
+                m = runs[0]
+                inner = c.inner[:m.start()] + want + c.inner[m.end():]
+            else:
+                mag = n.lstrip("-")
+                inner = _swap_magnitude(c.inner, mag, mag + want)
+                if inner is None:
+                    continue
+            edits[(row.index, ci)] = inner
+            repairs.append({"kind": "stars", "value": n, "before": have, "after": want,
+                            "route": "native_stars", "row": row.index, "col": col})
+    return (_set_cells(html, edits), repairs) if edits else (html, [])
+
+
 def column_streams(html: str) -> list[tuple[str, ...]]:
     """Numbers of each logical column read top to bottom, stub column left out.
 
@@ -1082,6 +1127,10 @@ def verify_table(
     elif check.repairs:
         check.status = "repaired"
     if check.status in ("verified", "repaired"):
+        check.html, star_fixes = fix_stars(check.html, native)
+        if star_fixes:
+            check.repairs.extend(star_fixes)
+            check.status = "repaired"
         if moved := misplaced_cells(check.html, native):
             check.status = "unresolved"
             check.findings.append(Finding(

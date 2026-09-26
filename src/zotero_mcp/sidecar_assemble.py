@@ -40,7 +40,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/4"
+ASSEMBLER_VERSION = "sidecar-assemble/5"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -162,10 +162,12 @@ def _status_line(block: dict) -> str | None:
     if status == "repaired":
         routes = [r.get("route", "") for r in block["repairs"]]
         cells, signs = routes.count("native_cell"), routes.count("native_font_validated")
+        stars = routes.count("native_stars")
         how = "re-read by a second model and matched to the PDF text layer" if "vlm_table_reread" in routes \
             else "; ".join(x for x in (
                 f"{cells} cell(s) corrected or filled from the PDF text layer" if cells else "",
-                f"{signs} sign fix(es) from the PDF text layer" if signs else "") if x)
+                f"{signs} sign fix(es) from the PDF text layer" if signs else "",
+                f"{stars} significance star(s) corrected from the PDF text layer" if stars else "") if x)
         return f"[Table status: REPAIRED ({how}). Check PDF p. {page} before quoting.]"
     kinds = {f["kind"] for f in block["findings"]}
     if "vlm_agreement" in kinds and "vlm_rewrite" not in kinds and "label_text_lost" not in kinds:
@@ -325,7 +327,7 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                     context_html=neighbour_html(
                         pdf_bbox, [(r["html"], bb, r["label"]) for r, _b, bb in page_recs if r is not rec]),
                     printed_lines=lines)
-                if any(r.get("route") == "native_cell" for r in check.repairs):
+                if any(r.get("route") in ("native_cell", "native_stars") for r in check.repairs):
                     rec["surya_html"] = rec["html"]
                 rec["status"] = check.status
                 rec["html"] = check.html

@@ -377,3 +377,28 @@ def test_readings_agree_ignores_row_layout_but_not_column_shifts():
     # One row shifting against the others does not.
     assert not readings_agree(empty_dropped, left_shift)
     assert not readings_agree("<table></table>", "<table></table>")
+
+
+def _starred(post: dict[str, str]):
+    printed = []
+    for t in PRINTED:
+        t2 = ptok(t.text, t.bbox[0], t.bbox[1])
+        t2.post = post.get(t.text, "")
+        printed.append(t2)
+    return printed
+
+
+def test_stars_are_set_from_the_text_layer_where_it_prints_them():
+    printed = _starred({"1.11": "**", "5.55": "*"})
+    rows = [["1.11***", "2.22", "3.33"], ["4.44", "5.55", "6.66"], GRID[2]]
+    check = verify_table(_labelled(rows), printed)
+    assert check.status == "repaired"
+    assert "1.11**<" in check.html and "5.55*<" in check.html and "***" not in check.html
+    assert sorted((r["value"], r["before"], r["after"]) for r in check.repairs) == [
+        ("1.11", "***", "**"), ("5.55", "", "*")]
+
+
+def test_stars_without_adjacent_text_layer_stars_are_left_alone():
+    rows = [["1.11***", "2.22", "3.33"], GRID[1], GRID[2]]
+    check = verify_table(_labelled(rows), PRINTED)
+    assert check.status == "verified" and "1.11***" in check.html
