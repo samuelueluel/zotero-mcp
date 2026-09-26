@@ -168,10 +168,11 @@ def _status_line(block: dict) -> str | None:
                 f"{signs} sign fix(es) from the PDF text layer" if signs else "") if x)
         return f"[Table status: REPAIRED ({how}). Check PDF p. {page} before quoting.]"
     kinds = {f["kind"] for f in block["findings"]}
-    if "vlm_rewrite" in kinds or "label_text_lost" in kinds:
+    if kinds & {"vlm_rewrite", "label_text_lost", "header_structure"}:
         lost = next((f["values"] for f in block["findings"] if f["kind"] == "label_text_lost"), [])
         why = ("re-read by a second model" if "vlm_rewrite" in kinds else
-               "printed labels missing: " + ", ".join(lost[:6]))
+               "printed labels missing: " + ", ".join(lost[:6]) if lost else
+               "column headers do not line up with the page")
         return (f"[Table status: SINGLE-ROUTE ({why}); numbers match the PDF text layer, but row and column "
                 f"labels are unchecked. Check PDF p. {page} before quoting.]")
     return f"[Table status: SINGLE-ROUTE ({reasons}); numbers not independently confirmed. Check PDF p. {page} before quoting.]"

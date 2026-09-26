@@ -961,6 +961,7 @@ def verify_table(
     left = [t for ts in avail.values() for t in ts]
     missing = [t.text for t in left if not t.owned and t.role == "data"]
     native_label = [t.text for t in left if not t.owned and t.role != "data"]
+    lost_colnums = [t.text for t in left if not t.owned and t.role == "colnum"]
     outside = [t.text for t in left if t.owned]
 
     for n in repairable:
@@ -1064,6 +1065,17 @@ def verify_table(
             check.status = "single-route"
             check.findings.append(Finding(
                 "label_text_lost", "printed labels or headers missing from the table", lost))
+    if check.status in ("verified", "repaired"):
+        # Headers that do not sit over the data: a body column no header or
+        # value fills, or printed column numbers the table dropped. In a
+        # 90-paper audit every such table had shifted, merged or missing
+        # column headers while its numbers were right.
+        empty = [f.detail for f in check.findings if f.kind == "empty_body_column"]
+        if empty or lost_colnums:
+            check.status = "single-route"
+            check.findings.append(Finding(
+                "header_structure", "column headers or column numbers do not match the page",
+                [f"({n})" for n in lost_colnums] + empty))
     return check
 
 

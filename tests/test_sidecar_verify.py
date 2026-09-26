@@ -315,3 +315,50 @@ def test_fill_leaves_a_misplaced_value_alone():
     rows = [["1.11", "2.22", "6.66"], ["4.44", "5.55", ""], GRID[2]]
     check = verify_table(_labelled(rows), PRINTED, printed_lines=[])
     assert check.status == "unresolved" and not _cells(check)
+
+
+def _colnum(text: str) -> NativeToken:
+    t = tok(text)
+    t.role = "colnum"
+    return t
+
+
+def test_dropped_column_numbers_demote_a_verified_table():
+    # Printed (1) (2) (3); Surya kept (1) and (3) and lost (2).
+    html = ("<table><tr><th></th><th>(1)</th><th colspan=\"2\">(3)</th></tr>"
+            "<tr><td>Age</td><td>-.007</td><td>-.218</td><td>.5</td></tr>"
+            "<tr><td>Acreage</td><td>-.815</td><td>-37.652</td><td>.6</td></tr></table>")
+    native = [tok(x) for x in ("-.007", "-.218", ".5", "-.815", "-37.652", ".6")]
+    native += [_colnum(x) for x in ("1", "2", "3")]
+    check = verify_table(html, native)
+    assert check.status == "single-route"
+    finding = next(f for f in check.findings if f.kind == "header_structure")
+    assert finding.values == ["(2)"]
+
+
+def test_kept_column_numbers_stay_verified():
+    html = ("<table><tr><th></th><th>(1)</th><th>(2)</th></tr>"
+            "<tr><td>Age</td><td>-.007</td><td>-.218</td></tr>"
+            "<tr><td>Acreage</td><td>-.815</td><td>-37.652</td></tr></table>")
+    native = [tok(x) for x in ("-.007", "-.218", "-.815", "-37.652")] + [_colnum("1"), _colnum("2")]
+    assert verify_table(html, native).status == "verified"
+
+
+def test_empty_body_column_demotes_a_verified_table():
+    # A stray header cell pushed the headers one column right of the data.
+    html = ("<table><tr><th>Var</th><th>Coef</th><th>t</th><th>Var</th></tr>"
+            "<tr><td>Age</td><td>-.007</td><td>-.218</td><td></td></tr>"
+            "<tr><td>Acreage</td><td>-.815</td><td>-37.652</td><td></td></tr></table>")
+    check = verify_table(html, [tok(x) for x in ("-.007", "-.218", "-.815", "-37.652")])
+    assert check.status == "single-route"
+    assert any(f.kind == "header_structure" for f in check.findings)
+
+
+def test_header_structure_status_line():
+    from zotero_mcp.sidecar_assemble import _status_line
+
+    block = {"status": "single-route", "label": "Table", "page": 39, "repairs": [],
+             "findings": [{"kind": "header_structure", "detail": "", "values": ["(2)"]}]}
+    line = _status_line(block)
+    assert "SINGLE-ROUTE (column headers do not line up with the page)" in line
+    assert "numbers match the PDF text layer" in line
