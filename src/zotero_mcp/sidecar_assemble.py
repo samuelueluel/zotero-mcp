@@ -40,7 +40,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/3"
+ASSEMBLER_VERSION = "sidecar-assemble/4"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -68,12 +68,18 @@ class PageText:
 
     def words(self, clip) -> list[str]:
         """Text-layer text inside ``clip``, one string per line."""
+        return [text for text, _bbox in self.text_lines(clip)]
+
+    def text_lines(self, clip) -> list[tuple[str, tuple[float, float, float, float]]]:
+        """``(text, bbox)`` per text-layer line inside ``clip`` (displayed-page coordinates)."""
         out = []
         for _vertical, chars in self.lines:
-            inside = [c[0] for c in chars
+            inside = [c for c in chars
                       if clip[0] <= (c[2][0] + c[2][2]) / 2 <= clip[2] and clip[1] <= (c[2][1] + c[2][3]) / 2 <= clip[3]]
             if inside:
-                out.append("".join(inside))
+                out.append(("".join(c[0] for c in inside),
+                            (min(c[2][0] for c in inside), min(c[2][1] for c in inside),
+                             max(c[2][2] for c in inside), max(c[2][3] for c in inside))))
         return out
 
     def ocr_layer(self, clip) -> bool:
@@ -154,9 +160,12 @@ def _status_line(block: dict) -> str | None:
     if status == "unresolved":
         return f"[Table status: UNRESOLVED ({reasons}); unverified numbers withheld. Verify on PDF p. {page}.]"
     if status == "repaired":
-        routes = sorted({r.get("route", "") for r in block["repairs"]})
+        routes = [r.get("route", "") for r in block["repairs"]]
+        cells, signs = routes.count("native_cell"), routes.count("native_font_validated")
         how = "re-read by a second model and matched to the PDF text layer" if "vlm_table_reread" in routes \
-            else f"{len(block['repairs'])} sign fix(es) from the PDF text layer"
+            else "; ".join(x for x in (
+                f"{cells} cell(s) corrected or filled from the PDF text layer" if cells else "",
+                f"{signs} sign fix(es) from the PDF text layer" if signs else "") if x)
         return f"[Table status: REPAIRED ({how}). Check PDF p. {page} before quoting.]"
     kinds = {f["kind"] for f in block["findings"]}
     if "vlm_rewrite" in kinds or "label_text_lost" in kinds:
@@ -305,11 +314,15 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 rec["status"] = "not-text"
             elif label == "Table":
                 tokens, ocr = table_native(text, pdf_bbox, owners, pm["scan_like"])
+                lines = None if ocr else text.text_lines(pdf_bbox)
                 check = verify_table(
                     rec["html"], tokens, native_is_ocr=ocr,
-                    printed_words=None if ocr else text.words(pdf_bbox),
+                    printed_words=None if lines is None else [t for t, _b in lines],
                     context_html=neighbour_html(
-                        pdf_bbox, [(r["html"], bb, r["label"]) for r, _b, bb in page_recs if r is not rec]))
+                        pdf_bbox, [(r["html"], bb, r["label"]) for r, _b, bb in page_recs if r is not rec]),
+                    printed_lines=lines)
+                if any(r.get("route") == "native_cell" for r in check.repairs):
+                    rec["surya_html"] = rec["html"]
                 rec["status"] = check.status
                 rec["html"] = check.html
                 rec["findings"] = [{"kind": f.kind, "detail": f.detail, "values": f.values[:40]} for f in check.findings]

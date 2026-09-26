@@ -124,7 +124,7 @@ def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
             owners = owner_keys(page_blocks)
             tokens, ocr = table_native(text, b["pdf_bbox"], owners, b.get("scan_like", False))
             printed = None if ocr else text.words(b["pdf_bbox"])
-            check = verify_table(html, tokens, native_is_ocr=ocr, printed_words=printed,
+            check = verify_table(html, tokens, native_is_ocr=ocr, printed_words=printed, fill=False,
                                  context_html=neighbour_html(
                                      b["pdf_bbox"], [(x["html"], x["pdf_bbox"], x["label"]) for x in page_blocks if x is not b]))
             if ocr:

@@ -7,7 +7,9 @@ This module compares the two numerically, in both directions, and assigns a
 block status:
 
 - ``verified``    every Surya number is in the native pool and vice versa.
-- ``repaired``    only authoritative sign disagreements, fixed deterministically.
+- ``repaired``    fixed deterministically from the text layer: authoritative
+                  sign disagreements, or cells put where the page prints them
+                  (:func:`fill_from_text_layer`), then re-checked in full.
 - ``unresolved``  unmatched numbers, truncation, sign conflicts that cannot be
                   settled, or duplicated rows; numeric cells must be withheld.
 - ``single-route`` no usable native numbers in the region (scan or math).
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import html as _html
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -143,7 +146,8 @@ class TableCheck:
 STRUCTURAL = {"empty_body_column", "merged_estimate_se", "label_or_header_mismatch", "duplicate_rows"}
 #: Findings that never change status and are left out of the status line.
 INFORMATIONAL = {"merged_estimate_se", "label_or_header_mismatch", "format_variant", "split_token",
-                 "ocr_detached_dash", "native_label_unmatched", "native_outside_table"}
+                 "ocr_detached_dash", "native_label_unmatched", "native_outside_table",
+                 "text_layer_fill_failed"}
 #: A table needs at least this many anchors (values unique on both sides) for
 #: the position check.
 MIN_ANCHORS = 4
@@ -294,15 +298,21 @@ def _duplicate_rows(rows: list[list[Cell]]) -> list[Finding]:
     return [Finding("duplicate_rows", "; ".join(dups))] if dups else []
 
 
-def _data_grid(html: str) -> list[tuple[int, int, int, int, int, str]]:
-    """``(segment, row, line, col_from_left, col_from_right, number)`` per data number.
+@dataclass
+class _Row:
+    index: int  # position among the table's <tr> rows
+    segment: int
+    header: bool
+    placed: list[tuple[int, int, Cell]]  # (cell index in the row, logical column, cell)
+    width: int  # logical columns occupied, rowspans from above included
 
-    Rowspans and colspans are expanded to logical columns. ``line`` is the
-    number's position inside its cell (an estimate over its standard error).
-    ``col_from_right`` counts from the row's last occupied column, for ragged
-    rows that drop leading empty cells. A header row (thead, all ``th``, or
-    column numbers) starts a new ``segment``: stacked panels often print
-    their columns at different positions.
+
+def _layout(html: str) -> list[_Row]:
+    """Rows with rowspans and colspans expanded to logical columns.
+
+    A header row (thead, all ``th``, or column numbers) starts a new
+    ``segment``: stacked panels often print their columns at different
+    positions.
     """
     head_spans = [m.span(1) for m in _THEAD_RE.finditer(html)]
     carry: dict[int, int] = {}  # column -> further rows a rowspan occupies
@@ -314,32 +324,64 @@ def _data_grid(html: str) -> list[tuple[int, int, int, int, int, str]]:
         numeric = [c for c in cells if c.numbers]
         colnum_row = bool(numeric) and all(_COLNUM_RE.match(_plain(c.inner)) for c in numeric)
         placed, new_carry, col = [], {}, 0
-        for c in cells:
+        for ci, c in enumerate(cells):
             while carry.get(col, 0) > 0:
                 col += 1
-            placed.append((col, c))
+            placed.append((ci, col, c))
             if c.rowspan > 1:
                 new_carry.update({col + k: c.rowspan - 1 for k in range(c.colspan)})
             col += c.colspan
         width = max([col] + [k + 1 for k, v in carry.items() if v > 0])
         carry = {k: v - 1 for k, v in carry.items() if v > 1}
         carry.update(new_carry)
-        if in_head or colnum_row or (cells and all(c.tag == "th" for c in cells)):
-            if not in_header:
-                segment += 1
-            in_header = True
-            continue
-        in_header = False
-        for col, c in placed:
-            if col == 0:
-                continue  # the stub column: row labels such as R^2/1000
-            if c.tag == "th" or sum(ch.isalpha() for ch in _label_text(c.inner)) >= 2:
-                continue
-            if _SPACED_THOUSANDS_RE.fullmatch(_plain(c.inner)):
-                continue  # "114 598.30": one value that both sides split in two
-            for line, n in enumerate(cell_numbers(_SCRIPT_RE.sub(" ", c.inner))):
-                out.append((segment, r, line, col, width - col - c.colspan, n))
+        header = bool(in_head or colnum_row or (cells and all(c.tag == "th" for c in cells)))
+        if header and not in_header:
+            segment += 1
+        in_header = header
+        out.append(_Row(r, segment, header, placed, width))
     return out
+
+
+def _data_cell(col: int, c: Cell) -> bool:
+    if col == 0:
+        return False  # the stub column: row labels such as R^2/1000
+    if c.tag == "th" or sum(ch.isalpha() for ch in _label_text(c.inner)) >= 2:
+        return False
+    # "114 598.30": one value that both sides split in two
+    return not _SPACED_THOUSANDS_RE.fullmatch(_plain(c.inner))
+
+
+def _data_grid(html: str) -> list[tuple[int, int, int, int, int, str]]:
+    """``(segment, row, line, col_from_left, col_from_right, number)`` per data number.
+
+    ``line`` is the number's position inside its cell (an estimate over its
+    standard error). ``col_from_right`` counts from the row's last occupied
+    column, for ragged rows that drop leading empty cells.
+    """
+    out = []
+    for row in _layout(html):
+        if row.header:
+            continue
+        for _ci, col, c in row.placed:
+            if _data_cell(col, c):
+                for line, n in enumerate(cell_numbers(_SCRIPT_RE.sub(" ", c.inner))):
+                    out.append((row.segment, row.index, line, col, row.width - col - c.colspan, n))
+    return out
+
+
+def _anchor_list(grid, native_tokens) -> list[tuple[tuple, NativeToken]]:
+    """Grid entries whose value occurs once in the grid and once among the text
+    layer's data tokens, paired with that token. Years are left out: they head
+    columns in rows Surya does not mark as a header."""
+    by_key: dict[str, list[NativeToken]] = {}
+    for t in native_tokens:
+        if t.role == "data" and not t.owned:
+            by_key.setdefault(numeric_key(t.text), []).append(t)
+    counts: dict[str, int] = {}
+    for *_pos, n in grid:
+        counts[numeric_key(n)] = counts.get(numeric_key(n), 0) + 1
+    return [(g, by_key[k][0]) for g in grid
+            if counts[k := numeric_key(g[5])] == 1 and len(by_key.get(k, ())) == 1 and not _YEAR_RE.fullmatch(g[5])]
 
 
 def _clusters(spans: list[tuple[float, float]]) -> list[int]:
@@ -371,17 +413,8 @@ def misplaced_cells(html: str, native_tokens: Iterable[NativeToken]) -> list[str
 
     Values are reported, not repaired. Needs ``MIN_ANCHORS`` anchors.
     """
-    grid = _data_grid(html)
-    by_key: dict[str, list[NativeToken]] = {}
-    for t in native_tokens:
-        if t.role == "data" and not t.owned:
-            by_key.setdefault(numeric_key(t.text), []).append(t)
-    counts: dict[str, int] = {}
-    for *_pos, n in grid:
-        counts[numeric_key(n)] = counts.get(numeric_key(n), 0) + 1
-    # Years are left out: they head columns in rows Surya does not mark as a header.
-    anchors = [(r, line, (seg, cl, line), (seg, cr, line), n, by_key[k][0]) for seg, r, line, cl, cr, n in grid
-               if counts[k := numeric_key(n)] == 1 and len(by_key.get(k, ())) == 1 and not _YEAR_RE.fullmatch(n)]
+    anchors = [(r, line, (seg, cl, line), (seg, cr, line), n, t)
+               for (seg, r, line, cl, cr, n), t in _anchor_list(_data_grid(html), native_tokens)]
     if len(anchors) < MIN_ANCHORS:
         return []
     boxes = [a[5].bbox for a in anchors]
@@ -465,6 +498,277 @@ def lost_label_words(html: str, printed_words: Iterable[str], context_html: Iter
     return []
 
 
+_TAG_SPLIT_RE = re.compile(r"(<[^>]+>)")
+
+
+def _swap_magnitude(inner: str, old: str, new: str) -> str | None:
+    """Replace the one occurrence of number ``old`` in a cell's text (outside
+    tags) with ``new``; None when it is not there exactly once."""
+    pat = re.compile(rf"(?<![\d.,]){re.escape(old)}(?![\d]|[.,]\d)")
+    parts = _TAG_SPLIT_RE.split(inner)
+    hits = [(i, m) for i, p in enumerate(parts) if not p.startswith("<") for m in pat.finditer(p)]
+    if len(hits) != 1:
+        return None
+    i, m = hits[0]
+    parts[i] = parts[i][:m.start()] + new + parts[i][m.end():]
+    return "".join(parts)
+
+
+def _set_cells(html: str, edits: dict[tuple[int, int], str]) -> str:
+    """Replace the inner HTML of cells keyed ``(row index, cell index)``."""
+
+    def row_sub(r: int, rm: re.Match) -> str:
+        k = -1
+
+        def cell_sub(m: re.Match) -> str:
+            nonlocal k
+            k += 1
+            if (r, k) not in edits:
+                return m.group(0)
+            return f"<{m.group(1)}{m.group(2)}>{edits[(r, k)]}</{m.group(1)}>"
+
+        return rm.group(0)[:rm.start(1) - rm.start(0)] + _CELL_RE.sub(cell_sub, rm.group(1)) \
+            + rm.group(0)[rm.end(1) - rm.start(0):]
+
+    rows = iter(range(10 ** 9))
+    return _ROW_RE.sub(lambda rm: row_sub(next(rows), rm), html)
+
+
+def fill_from_text_layer(
+    html: str,
+    native: list[NativeToken],
+    missing: list[NativeToken],
+    unmatched: list[str],
+    printed_lines: list[tuple[str, tuple]],
+) -> tuple[str, list[dict]] | None:
+    """Put text-layer values into the cells where the page prints them.
+
+    Born-digital pages only. Anchors (values unique in both the table and the
+    text layer) tie each HTML row to a printed line and each HTML column to a
+    printed column band. Rows without an anchor are placed by their label,
+    found at the start of a text-layer line between the neighbouring rows.
+    A printed line of data numbers belongs to the placed row above it; its
+    rank below that row's first line is its line in the cell (an estimate
+    over its standard error). Unplaced rows in between must hold no numbers
+    in the HTML, and the lines must not outnumber the placed row's own.
+
+    A text-layer value Surya lacks (``missing``, any printed copy of it) that
+    falls in exactly one row line and one column band then either replaces a
+    Surya number there that the text layer lacks (``unmatched``: a misread
+    digit), keeping Surya's stars and brackets, or fills an empty cell with
+    the brackets and stars printed around it. Nothing else in the table
+    changes: labels, headers and structure stay Surya's.
+
+    Refused, cell by cell: an inferred text-layer sign (control glyph,
+    spaced dash) for a value Surya did not read; a Surya minus the text
+    layer lacks (broken fonts drop minus glyphs); ragged rows whose own
+    anchors do not settle how their cells line up; fills when the table has
+    stars but the text layer prints none (the fonts draw them as glyphs the
+    layer omits). The whole fill is refused when the anchors contradict
+    the line model: rows out of printed order, or one row on two lines (a
+    misplaced value, not a missing one). The caller re-verifies the result.
+    """
+    data = [t for t in native if t.role == "data" and not t.owned]
+    if not missing or not data:
+        return None
+    grid = _data_grid(html)
+    anchors = _anchor_list(grid, native)
+    if len(anchors) < MIN_ANCHORS:
+        return None
+
+    # Work in reading coordinates: rows run down, columns across.
+    sideways = sum(t.vertical for t in data) * 2 > len(data)
+
+    def turn(b):
+        return (b[1], b[0], b[3], b[2]) if sideways else tuple(b)
+
+    box = {id(t): turn(t.bbox) for t in data}
+    lines_in = [(text, turn(b)) for text, b in printed_lines]
+    ys = [box[id(t)][1] for _g, t in sorted(anchors, key=lambda a: (a[0][1], a[0][2]))]
+    if sideways and ys and ys[0] > ys[-1]:  # rows run right to left or bottom to top
+        box = {k: (b[0], -b[3], b[2], -b[1]) for k, b in box.items()}
+        lines_in = [(text, (b[0], -b[3], b[2], -b[1])) for text, b in lines_in]
+
+    line_ids = _clusters([(box[id(t)][1], box[id(t)][3]) for t in data])
+    line_of = {id(t): i for t, i in zip(data, line_ids)}
+    extent: dict[int, list[float]] = {}
+    for t, i in zip(data, line_ids):
+        e = extent.setdefault(i, [box[id(t)][1], box[id(t)][3]])
+        e[0], e[1] = min(e[0], box[id(t)][1]), max(e[1], box[id(t)][3])
+    center = {i: (a + b) / 2 for i, (a, b) in extent.items()}
+    heights = sorted(b - a for a, b in extent.values())
+    tol = 0.5 * heights[len(heights) // 2]
+
+    rows = _layout(html)
+    order = [row.index for row in rows]
+    by_index = {row.index: row for row in rows}
+    own_lines = {row.index: max([len(cell_numbers(_SCRIPT_RE.sub(" ", c.inner)))
+                                 for _ci, col, c in row.placed if _data_cell(col, c)] + [0])
+                 for row in rows if not row.header}
+    ypos: dict[int, float] = {}
+    for (_seg, r, li, *_rest), t in anchors:
+        if li == 0:
+            if r in ypos and abs(ypos[r] - center[line_of[id(t)]]) > tol:
+                return None
+            ypos[r] = center[line_of[id(t)]]
+    placed_y = [ypos[r] for r in order if r in ypos]
+    if any(b <= a for a, b in zip(placed_y, placed_y[1:])):
+        return None
+    def alnum(text: str) -> str:  # labels may differ only in digits: "5-10 miles", "10-15 miles"
+        return re.sub(r"[^a-z0-9]", "", text.lower())
+
+    starts = [(alnum(text), (b[1] + b[3]) / 2) for text, b in lines_in]
+    for k, r in enumerate(order):
+        stub = next((c for _ci, col, c in by_index[r].placed if col == 0), None)
+        label = alnum(_html.unescape(_label_text(stub.inner))) if stub else ""
+        if r in ypos or sum(ch.isalpha() for ch in label) < 4:
+            continue
+        lo = max((ypos[x] for x in order[:k] if x in ypos), default=float("-inf"))
+        hi = min((ypos[x] for x in order[k + 1:] if x in ypos), default=float("inf"))
+        # The printed line may hold only the first line of a wrapped label.
+        hits = {round(y, 1) for letters, y in starts
+                if sum(ch.isalpha() for ch in letters) >= 4 and (letters.startswith(label) or label.startswith(letters))
+                and lo + tol < y < hi - tol}
+        if len(hits) == 1:
+            ypos[r] = hits.pop()
+
+    depth: dict[int, int] = {}
+    for (seg, _r, li, *_rest), _t in anchors:
+        depth[seg] = max(depth.get(seg, 0), li + 1)
+    gaps: dict[int, list[int]] = {}  # position in order of the placed row above -> printed lines
+    for lid in sorted(center, key=center.get):
+        k = max((j for j, r in enumerate(order) if r in ypos and ypos[r] <= center[lid] + tol), default=None)
+        if k is not None:
+            gaps.setdefault(k, []).append(lid)
+    rank: dict[int, tuple[int, int]] = {}
+    for k, lids in gaps.items():
+        r = order[k]
+        nxt = next((j for j in range(k + 1, len(order)) if order[j] in ypos), len(order))
+        between = order[k + 1:nxt]
+        if between:
+            row = by_index[r]
+            cap = own_lines.get(r) or depth.get(row.segment, 1)
+            if len(lids) > cap or any(by_index[x].header or own_lines.get(x) for x in between):
+                continue
+        rank.update({lid: (r, i) for i, lid in enumerate(lids)})
+    for (_seg, r, li, *_rest), t in anchors:
+        got = rank.get(line_of[id(t)])
+        if got is not None and got != (r, li):
+            return None
+
+    def bands(side: int) -> dict[tuple[int, int], list[float]]:
+        out: dict[tuple[int, int], list[float]] = {}
+        for g, t in anchors:
+            b = out.setdefault((g[0], g[side]), [box[id(t)][0], box[id(t)][2]])
+            b[0], b[1] = min(b[0], box[id(t)][0]), max(b[1], box[id(t)][2])
+        return out
+
+    left, right = bands(3), bands(4)
+
+    def inside(band, b) -> bool:
+        return band is not None and min(band[1], b[2]) - max(band[0], b[0]) > 0
+
+    full: dict[int, int] = {}
+    for row in rows:
+        if not row.header:
+            full[row.segment] = max(full.get(row.segment, 0), row.width)
+    sides_of: dict[int, list[str]] = {}
+    for row in rows:
+        if row.header:
+            continue
+        if row.width == full[row.segment]:
+            sides_of[row.index] = ["left"]
+            continue
+        mine = [(g, t) for g, t in anchors if g[1] == row.index]
+        ok_l = bool(mine) and all(inside(left.get((g[0], g[3])), box[id(t)]) for g, t in mine)
+        ok_r = bool(mine) and all(inside(right.get((g[0], g[4])), box[id(t)]) for g, t in mine)
+        # Both: the row's anchors cannot tell; a target must then be the same cell either way.
+        sides_of[row.index] = ["left"] * ok_l + ["right"] * ok_r
+
+    def target(row: _Row, side: str, b) -> tuple | None:
+        table = left if side == "left" else right
+        keys = [k for (seg, k), band in table.items() if seg == row.segment and inside(band, b)]
+        if len(keys) != 1:
+            return None
+        return next(((ci, col, c) for ci, col, c in row.placed if c.colspan == 1 and (
+            col if side == "left" else row.width - col - 1) == keys[0]), None)
+
+    need = Counter(numeric_key(t.text) for t in missing)
+    candidates = [t for t in data if need[numeric_key(t.text)]]
+    minus = "\u2212" if "\u2212" in html else "-"
+    stars_ok = "*" not in html or any("*" in text or "\u2217" in text for text, _b in printed_lines)
+    todo = Counter(unmatched)
+    targets: dict[tuple[int, int], list[tuple[int, NativeToken]]] = {}
+    for t in candidates:
+        got = rank.get(line_of[id(t)])
+        if got is None:
+            continue
+        r, li = got
+        row = by_index[r]
+        if row.header or not sides_of.get(r) or li >= depth.get(row.segment, 1):
+            continue
+        found = [target(row, side, box[id(t)]) for side in sides_of[r]]
+        cells = {c[0]: c for c in found if c is not None}
+        if None in found:
+            continue
+        if len(cells) != 1:
+            continue
+        cell = next(iter(cells.values()))
+        if _data_cell(cell[1], cell[2]):
+            targets.setdefault((r, cell[0]), []).append((li, t))
+
+    edits: dict[tuple[int, int], str] = {}
+    repairs: list[dict] = []
+    for (r, ci), items in sorted(targets.items()):
+        _ci, col, c = by_index[r].placed[ci]
+        nums = cell_numbers(_SCRIPT_RE.sub(" ", c.inner))
+        items.sort(key=lambda x: x[0])
+        if len({li for li, _t in items}) != len(items):
+            continue
+        added = [(li, t) for li, t in items if li >= len(nums)]
+        if nums and added:  # lines Surya left out below its own (a standard error)
+            if not stars_ok or [li for li, _t in added] != list(range(len(nums), len(nums) + len(added))) or any(
+                    not need[numeric_key(t.text)] or (t.negative and t.sign_source not in AUTHORITATIVE_SIGN_SOURCES)
+                    for _li, t in added):
+                added = []
+            for _li, t in added:
+                need[numeric_key(t.text)] -= 1
+                repairs.append({"kind": "cell", "before": "", "after": t.text, "route": "native_cell",
+                                "row": r, "col": col})
+        if nums:  # misread digits: same line, Surya's value unbacked
+            inner = c.inner + "".join("<br/>" + t.pre + t.text.replace("-", minus, 1) + t.post for _li, t in added)
+            for li, t in items:
+                if li >= len(nums) or not todo[nums[li]] or not need[numeric_key(t.text)]:
+                    continue
+                old = nums[li]
+                if old.startswith("-") != t.negative and (
+                        old.startswith("-") or t.sign_source not in AUTHORITATIVE_SIGN_SOURCES):
+                    continue
+                new = t.magnitude if old.startswith("-") == t.negative else minus + t.magnitude
+                swapped = _swap_magnitude(inner, old.lstrip("-"), new)
+                if swapped is None:
+                    continue
+                inner = swapped
+                todo[old] -= 1
+                need[numeric_key(t.text)] -= 1
+                repairs.append({"kind": "cell", "before": old, "after": t.text, "route": "native_cell",
+                                "row": r, "col": col})
+            if inner != c.inner:
+                edits[(r, ci)] = inner
+        elif stars_ok and [li for li, _t in items] == list(range(len(items))):  # an empty cell
+            if any(not need[numeric_key(t.text)] or (t.negative and t.sign_source not in AUTHORITATIVE_SIGN_SOURCES)
+                   for _li, t in items):
+                continue
+            for _li, t in items:
+                need[numeric_key(t.text)] -= 1
+            edits[(r, ci)] = "<br/>".join(t.pre + t.text.replace("-", minus, 1) + t.post for _li, t in items)
+            repairs.extend({"kind": "cell", "before": "", "after": t.text, "route": "native_cell",
+                            "row": r, "col": col} for _li, t in items)
+    if not edits:
+        return None
+    return _set_cells(html, edits), repairs
+
+
 def split_estimate_se(html: str) -> tuple[str, int]:
     count = 0
 
@@ -484,6 +788,8 @@ def verify_table(
     native_is_ocr: bool = False,
     printed_words: Iterable[str] | None = None,
     context_html: Iterable[str] = (),
+    printed_lines: list[tuple[str, tuple]] | None = None,
+    fill: bool = True,
 ) -> TableCheck:
     """Compare one Surya table with native tokens from the same region.
 
@@ -504,6 +810,12 @@ def verify_table(
     ``printed_words`` (the region's text-layer words) missing from the table
     and ``context_html`` (:func:`lost_label_words`) cap it at ``single-route``:
     the numbers are right but what they belong to is not.
+
+    ``printed_lines`` (the region's text-layer lines with their boxes) enable
+    :func:`fill_from_text_layer` on a born-digital table that fails on
+    unmatched or missing numbers: the result is re-checked in full and kept
+    only if it passes, as ``repaired`` (or ``single-route`` when labels are
+    lost); otherwise the original check stands. ``fill=False`` skips it.
 
     ``native_tokens`` should be clipped to the table's region in displayed-page
     coordinates. ``context_numbers`` are numbers that legitimately appear in
@@ -726,6 +1038,21 @@ def verify_table(
     # copy already shows up as unmatched numbers.
     if unmatched or missing or conflicts:
         check.status = "unresolved"
+        if fill and printed_lines is not None and (unmatched or missing):
+            filled = fill_from_text_layer(
+                check.html, native, [t for t in left if not t.owned and t.role == "data"], unmatched, printed_lines)
+            if filled is not None:
+                again = verify_table(filled[0], native, context_numbers, False, printed_words, context_html,
+                                     printed_lines, fill=False)
+                if again.status in ("verified", "repaired", "single-route"):
+                    again.repairs = check.repairs + filled[1] + again.repairs
+                    if again.status != "single-route":
+                        again.status = "repaired"
+                    again.surya_numbers = check.surya_numbers
+                    return again
+                check.findings.append(Finding(
+                    "text_layer_fill_failed", "cells filled from the text layer did not pass the check",
+                    sorted({f.kind for f in again.findings} - INFORMATIONAL)))
     elif check.repairs:
         check.status = "repaired"
     if check.status in ("verified", "repaired"):

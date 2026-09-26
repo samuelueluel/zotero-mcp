@@ -235,3 +235,83 @@ def test_lost_labels():
     # Broken text-layer words: a lost ligature, a glued footnote letter.
     assert lost_label_words("<table><tr><td>Significant income<sup>b</sup></td></tr></table>",
                             ["signi cant incomeb"]) == []
+
+
+# Filling cells from the text layer ------------------------------------------
+
+
+def _labelled(rows, labels=("Alpha", "Bravo", "Charlie")):
+    return "<table>" + "".join(
+        f"<tr><td>{label}</td>" + "".join(f"<td>{v}</td>" for v in row) + "</tr>"
+        for label, row in zip(labels, rows)) + "</table>"
+
+
+def _cells(check):
+    return [(r["before"], r["after"]) for r in check.repairs if r["route"] == "native_cell"]
+
+
+def test_fill_replaces_a_misread_digit_in_place():
+    rows = [GRID[0], ["4.44", "5.85", "6.66"], GRID[2]]
+    check = verify_table(_labelled(rows), PRINTED, printed_lines=[])
+    assert check.status == "repaired" and _cells(check) == [("5.85", "5.55")]
+    assert "5.55" in check.html and "5.85" not in check.html
+    assert "cell" in check.repairs[0]["kind"]
+
+
+def test_fill_needs_printed_lines_and_can_be_off():
+    rows = [GRID[0], ["4.44", "5.85", "6.66"], GRID[2]]
+    assert verify_table(_labelled(rows), PRINTED).status == "unresolved"
+    assert verify_table(_labelled(rows), PRINTED, printed_lines=[], fill=False).status == "unresolved"
+
+
+def test_fill_puts_a_lost_value_into_its_empty_cell():
+    rows = [GRID[0], ["4.44", "", "6.66"], GRID[2]]
+    check = verify_table(_labelled(rows), PRINTED, printed_lines=[])
+    assert check.status == "repaired" and _cells(check) == [("", "5.55")]
+
+
+def test_fill_places_an_empty_row_by_its_label():
+    rows = [GRID[0], ["", "", ""], GRID[2]]
+    lines = [("Bravo 4.44 5.55 6.66", (20, 30, 320, 38))]
+    check = verify_table(_labelled(rows), PRINTED, printed_lines=lines)
+    assert check.status == "repaired" and sorted(a for _b, a in _cells(check)) == ["4.44", "5.55", "6.66"]
+    # Without the label line the row's position is unknown: nothing is filled.
+    assert verify_table(_labelled(rows), PRINTED, printed_lines=[]).status == "unresolved"
+
+
+def test_fill_appends_a_lost_standard_error_with_its_brackets():
+    printed = []
+    for r, row in enumerate([["1.11", "2.22", "3.33"], ["4.44", "5.55", "6.66"]]):
+        for c, v in enumerate(row):
+            printed.append(ptok(v, 100 + 100 * c, 10 + 40 * r))
+            se = ptok(f"0.{v[0] * 2}", 100 + 100 * c, 22 + 40 * r)
+            se.pre, se.post = "(", ")"
+            printed.append(se)
+    cells = [[f"{t.text}<br/>({s.text})" for t, s in zip(printed[i:i + 6:2], printed[i + 1:i + 6:2])]
+             for i in (0, 6)]
+    cells[1][1] = "5.55"  # its standard error (0.55) lost
+    check = verify_table(_labelled(cells), printed, printed_lines=[])
+    assert check.status == "repaired" and _cells(check) == [("", "0.55")]
+    assert "5.55<br/>(0.55)" in check.html
+
+
+def test_fill_refuses_an_inferred_sign():
+    printed = [t for t in PRINTED if t.text != "5.55"] + [ptok("-5.55", 200, 30)]
+    printed[-1].sign_source = "control_glyph"
+    rows = [GRID[0], ["4.44", "", "6.66"], GRID[2]]
+    check = verify_table(_labelled(rows), printed, printed_lines=[])
+    assert check.status == "unresolved" and not _cells(check)
+
+
+def test_fill_refuses_empty_cells_when_stars_are_not_in_the_text_layer():
+    rows = [["1.11**", "2.22", "3.33"], ["4.44", "", "6.66"], GRID[2]]
+    assert verify_table(_labelled(rows), PRINTED, printed_lines=[]).status == "unresolved"
+    starred = [("1.11** 2.22 3.33", (100, 10, 320, 18))]
+    assert verify_table(_labelled(rows), PRINTED, printed_lines=starred).status == "repaired"
+
+
+def test_fill_leaves_a_misplaced_value_alone():
+    # 6.66 sits in row 1's line of print but Surya put it in row 0; 3.33 is lost.
+    rows = [["1.11", "2.22", "6.66"], ["4.44", "5.55", ""], GRID[2]]
+    check = verify_table(_labelled(rows), PRINTED, printed_lines=[])
+    assert check.status == "unresolved" and not _cells(check)

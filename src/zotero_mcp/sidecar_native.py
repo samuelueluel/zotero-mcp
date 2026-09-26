@@ -61,6 +61,8 @@ _DIGITS = frozenset("0123456789")
 _ORDINALS = frozenset({"st", "nd", "rd", "th"})
 #: Parenthesised small integers in one row, e.g. ``(1) (2) (3)``, are column numbers.
 COLNUM_MAX = 30
+_PRE_MARKS = "(["
+_POST_MARKS = ")]*\u2217\u2020\u2021%"
 COLNUM_MIN_RUN = 3
 #: Instances of one odd glyph rendered to classify its shape.
 SHAPE_SAMPLES = 5
@@ -97,6 +99,11 @@ class NativeToken:
     dash_before: bool = False
     #: On a line that runs top to bottom on the displayed page (a sideways table).
     vertical: bool = False
+    #: Brackets printed directly before the number, and brackets, stars,
+    #: daggers or a percent sign directly after it: ``(`` and ``)`` of a
+    #: standard error, ``**`` of a coefficient.
+    pre: str = ""
+    post: str = ""
 
     @property
     def magnitude(self) -> str:
@@ -715,6 +722,12 @@ def native_number_tokens(
                         dash_before = not negative and 0 <= k < start - 1 and line[k][0] in KNOWN_MINUS
                         paren = (before == "(" and after == ")" and not negative
                                  and body.isdigit() and 0 < int(body) <= COLNUM_MAX)
+                        k = start
+                        while k > 0 and start - k < 2 and line[k - 1][0] in _PRE_MARKS:
+                            k -= 1
+                        m = idx[-1] + 1
+                        while m < n and m - idx[-1] <= 5 and line[m][0] in _POST_MARKS:
+                            m += 1
                         found.append((NativeToken(
                             text=("-" if negative else "") + body,
                             negative=negative,
@@ -731,6 +744,8 @@ def native_number_tokens(
                             glued=glued,
                             dash_before=dash_before,
                             vertical=bool(vertical),
+                            pre="".join(c[0] for c in line[k:start]),
+                            post="".join(c[0] for c in line[idx[-1] + 1:m]).replace("\u2217", "*"),
                         ), vertical, paren))
                         last_end = idx[-1]
                     else:

@@ -139,3 +139,15 @@ def test_rotated_page_clip_uses_displayed_coordinates():
     toks = native_number_tokens(page, 85, clip=(108, 78, 710, 284), profile=glyph_profile(doc))
     texts = [t.text for t in toks]
     assert len(texts) > 60 and {"5411", "5415", "55"} <= set(texts)
+
+
+def test_tokens_carry_printed_brackets_and_stars():
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 100), "Age   0.512**   (0.034)   [1.5]   7")
+    toks = {t.text: t for t in native_number_tokens(page, 1)}
+    assert (toks["0.512"].pre, toks["0.512"].post) == ("", "**")
+    assert (toks["0.034"].pre, toks["0.034"].post) == ("(", ")")
+    assert (toks["1.5"].pre, toks["1.5"].post) == ("[", "]")
+    assert (toks["7"].pre, toks["7"].post) == ("", "")
