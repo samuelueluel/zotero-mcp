@@ -110,6 +110,9 @@ class NativeToken:
     #: For an estimate without stars of its own: the stars printed after the
     #: bracketed standard error directly below it (:func:`_attach_se_stars`).
     se_stars: str = ""
+    #: Digit groups joined across a thin space after a comma (TeX "1, 000").
+    #: Only table checks read it as one number; prose splits it again.
+    spaced_group: bool = False
 
     @property
     def magnitude(self) -> str:
@@ -577,6 +580,24 @@ def _group_sep(line, j: int, out: list[str], digit) -> bool:
             and not (len(ahead) == 4 and digit(ahead[3])))
 
 
+def _math_group_sep(line, j: int, out: list[str], digit) -> bool:
+    """A comma at ``line[j]`` then a thin space and exactly three digits.
+
+    TeX math mode sets ``1,000`` with a thin space after the comma (about a
+    sixth of an em); a word space is about a third. At most three digits may
+    come before the first group, and no decimal point.
+    """
+    if "." in out or len(line) < j + 5 or line[j + 1][0] != " ":
+        return False
+    if out.count(",") == 0 and len(out) > 3:
+        return False
+    space, first = line[j + 1][2], line[j + 2][2]
+    height = first[3] - first[1]
+    ahead = line[j + 2:j + 6]
+    return (height > 0 and (space[2] - space[0]) < 0.2 * height
+            and all(digit(c) for c in ahead[:3]) and not (len(ahead) == 4 and digit(ahead[3])))
+
+
 def _mark_colnums(found: list[tuple[NativeToken, bool, bool]]) -> None:
     """Tag ``(1) (2) (3)`` rows: parenthesised integers sharing a row, >= 3 in sequence."""
     for vertical in (False, True):
@@ -682,6 +703,7 @@ def native_number_tokens(
             if body_at < n and digit_start(line[body_at]):
                 idx: list[int] = []
                 out: list[str] = []
+                thin_group = False
                 j = body_at
                 while j < n:
                     c = line[j]
@@ -691,6 +713,13 @@ def native_number_tokens(
                         j += 1
                         continue
                     s = sep(c)
+                    if s == "," and _math_group_sep(line, j, out, digit):
+                        # TeX math prints "1,000" as "1," thin space "000".
+                        idx.append(j)
+                        out.append(s)
+                        thin_group = True
+                        j += 2
+                        continue
                     if s is None or (s == "," and not _group_sep(line, j, out, digit)):
                         break
                     if j + 1 < n and digit(line[j + 1]):
@@ -764,6 +793,7 @@ def native_number_tokens(
                             pre="".join(c[0] for c in line[k:start]),
                             post=post,
                             stars=stars,
+                            spaced_group=thin_group,
                         ), vertical, paren))
                         last_end = idx[-1]
                     else:

@@ -166,3 +166,21 @@ def test_stars_after_a_space_and_after_the_standard_error():
     assert toks["26.32"].stars == "***"
     assert toks["0.0252"].stars == "" and toks["0.0252"].se_stars == "**"
     assert toks["0.0141"].stars == "**"
+
+
+def test_tex_thin_space_thousands_join_but_word_spaces_do_not():
+    from zotero_mcp.sidecar_native import _math_group_sep
+
+    def line(text, space_width):
+        chars, x = [], 0.0
+        for ch in text:
+            w = space_width if ch == " " else 5.0
+            chars.append((ch, "cmr10", (x, 0.0, x + w, 10.0)))
+            x += w
+        return chars
+
+    digit = lambda c: c[0].isdigit()  # noqa: E731
+    assert _math_group_sep(line("1, 000", 1.6), 1, ["1"], digit)  # TeX thin space
+    assert not _math_group_sep(line("22, 301", 3.3), 2, ["2", "2"], digit)  # word space
+    assert not _math_group_sep(line("1, 0000", 1.6), 1, ["1"], digit)  # four digits
+    assert not _math_group_sep(line("0.5, 100", 1.6), 3, ["0", ".", "5"], digit)  # decimal first

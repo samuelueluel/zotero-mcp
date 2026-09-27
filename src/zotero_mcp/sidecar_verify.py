@@ -39,6 +39,12 @@ _MINUS_CHARS = "\u2212\u2afa\u2013\u2014\u2012\u2010\u2011\ufe63\uff0d-"
 _NUM_RE = re.compile(
     rf"(?<![\d.])[{_MINUS_CHARS}]?(?:\d{{1,3}}(?:,\d{{3}})+(?!\d)(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
 )
+# In table cells one space may follow the comma: TeX math sets "1,000" as
+# "1, 000", and the text layer (and Surya copying it) keeps that space. Not in
+# prose, where "22, 301" is a volume and a page.
+_CELL_NUM_RE = re.compile(
+    rf"(?<![\d.])[{_MINUS_CHARS}]?(?:\d{{1,3}}(?:, ?\d{{3}})+(?!\d)(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
+)
 _ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.S | re.I)
 _CELL_RE = re.compile(r"<(t[dh])\b([^>]*)>(.*?)</\1>", re.S | re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -48,7 +54,7 @@ _EST_SE_RE = re.compile(r"(\d\**)\s*(?=[\[(][-\u2212]?\.?\d)")
 
 
 def normalize_number(raw: str) -> str:
-    text = raw.strip().rstrip(",.")
+    text = raw.strip().rstrip(",.").replace(", ", ",")
     if text and text[0] in _MINUS_CHARS:
         text = "-" + text[1:]
     return text
@@ -58,9 +64,9 @@ def _fragment_text(fragment: str) -> str:
     return _TAG_RE.sub(" ", fragment).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
-def _plain_numbers(plain: str) -> list[str]:
+def _plain_numbers(plain: str, pattern: re.Pattern = _NUM_RE) -> list[str]:
     out = []
-    for m in _NUM_RE.finditer(plain):
+    for m in pattern.finditer(plain):
         n = normalize_number(m.group(0))
         if any(c.isdigit() for c in n):
             out.append(n)
@@ -84,7 +90,7 @@ def cell_numbers(fragment: str) -> list[str]:
     punctuation. An exponent keeps its minus: ``9.38 E – 06`` gives ``-06``.
     """
     plain = _EXP_MINUS_RE.sub(r"\1-", _fragment_text(fragment))
-    nums = _plain_numbers(plain)
+    nums = _plain_numbers(plain, _CELL_NUM_RE)
     if nums and not nums[0].startswith("-") and _LEAD_MINUS_RE.match(plain):
         nums[0] = "-" + nums[0]
     return nums

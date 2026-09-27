@@ -257,7 +257,9 @@ def _check_text_numbers(fragment: str, tokens) -> tuple[str, list[dict]]:
     nums = text_numbers(fragment)
     if not nums:
         return "no-numbers", []
-    pool = Counter(t.text for t in tokens)
+    # In prose "170, 182" is two numbers even when set with a thin space.
+    pool = Counter(part for t in tokens
+                   for part in (t.text.split(",") if t.spaced_group else [t.text]) if part)
     missing = []
     for n in nums:
         if pool[n] > 0:

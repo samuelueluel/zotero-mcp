@@ -430,3 +430,8 @@ def test_table_without_a_text_layer_is_marked():
     check = verify_table(TABLE.format(a="-.007", b="-.218"), [])
     assert check.status == "single-route"
     assert any(f.kind == "no_text_layer" for f in check.findings)
+
+
+def test_cells_read_tex_thousands_but_prose_does_not():
+    assert cell_numbers("Presidential election, 3, 107 Observations") == ["3,107"]
+    assert text_numbers("Journal of Urban Affairs, 22, 301-315") == ["22", "301", "315"]
