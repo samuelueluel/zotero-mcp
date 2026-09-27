@@ -943,6 +943,10 @@ def verify_table(
 
     if not native:
         check.status = "single-route"
+        if surya:
+            # A picture of a table on a born-digital page (pasted software
+            # output): nothing to check against, like a scanned page.
+            check.findings.append(Finding("no_text_layer", "the table has no PDF text layer (an image)"))
         return check
 
     # Formula tables: digits are subscripts/exponents inside LaTeX, which the

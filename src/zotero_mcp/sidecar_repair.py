@@ -22,8 +22,8 @@ ways the text layer cannot catch, so the page must be looked at before use.
 Anything else leaves the block ``unresolved`` with its numbers withheld and a
 ``vlm_repair_failed`` finding. No second attempt, no free-form correction.
 
-Second reading: each ``single-route`` table on a scanned page or OCR text
-layer is also read by the VLM. If both readings hold the same numbers column
+Second reading: each ``single-route`` table on a scanned page, an OCR text
+layer, or a picture without a text layer is also read by the VLM. If both readings hold the same numbers column
 by column (:func:`sidecar_verify.readings_agree`), the table keeps its status
 and gains a ``vlm_agreement`` finding; otherwise nothing visible changes.
 The model's reading is never used as the table text.
@@ -111,7 +111,8 @@ def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
     meta, blocks = record["meta"], record["blocks"]
     targets = [b for b in blocks if b["label"] == "Table" and b["status"] == "unresolved"]
     second = [b for b in blocks if b["label"] == "Table" and b["status"] == "single-route"
-              and (b.get("scan_like") or b.get("ocr_layer"))
+              and (b.get("scan_like") or b.get("ocr_layer")
+                   or any(f["kind"] == "no_text_layer" for f in b["findings"]))
               and not any(f["kind"] in ("vlm_agreement", "vlm_rewrite") for f in b["findings"])
               and "vlm_second_read" not in b]
     summary = {"item_key": item_key, "attempted": len(targets), "accepted": 0, "rejected": 0,

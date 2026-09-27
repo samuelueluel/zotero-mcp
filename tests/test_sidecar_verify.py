@@ -424,3 +424,9 @@ def test_stars_the_text_layer_does_not_print_demote_the_table():
     sparse = _starred({"1.11": "**"})
     assert verify_table(_labelled([["1.11**", "2.22", "3.33"], ["4.44**", "5.55", "6.66"], GRID[2]]),
                         sparse).status == "verified"
+
+
+def test_table_without_a_text_layer_is_marked():
+    check = verify_table(TABLE.format(a="-.007", b="-.218"), [])
+    assert check.status == "single-route"
+    assert any(f.kind == "no_text_layer" for f in check.findings)

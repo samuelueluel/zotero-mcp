@@ -171,8 +171,8 @@ def _status_line(block: dict) -> str | None:
         return f"[Table status: REPAIRED ({how}). Check PDF p. {page} before quoting.]"
     kinds = {f["kind"] for f in block["findings"]}
     if "vlm_agreement" in kinds and "vlm_rewrite" not in kinds and "label_text_lost" not in kinds:
-        return (f"[Table status: SINGLE-ROUTE (scanned page; Surya and a second model agree on every number, "
-                f"no PDF text layer to confirm them). Check PDF p. {page} before quoting decisive numbers.]")
+        return (f"[Table status: SINGLE-ROUTE (no PDF text layer; Surya and a second model agree on every number, "
+                f"nothing else confirms them). Check PDF p. {page} before quoting decisive numbers.]")
     if kinds & {"vlm_rewrite", "label_text_lost", "header_structure", "stars_unconfirmed"}:
         lost = next((f["values"] for f in block["findings"] if f["kind"] == "label_text_lost"), [])
         why = ("re-read by a second model" if "vlm_rewrite" in kinds else
