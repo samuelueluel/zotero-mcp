@@ -435,3 +435,24 @@ def test_table_without_a_text_layer_is_marked():
 def test_cells_read_tex_thousands_but_prose_does_not():
     assert cell_numbers("Presidential election, 3, 107 Observations") == ["3,107"]
     assert text_numbers("Journal of Urban Affairs, 22, 301-315") == ["22", "301", "315"]
+
+
+def test_formula_table_is_verified_when_the_full_check_passes():
+    html = ("<table><tr><th></th><th>Coef</th></tr>"
+            "<tr><td><math>\\rho</math></td><td>0.512</td></tr>"
+            "<tr><td><math>\\beta_1</math></td><td>0.634</td></tr></table>")
+    subscript = tok("1")
+    subscript.role = "label"  # the text layer's subscript of beta_1
+    assert verify_table(html, [tok("0.512"), tok("0.634"), subscript]).status == "verified"
+    # A disagreement keeps the old formula-table result, never unresolved.
+    check = verify_table(html, [tok("0.512"), tok("0.684"), subscript])
+    assert check.status == "single-route"
+    assert [f.kind for f in check.findings if f.kind == "math_table"] == ["math_table"]
+
+
+def test_a_table_of_formulas_stays_single_route():
+    html = ("<table><tr><th></th><th>Value</th></tr>"
+            "<tr><td>a</td><td><math>\\frac{1}{2}\\beta</math></td></tr>"
+            "<tr><td>b</td><td><math>1 - \\alpha</math></td></tr></table>")
+    native = [tok("1"), tok("2"), tok("1")]
+    assert verify_table(html, native).status == "single-route"

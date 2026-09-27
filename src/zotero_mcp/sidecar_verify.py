@@ -166,6 +166,8 @@ _THEAD_RE = re.compile(r"<thead\b[^>]*>(.*?)</thead>", re.S | re.I)
 _SCRIPT_RE = re.compile(r"<(sup|sub)\b[^>]*>(.*?)</\1>", re.S | re.I)
 _COLNUM_RE = re.compile(r"^\(\d{1,2}\)$")
 _MATH_RE = re.compile(r"<math\b[^>]*>.*?</math>", re.S | re.I)
+#: Share of LaTeX cells from which a table counts as a formula table.
+MATH_TABLE_SHARE = 0.25
 _LATEX_CMD_RE = re.compile(r"\\[A-Za-z]+")
 _THOUSANDS_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d*)?")
 
@@ -904,6 +906,7 @@ def verify_table(
     context_html: Iterable[str] = (),
     printed_lines: list[tuple[str, tuple]] | None = None,
     fill: bool = True,
+    _formula_attempt: bool = False,
 ) -> TableCheck:
     """Compare one Surya table with native tokens from the same region.
 
@@ -931,6 +934,14 @@ def verify_table(
     only if it passes, as ``repaired`` (or ``single-route`` when labels are
     lost); otherwise the original check stands. ``fill=False`` skips it.
 
+    A formula table (at least :data:`MATH_TABLE_SHARE` of its cells LaTeX)
+    whose LaTeX sits in labels (under that share of its body cells outside the
+    stub column) gets the full check too, and keeps its result only when that
+    passes as ``verified`` or ``repaired``: the numbers then match the text
+    layer one to one like any other table. Tables of formulas never do. Otherwise digits inside LaTeX may be what
+    disagrees, so the table is ``single-route`` with a ``math_table`` finding,
+    as before, never ``unresolved``.
+
     ``native_tokens`` should be clipped to the table's region in displayed-page
     coordinates. ``context_numbers`` are numbers that legitimately appear in
     the region but outside the table body (captions, notes); they are removed
@@ -938,6 +949,7 @@ def verify_table(
     or with a ``label``/``colnum`` role never count as truncation.
     """
     native = list(native_tokens)
+    source_html = html
     html, merged = split_estimate_se(html)
     rows = parse_rows(html)
     roled = numbers_with_roles(html)
@@ -960,7 +972,15 @@ def verify_table(
     # the table like display math.
     all_cells = [c for r in rows for c in r]
     math_cells = [c for c in all_cells if _MATH_RE.search(c.inner)]
-    if all_cells and len(math_cells) / len(all_cells) >= 0.25:
+    if all_cells and len(math_cells) / len(all_cells) >= MATH_TABLE_SHARE and not _formula_attempt:
+        # Only when the LaTeX is in the labels: data cells that are formulas
+        # hold far more than the digits the text layer can confirm.
+        body = [c for r in _layout(html) if not r.header for _ci, col, c in r.placed if col > 0]
+        if body and sum(bool(_MATH_RE.search(c.inner)) for c in body) / len(body) < MATH_TABLE_SHARE:
+            full = verify_table(source_html, native, context_numbers, native_is_ocr, printed_words,
+                                context_html, printed_lines, fill, _formula_attempt=True)
+            if full.status in ("verified", "repaired"):
+                return full
         check.status = "single-route"
         check.findings.append(Finding(
             "math_table", f"{len(math_cells)} of {len(all_cells)} cells are LaTeX; no text-layer check"))
