@@ -32,6 +32,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -153,6 +154,21 @@ def stop_vlm() -> None:
 
 # ---------------------------------------------------------------- items
 
+_APPENDIX_RE = re.compile(r"appendix|supplement|online[ _-]?material", re.I)
+
+
+def _is_appendix(pdf: Path) -> bool:
+    """An online appendix or supplement: by file name, or by its first line of text."""
+    if _APPENDIX_RE.search(pdf.name):
+        return True
+    try:
+        with pymupdf.open(pdf) as doc:
+            head = doc[0].get_text()[:120] if len(doc) else ""
+    except Exception:  # noqa: BLE001 - an unreadable file is not a main text either
+        return False
+    return bool(_APPENDIX_RE.search(" ".join(head.split()[:4])))
+
+
 def resolve_items(config_path: Path, collection: str | None, keys: list[str]) -> tuple[list[ItemJob], dict]:
     """Return one ItemJob per parent with exactly one resolvable PDF, plus skip reasons."""
     from .local_db import LocalZoteroReader
@@ -173,10 +189,16 @@ def resolve_items(config_path: Path, collection: str | None, keys: list[str]) ->
                     or str(rp or "").lower().endswith(".pdf")
                 if is_pdf and rp and Path(rp).is_file():
                     pdfs.append((str(att.get("key") or ""), Path(rp)))
+            note = ""
+            if len(pdfs) > 1:
+                main = [p for p in pdfs if not _is_appendix(p[1])]
+                if len(main) == 1:
+                    note = f"{len(pdfs)} PDFs; using {main[0][1].name}, appendix not indexed"
+                    pdfs = main
             if len(pdfs) != 1:
                 skipped[key] = f"{len(pdfs)} resolvable PDFs"
                 continue
-            jobs.append(ItemJob(key, pdfs[0][1], attachment_key=pdfs[0][0]))
+            jobs.append(ItemJob(key, pdfs[0][1], attachment_key=pdfs[0][0], note=note))
     return jobs, skipped
 
 
@@ -448,6 +470,9 @@ def main(argv: list[str] | None = None) -> int:
     log(run_dir, f"run {args.run}: {len(jobs)} items, {len(skipped)} skipped, stages={','.join(stages)}")
     for k, why in skipped.items():
         log(run_dir, f"skip {k}: {why}")
+    for j in jobs:
+        if j.note:
+            log(run_dir, f"note {j.item_key}: {j.note}")
 
     t = time.time()
     try:

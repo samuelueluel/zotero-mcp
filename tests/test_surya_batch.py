@@ -172,3 +172,18 @@ def test_seed_reassembles_from_the_seed_run_and_never_runs_ocr(tmp_path, monkeyp
     assert not s.done("B", "ocr") and not s.done("C", "ocr")
     assert "PDF changed" in s.item("B")["errors"][0]["msg"]
     assert "no OCR" in s.item("C")["errors"][0]["msg"]
+
+
+def test_appendix_pdfs_are_recognised(tmp_path):
+    import pymupdf
+
+    def pdf(name, first_line):
+        doc = pymupdf.open()
+        doc.new_page().insert_text((50, 50), first_line)
+        path = tmp_path / name
+        doc.save(path)
+        return path
+
+    assert surya_batch._is_appendix(pdf("Notowidigdo_APPENDIX.pdf", "Online Appendix for"))
+    assert surya_batch._is_appendix(pdf("paper2.pdf", "Online Appendix A"))
+    assert not surya_batch._is_appendix(pdf("Bruhn-2017.pdf", "CRIME AND PUBLIC HOUSING"))

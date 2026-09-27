@@ -86,6 +86,8 @@ class ItemJob:
     item_key: str
     pdf_path: Path
     attachment_key: str | None = None
+    #: Why this PDF was chosen among several (logged by the batch driver).
+    note: str = ""
     pages: dict[str, dict] = field(default_factory=dict)  # image stem -> page meta
     pdf_sha256: str = ""
 
