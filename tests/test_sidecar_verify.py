@@ -456,3 +456,31 @@ def test_a_table_of_formulas_stays_single_route():
             "<tr><td>b</td><td><math>1 - \\alpha</math></td></tr></table>")
     native = [tok("1"), tok("2"), tok("1")]
     assert verify_table(html, native).status == "single-route"
+
+
+def test_header_rowspan_spilling_into_the_body_is_cut_back():
+    from zotero_mcp.sidecar_verify import clamp_header_rowspans
+    html = ('<table><tr><th rowspan="3">Method</th><th colspan="2">P</th></tr>'
+            "<tr><th>a</th><th>b</th></tr>"
+            "<tr><td>OLS</td><td>1</td><td>2</td></tr><tr><td>X</td><td>3</td><td>4</td></tr></table>")
+    fixed, n = clamp_header_rowspans(html)
+    assert n == 1 and 'rowspan="2">Method' in fixed
+    # A rowspan that covers a body row with no cell of its own is left alone.
+    ok = '<table><tr><th rowspan="2">M</th><th>a</th></tr><tr><td>1</td></tr><tr><td>X</td><td>3</td></tr></table>'
+    assert clamp_header_rowspans(ok) == (ok, 0)
+
+
+def test_headers_printed_over_other_columns_demote_the_table():
+    from zotero_mcp.sidecar_verify import misplaced_headers
+    # Page: stub | (param) | mean | std ; the HTML header row lacks the param column.
+    html = ("<table><tr><th>Variables</th><th>mean</th><th>std</th></tr>"
+            "<tr><td>Constant</td><td>(a)</td><td>0.0123</td><td>0.0222</td></tr>"
+            "<tr><td>Slope</td><td>(b)</td><td>1.9708</td><td>0.0419</td></tr></table>")
+    native = [ptok("0.0123", 200, 30), ptok("0.0222", 300, 30), ptok("1.9708", 200, 50), ptok("0.0419", 300, 50)]
+    words = [("Variables", (10, 10, 60, 18)), ("mean", (200, 10, 220, 18)), ("std", (300, 10, 315, 18))]
+    assert misplaced_headers(html, native, words)
+    check = verify_table(html, native, printed_word_boxes=words)
+    assert check.status == "single-route" and any(f.kind == "header_structure" for f in check.findings)
+    right = html.replace("<th>Variables</th>", "<th>Variables</th><th></th>")
+    assert not misplaced_headers(right, native, words)
+    assert verify_table(right, native, printed_word_boxes=words).status == "verified"

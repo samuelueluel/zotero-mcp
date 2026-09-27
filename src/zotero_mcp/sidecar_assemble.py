@@ -82,6 +82,25 @@ class PageText:
                              max(c[2][2] for c in inside), max(c[2][3] for c in inside))))
         return out
 
+    def word_boxes(self, clip) -> list[tuple[str, tuple[float, float, float, float]]]:
+        """Words of the upright text-layer lines inside ``clip``, with displayed-page boxes."""
+        out = []
+        for vertical, chars in self.lines:
+            if vertical:
+                continue
+            word: list = []
+            for ch in [*chars, (" ", "", (0, 0, 0, 0))]:
+                if not ch[0].isspace():
+                    word.append(ch)
+                    continue
+                if word:
+                    box = (min(c[2][0] for c in word), min(c[2][1] for c in word),
+                           max(c[2][2] for c in word), max(c[2][3] for c in word))
+                    if clip[0] <= (box[0] + box[2]) / 2 <= clip[2] and clip[1] <= (box[1] + box[3]) / 2 <= clip[3]:
+                        out.append(("".join(c[0] for c in word), box))
+                word = []
+        return out
+
     def ocr_layer(self, clip) -> bool:
         """True when the text under ``clip`` is mostly invisible OCR text over an image."""
         if self._trace is None:
@@ -329,7 +348,8 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                     printed_words=None if lines is None else [t for t, _b in lines],
                     context_html=neighbour_html(
                         pdf_bbox, [(r["html"], bb, r["label"]) for r, _b, bb in page_recs if r is not rec]),
-                    printed_lines=lines)
+                    printed_lines=lines,
+                    printed_word_boxes=None if ocr else text.word_boxes(pdf_bbox))
                 if any(r.get("route") in ("native_cell", "native_stars") for r in check.repairs):
                     rec["surya_html"] = rec["html"]
                 rec["status"] = check.status

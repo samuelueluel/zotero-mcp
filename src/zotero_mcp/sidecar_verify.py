@@ -151,7 +151,7 @@ class TableCheck:
 
 STRUCTURAL = {"empty_body_column", "merged_estimate_se", "label_or_header_mismatch", "duplicate_rows"}
 #: Findings that never change status and are left out of the status line.
-INFORMATIONAL = {"merged_estimate_se", "label_or_header_mismatch", "format_variant", "split_token",
+INFORMATIONAL = {"merged_estimate_se", "header_rowspan_clamped", "label_or_header_mismatch", "format_variant", "split_token",
                  "ocr_detached_dash", "native_label_unmatched", "native_outside_table",
                  "text_layer_fill_failed"}
 #: A table needs at least this many anchors (values unique on both sides) for
@@ -348,6 +348,52 @@ def _layout(html: str) -> list[_Row]:
         in_header = header
         out.append(_Row(r, segment, header, placed, width))
     return out
+
+
+def clamp_header_rowspans(html: str) -> tuple[str, int]:
+    """Stop header cells' rowspans at the end of the header block.
+
+    Surya sometimes gives the stub header (``Method``) one row too many, so
+    it covers the first body row's stub cell and pushes that whole row one
+    column right. Only when the spill makes that body row wider than the
+    header: then the body row has its own cell where the rowspan lands.
+    """
+    rows = _layout(html)
+    fix: dict[tuple[int, int], int] = {}
+    i = 0
+    while i < len(rows):
+        if not rows[i].header:
+            i += 1
+            continue
+        start = i
+        while i < len(rows) and rows[i].header:
+            i += 1
+        # rows[start:i] is a header block; rows[i] the first body row after it
+        if i == len(rows) or rows[i].width <= max(r.width for r in rows[start:i]):
+            continue
+        fix.update({(r.index, ci): i - r.index for r in rows[start:i] for ci, _col, c in r.placed
+                    if c.rowspan > 1 and r.index + c.rowspan > i})
+    if not fix:
+        return html, 0
+
+    def row_sub(rm: re.Match, r=[-1]) -> str:
+        r[0] += 1
+        k = [-1]
+
+        def cell_sub(cm: re.Match) -> str:
+            k[0] += 1
+            span = fix.get((r[0], k[0]))
+            if span is None:
+                return cm.group(0)
+            attrs = _ROWSPAN_ATTR_RE.sub("" if span == 1 else f' rowspan="{span}"', cm.group(2))
+            return f"<{cm.group(1)}{attrs}>{cm.group(3)}</{cm.group(1)}>"
+
+        return rm.group(0).replace(rm.group(1), _CELL_RE.sub(cell_sub, rm.group(1)), 1)
+
+    return _ROW_RE.sub(row_sub, html), len(fix)
+
+
+_ROWSPAN_ATTR_RE = re.compile(r'\s*rowspan\s*=\s*"?\d+"?', re.I)
 
 
 def _data_cell(col: int, c: Cell) -> bool:
@@ -860,6 +906,85 @@ def _spaced_group(t: NativeToken, tokens: list[NativeToken]) -> bool:
                for o in tokens)
 
 
+_HEADER_WORD_RE = re.compile(r"[A-Za-z]{3,}")
+_BR_RE = re.compile(r"<br\s*/?>", re.I)
+
+
+def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
+                      word_boxes: list[tuple[str, tuple]]) -> list[str]:
+    """Column headers the HTML puts over a different column than the page prints them.
+
+    Per panel, each data column's printed band comes from its anchored values
+    (rows of the panel's usual width, so one shifted row cannot move it). A
+    header cell is located by its least repeated word among the printed words
+    above the data; a word used by several header cells is paired with its
+    printed occurrences left to right, only when both counts agree. A header
+    printed inside another column's band and clear of every column it spans
+    in the HTML is misplaced. So is a labelled header cell in a column no
+    body row reaches. Upright tables only; ``word_boxes`` are the region's
+    text-layer words with displayed-page boxes.
+    """
+    rows = _layout(html)
+    if not rows or not word_boxes:
+        return []
+    anchors = _anchor_list(_data_grid(html), list(native_tokens))
+    out: list[str] = []
+    body_width = max((r.width for r in rows if not r.header), default=0)
+    for row in rows:
+        if row.header:
+            for _ci, col, c in row.placed:
+                if col >= body_width and _HEADER_WORD_RE.search(_label_text(_BR_RE.sub(" ", c.inner))):
+                    out.append(f"header in column {col + 1}, beyond the data")
+    segments: dict[int, list[_Row]] = {}
+    for r in rows:
+        segments.setdefault(r.segment, []).append(r)
+    for seg, srows in segments.items():
+        body = [r for r in srows if not r.header]
+        heads = [r for r in srows if r.header]
+        if not body or not heads:
+            continue
+        usual = Counter(r.width for r in body).most_common(1)[0][0]
+        rows_ok = {r.index for r in body if r.width == usual}
+        boxes: dict[int, list[tuple]] = {}
+        for (sg, r, _line, col, _cr, _n), t in anchors:
+            if sg == seg and r in rows_ok and not t.vertical:
+                boxes.setdefault(col, []).append(t.bbox)
+        if len(boxes) < 2:
+            continue
+        bands = {c: (min(b[0] for b in v), max(b[2] for b in v)) for c, v in boxes.items()}
+        top = min(b[1] for v in boxes.values() for b in v)
+        cells = []
+        for row in heads:
+            for _ci, col, c in row.placed:
+                if col == 0 or not any(k in bands for k in range(col, col + c.colspan)):
+                    continue
+                words = [w.lower() for w in _HEADER_WORD_RE.findall(_label_text(_BR_RE.sub(" ", c.inner)))]
+                if words:
+                    cells.append(((col, col + c.colspan - 1), words))
+        freq = Counter(w for _span, words in cells for w in set(words))
+        by_key: dict[str, list[tuple[int, int]]] = {}
+        for span, words in cells:
+            by_key.setdefault(min(words, key=lambda w: (freq[w], words.index(w))), []).append(span)
+        for key, spans in by_key.items():
+            printed = sorted((b for w, b in word_boxes if b[3] <= top + 2 and key in w.lower()),
+                             key=lambda b: b[0])
+            if not (len(printed) == len(spans) == freq[key]):
+                continue
+            for (c0, c1), b in zip(sorted(spans), printed):
+                cx = (b[0] + b[2]) / 2
+
+                def gap(band: tuple[float, float]) -> float:
+                    return 0.0 if band[0] <= cx <= band[1] else min(abs(cx - band[0]), abs(cx - band[1]))
+
+                own = [bands[k] for k in range(c0, c1 + 1) if k in bands]
+                own_band = (min(x for x, _ in own), max(x for _, x in own))
+                best = min(bands, key=lambda k: gap(bands[k]))
+                if not c0 <= best <= c1 and gap(own_band) > 0 and gap(bands[best]) == 0:
+                    out.append(f"'{key}' printed over column {best + 1}, not {c0 + 1}"
+                               + (f"-{c1 + 1}" if c1 > c0 else ""))
+    return out
+
+
 def column_streams(html: str) -> list[tuple[str, ...]]:
     """Numbers of each logical column read top to bottom, stub column left out.
 
@@ -906,6 +1031,7 @@ def verify_table(
     context_html: Iterable[str] = (),
     printed_lines: list[tuple[str, tuple]] | None = None,
     fill: bool = True,
+    printed_word_boxes: list[tuple[str, tuple]] | None = None,
     _formula_attempt: bool = False,
 ) -> TableCheck:
     """Compare one Surya table with native tokens from the same region.
@@ -942,6 +1068,10 @@ def verify_table(
     disagrees, so the table is ``single-route`` with a ``math_table`` finding,
     as before, never ``unresolved``.
 
+    ``printed_word_boxes`` (the region's text-layer words with boxes) enable
+    :func:`misplaced_headers`: headers printed over other columns than the
+    HTML gives them cap the table at ``single-route`` (``header_structure``).
+
     ``native_tokens`` should be clipped to the table's region in displayed-page
     coordinates. ``context_numbers`` are numbers that legitimately appear in
     the region but outside the table body (captions, notes); they are removed
@@ -950,6 +1080,7 @@ def verify_table(
     """
     native = list(native_tokens)
     source_html = html
+    html, clamped = clamp_header_rowspans(html)
     html, merged = split_estimate_se(html)
     rows = parse_rows(html)
     roled = numbers_with_roles(html)
@@ -957,6 +1088,9 @@ def verify_table(
     check = TableCheck("verified", html, surya_numbers=len(surya), native_numbers=len(native))
     if merged:
         check.findings.append(Finding("merged_estimate_se", f"split {merged} estimate/uncertainty cells"))
+    if clamped:
+        check.findings.append(Finding(
+            "header_rowspan_clamped", f"{clamped} header rowspan(s) cut back to the header rows"))
     check.findings.extend(_structure(rows))
 
     if not native:
@@ -978,7 +1112,7 @@ def verify_table(
         body = [c for r in _layout(html) if not r.header for _ci, col, c in r.placed if col > 0]
         if body and sum(bool(_MATH_RE.search(c.inner)) for c in body) / len(body) < MATH_TABLE_SHARE:
             full = verify_table(source_html, native, context_numbers, native_is_ocr, printed_words,
-                                context_html, printed_lines, fill, _formula_attempt=True)
+                                context_html, printed_lines, fill, printed_word_boxes, _formula_attempt=True)
             if full.status in ("verified", "repaired"):
                 return full
         check.status = "single-route"
@@ -1217,6 +1351,8 @@ def verify_table(
         # 90-paper audit every such table had shifted, merged or missing
         # column headers while its numbers were right.
         empty = [f.detail for f in check.findings if f.kind == "empty_body_column"]
+        if not native_is_ocr and printed_word_boxes:
+            empty += misplaced_headers(check.html, native, printed_word_boxes)
         if empty or lost_colnums:
             check.status = "single-route"
             check.findings.append(Finding(
