@@ -497,3 +497,22 @@ def test_one_line_cells_centred_beside_estimates_are_in_their_row():
         native += [ptok(n, 100, y + 10), ptok(e1, 200, y), ptok(f"(0.00{r + 1})", 200, y + 10),
                    ptok(e2, 300, y), ptok(f"(0.01{r})", 300, y + 10)]
     assert misplaced_cells("<table>" + "".join(rows) + "</table>", native) == []
+
+
+def test_headers_of_a_sideways_table_are_checked_too():
+    from zotero_mcp.sidecar_verify import misplaced_headers
+    html = ("<table><tr><th>Variables</th><th>mean</th><th>std</th></tr>"
+            "<tr><td>Constant</td><td>(a)</td><td>0.0123</td><td>0.0222</td></tr>"
+            "<tr><td>Slope</td><td>(b)</td><td>1.9708</td><td>0.0419</td></tr></table>")
+
+    def turn(b):  # the upright layout rotated to read bottom to top
+        return (b[1], 400 - b[2], b[3], 400 - b[0])
+
+    native = []
+    for text, x, y in (("0.0123", 200, 30), ("0.0222", 300, 30), ("1.9708", 200, 50), ("0.0419", 300, 50)):
+        t = ptok(text, x, y)
+        t.bbox, t.vertical = turn(t.bbox), True
+        native.append(t)
+    words = [(w, turn(b), True) for w, b in
+             (("Variables", (10, 10, 60, 18)), ("mean", (200, 10, 220, 18)), ("std", (300, 10, 315, 18)))]
+    assert misplaced_headers(html, native, words)

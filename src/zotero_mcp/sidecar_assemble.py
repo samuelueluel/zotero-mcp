@@ -82,12 +82,10 @@ class PageText:
                              max(c[2][2] for c in inside), max(c[2][3] for c in inside))))
         return out
 
-    def word_boxes(self, clip) -> list[tuple[str, tuple[float, float, float, float]]]:
-        """Words of the upright text-layer lines inside ``clip``, with displayed-page boxes."""
+    def word_boxes(self, clip) -> list[tuple[str, tuple[float, float, float, float], bool]]:
+        """Words of the text-layer lines inside ``clip``: ``(word, displayed-page box, vertical)``."""
         out = []
         for vertical, chars in self.lines:
-            if vertical:
-                continue
             word: list = []
             for ch in [*chars, (" ", "", (0, 0, 0, 0))]:
                 if not ch[0].isspace():
@@ -97,7 +95,7 @@ class PageText:
                     box = (min(c[2][0] for c in word), min(c[2][1] for c in word),
                            max(c[2][2] for c in word), max(c[2][3] for c in word))
                     if clip[0] <= (box[0] + box[2]) / 2 <= clip[2] and clip[1] <= (box[1] + box[3]) / 2 <= clip[3]:
-                        out.append(("".join(c[0] for c in word), box))
+                        out.append(("".join(c[0] for c in word), box, bool(vertical)))
                 word = []
         return out
 

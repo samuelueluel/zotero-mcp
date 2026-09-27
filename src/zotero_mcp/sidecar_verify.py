@@ -28,7 +28,7 @@ from __future__ import annotations
 import html as _html
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 from .sidecar_native import AUTHORITATIVE_SIGN_SOURCES, NativeToken
@@ -943,13 +943,28 @@ def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
     printed occurrences left to right, only when both counts agree. A header
     printed inside another column's band and clear of every column it spans
     in the HTML is misplaced. So is a labelled header cell in a column no
-    body row reaches. Upright tables only; ``word_boxes`` are the region's
-    text-layer words with displayed-page boxes.
+    body row reaches. A sideways table (most anchors on vertical lines) is
+    turned into its own frame first. ``word_boxes`` are the region's
+    text-layer words: ``(word, displayed-page box[, vertical])``.
     """
     rows = _layout(html)
     if not rows or not word_boxes:
         return []
     anchors = _anchor_list(_data_grid(html), list(native_tokens))
+    page_words = [(w[0], w[1], len(w) > 2 and w[2]) for w in word_boxes]
+    flip = None  # box transform into the table's own frame for a sideways table
+    if anchors and sum(t.vertical for _k, t in anchors) * 2 > len(anchors):
+        # Columns run along the page's y axis; which way depends on the rotation.
+        pts = [(k[3], (t.bbox[1] + t.bbox[3]) / 2) for k, t in anchors]
+        mc = sum(c for c, _y in pts) / len(pts)
+        my = sum(y for _c, y in pts) / len(pts)
+        if sum((c - mc) * (y - my) for c, y in pts) < 0:  # read bottom to top
+            flip = lambda b: (-b[3], b[0], -b[1], b[2])  # noqa: E731
+        else:  # read top to bottom
+            flip = lambda b: (b[1], -b[2], b[3], -b[0])  # noqa: E731
+        anchors = [(k, replace(t, bbox=flip(t.bbox), vertical=False)) for k, t in anchors if t.vertical]
+        page_words = [(w, flip(b), False) for w, b, v in page_words if v]
+    page_words = [(w, b) for w, b, v in page_words if not v]
     out: list[str] = []
     body_width = max((r.width for r in rows if not r.header), default=0)
     for row in rows:
@@ -988,7 +1003,7 @@ def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
         for span, words in cells:
             by_key.setdefault(min(words, key=lambda w: (freq[w], words.index(w))), []).append(span)
         for key, spans in by_key.items():
-            printed = sorted((b for w, b in word_boxes if b[3] <= top + 2 and key in w.lower()),
+            printed = sorted((b for w, b in page_words if b[3] <= top + 2 and key in w.lower()),
                              key=lambda b: b[0])
             if not (len(printed) == len(spans) == freq[key]):
                 continue
