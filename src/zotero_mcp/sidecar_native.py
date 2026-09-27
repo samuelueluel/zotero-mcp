@@ -104,6 +104,12 @@ class NativeToken:
     #: standard error, ``**`` of a coefficient.
     pre: str = ""
     post: str = ""
+    #: Significance stars printed directly after the number or after one or
+    #: two spaces on its line.
+    stars: str = ""
+    #: For an estimate without stars of its own: the stars printed after the
+    #: bracketed standard error directly below it (:func:`_attach_se_stars`).
+    se_stars: str = ""
 
     @property
     def magnitude(self) -> str:
@@ -728,6 +734,17 @@ def native_number_tokens(
                         m = idx[-1] + 1
                         while m < n and m - idx[-1] <= 5 and line[m][0] in _POST_MARKS:
                             m += 1
+                        post = "".join(c[0] for c in line[idx[-1] + 1:m]).replace("\u2217", "*")
+                        stars = "".join(ch for ch in post if ch == "*")
+                        if not stars and m == idx[-1] + 1:
+                            q = m
+                            while q < n and q - m < 2 and line[q][0] == " ":
+                                q += 1
+                            r = q
+                            while q > m and r < n and r - q < 4 and line[r][0] in "*\u2217":
+                                r += 1
+                            if r > q and (r == n or not line[r][0].isdigit()):
+                                stars = "*" * (r - q)
                         found.append((NativeToken(
                             text=("-" if negative else "") + body,
                             negative=negative,
@@ -745,7 +762,8 @@ def native_number_tokens(
                             dash_before=dash_before,
                             vertical=bool(vertical),
                             pre="".join(c[0] for c in line[k:start]),
-                            post="".join(c[0] for c in line[idx[-1] + 1:m]).replace("\u2217", "*"),
+                            post=post,
+                            stars=stars,
                         ), vertical, paren))
                         last_end = idx[-1]
                     else:
@@ -756,4 +774,28 @@ def native_number_tokens(
                 continue
             i = start + 1
     _mark_colnums(found)
-    return [t for t, _v, _p in found]
+    tokens = [t for t, _v, _p in found]
+    _attach_se_stars(tokens)
+    return tokens
+
+
+def _attach_se_stars(tokens: list[NativeToken]) -> None:
+    """Note on an estimate the stars printed after its standard error.
+
+    Some layouts print ``0.0252`` over ``(0.0141)**``. Readers may put those
+    stars on either line, so the standard error keeps them and the estimate
+    gets a copy in ``se_stars``, only when it has no stars of its own and
+    the bracketed number sits directly below it, overlapping it across.
+    """
+    def bracketed(t: NativeToken) -> bool:
+        return t.pre[-1:] in ("(", "[") and t.post[:1] in (")", "]")
+
+    ses = [t for t in tokens if t.stars and bracketed(t) and not t.vertical]
+    for se in ses:
+        height = se.bbox[3] - se.bbox[1]
+        above = [t for t in tokens
+                 if t is not se and not t.vertical and not t.stars and not bracketed(t)
+                 and t.bbox[0] < se.bbox[2] and se.bbox[0] < t.bbox[2]
+                 and 0 <= se.bbox[1] - t.bbox[1] <= 2.2 * height]
+        if len(above) == 1:
+            above[0].se_stars = se.stars

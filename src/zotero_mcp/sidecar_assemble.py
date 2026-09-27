@@ -173,11 +173,12 @@ def _status_line(block: dict) -> str | None:
     if "vlm_agreement" in kinds and "vlm_rewrite" not in kinds and "label_text_lost" not in kinds:
         return (f"[Table status: SINGLE-ROUTE (scanned page; Surya and a second model agree on every number, "
                 f"no PDF text layer to confirm them). Check PDF p. {page} before quoting decisive numbers.]")
-    if kinds & {"vlm_rewrite", "label_text_lost", "header_structure"}:
+    if kinds & {"vlm_rewrite", "label_text_lost", "header_structure", "stars_unconfirmed"}:
         lost = next((f["values"] for f in block["findings"] if f["kind"] == "label_text_lost"), [])
         why = ("re-read by a second model" if "vlm_rewrite" in kinds else
                "printed labels missing: " + ", ".join(lost[:6]) if lost else
-               "column headers do not line up with the page")
+               "column headers do not line up with the page" if "header_structure" in kinds else
+               "significance stars on some values are not in the PDF text layer")
         return (f"[Table status: SINGLE-ROUTE ({why}); numbers match the PDF text layer, but row and column "
                 f"labels are unchecked. Check PDF p. {page} before quoting.]")
     return f"[Table status: SINGLE-ROUTE ({reasons}); numbers not independently confirmed. Check PDF p. {page} before quoting.]"

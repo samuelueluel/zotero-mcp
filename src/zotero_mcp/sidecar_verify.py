@@ -776,17 +776,21 @@ def fix_stars(html: str, native_tokens: Iterable[NativeToken]) -> tuple[str, lis
     """Set significance stars from the text layer where it prints them.
 
     Only anchored estimates (values unique in both the table and the text
-    layer, first line of their cell) whose text-layer token has stars
-    directly after it: there the text layer is exact, while Surya often
-    reads ``**`` as ``***``. A token without adjacent stars settles nothing
-    (stars set apart as a superscript, printed after the standard error, or
-    drawn as glyphs the text layer omits), so its cell is left alone.
+    layer, first line of their cell) whose text-layer token carries stars
+    (after the value or after a space; or after the standard error below
+    it, which only corrects a star run already in the cell): there the text layer is exact, while
+    Surya often reads ``**`` as ``***``. A token without stars settles
+    nothing (stars drawn as glyphs the text layer omits), so its cell is
+    left alone.
     """
-    stars_of: dict[tuple[int, int], tuple[str, str]] = {}
+    stars_of: dict[tuple[int, int], tuple[str, str, bool]] = {}
     for (_seg, r, line, col, _cr, n), t in _anchor_list(_data_grid(html), native_tokens):
-        want = "".join(ch for ch in t.post if ch in "*\u2217").replace("\u2217", "*")
+        want = t.stars or t.se_stars
+        # Stars after a standard error may sit on its line or the estimate's:
+        # there only correct a star run Surya already put in this cell.
+        replace_only = t.pre[-1:] in ("(", "[") or not t.stars
         if line == 0 and want:
-            stars_of[(r, col)] = (n, want)
+            stars_of[(r, col)] = (n, want, replace_only)
     if not stars_of:
         return html, []
     edits: dict[tuple[int, int], str] = {}
@@ -795,10 +799,10 @@ def fix_stars(html: str, native_tokens: Iterable[NativeToken]) -> tuple[str, lis
         for ci, col, c in row.placed:
             if (row.index, col) not in stars_of:
                 continue
-            n, want = stars_of[(row.index, col)]
+            n, want, replace_only = stars_of[(row.index, col)]
             runs = list(_STARS_RE.finditer(c.inner))
             have = "".join(m.group(0) for m in runs)
-            if have == want or len(runs) > 1:
+            if have == want or len(runs) > 1 or (replace_only and not runs):
                 continue
             if runs:
                 m = runs[0]
@@ -812,6 +816,40 @@ def fix_stars(html: str, native_tokens: Iterable[NativeToken]) -> tuple[str, lis
             repairs.append({"kind": "stars", "value": n, "before": have, "after": want,
                             "route": "native_stars", "row": row.index, "col": col})
     return (_set_cells(html, edits), repairs) if edits else (html, [])
+
+
+#: A table's text layer must attach stars to at least this many anchored
+#: values before a value without stars counts as printed without them.
+STARS_BACKED_MIN = 3
+
+
+def unbacked_stars(html: str, native_tokens: Iterable[NativeToken]) -> list[str]:
+    """Anchored values where Surya has stars the text layer does not print.
+
+    Only in tables whose text layer carries stars elsewhere, so they are not
+    drawn as glyphs it omits. Seen on the page: stars Surya added, and a
+    ``+`` marker read as ``*``.
+    """
+    tokens = list(native_tokens)
+    anchors = [(k, t) for k, t in _anchor_list(_data_grid(html), tokens) if k[2] == 0]
+    if sum(bool(t.stars or t.se_stars) for _k, t in anchors) < STARS_BACKED_MIN:
+        return []
+    bare = {(k[1], k[3]): k[5] for k, t in anchors
+            if not (t.stars or t.se_stars or t.vertical or t.pre[-1:] in ("(", "[") or _spaced_group(t, tokens))}
+    out = []
+    for row in _layout(html):
+        for _ci, col, c in row.placed:
+            if (row.index, col) in bare and _STARS_RE.search(c.inner):
+                out.append(bare[(row.index, col)])
+    return out
+
+
+def _spaced_group(t: NativeToken, tokens: list[NativeToken]) -> bool:
+    """``t`` is the head of a number printed with spaced thousands (``1 469.215``)."""
+    height = t.bbox[3] - t.bbox[1]
+    return any(o is not t and abs(o.bbox[1] - t.bbox[1]) < height / 2
+               and 0 <= o.bbox[0] - t.bbox[2] <= height / 2 and o.magnitude[:3].isdigit()
+               for o in tokens)
 
 
 def column_streams(html: str) -> list[tuple[str, ...]]:
@@ -1131,6 +1169,10 @@ def verify_table(
         if star_fixes:
             check.repairs.extend(star_fixes)
             check.status = "repaired"
+        if extra := unbacked_stars(check.html, native):
+            check.status = "single-route"
+            check.findings.append(Finding(
+                "stars_unconfirmed", "significance stars the PDF text layer does not print", extra[:40]))
         if moved := misplaced_cells(check.html, native):
             check.status = "unresolved"
             check.findings.append(Finding(

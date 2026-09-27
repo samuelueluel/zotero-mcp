@@ -151,3 +151,18 @@ def test_tokens_carry_printed_brackets_and_stars():
     assert (toks["0.034"].pre, toks["0.034"].post) == ("(", ")")
     assert (toks["1.5"].pre, toks["1.5"].post) == ("[", "]")
     assert (toks["7"].pre, toks["7"].post) == ("", "")
+
+
+def test_stars_after_a_space_and_after_the_standard_error():
+    import pymupdf
+    from zotero_mcp.sidecar_native import native_number_tokens
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=300, height=200)
+    page.insert_text((50, 50), "26.32 ***", fontsize=10)
+    page.insert_text((150, 50), "0.0252", fontsize=10)
+    page.insert_text((148, 62), "(0.0141)**", fontsize=10)
+    toks = {t.text: t for t in native_number_tokens(page, 1)}
+    assert toks["26.32"].stars == "***"
+    assert toks["0.0252"].stars == "" and toks["0.0252"].se_stars == "**"
+    assert toks["0.0141"].stars == "**"

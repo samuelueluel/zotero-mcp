@@ -383,7 +383,7 @@ def _starred(post: dict[str, str]):
     printed = []
     for t in PRINTED:
         t2 = ptok(t.text, t.bbox[0], t.bbox[1])
-        t2.post = post.get(t.text, "")
+        t2.post = t2.stars = post.get(t.text, "")
         printed.append(t2)
     return printed
 
@@ -402,3 +402,25 @@ def test_stars_without_adjacent_text_layer_stars_are_left_alone():
     rows = [["1.11***", "2.22", "3.33"], GRID[1], GRID[2]]
     check = verify_table(_labelled(rows), PRINTED)
     assert check.status == "verified" and "1.11***" in check.html
+
+
+def test_stars_after_the_standard_error_only_correct_an_existing_run():
+    # Text layer: 1.11 with no stars of its own, (0.5)** below it.
+    printed = _starred({})
+    printed[0].se_stars = "**"
+    fixed = verify_table(_labelled([["1.11***", "2.22", "3.33"], GRID[1], GRID[2]]), printed)
+    assert "1.11**<" in fixed.html and fixed.status == "repaired"
+    bare = verify_table(_labelled(GRID), printed)
+    assert bare.status == "verified" and "*" not in bare.html
+
+
+def test_stars_the_text_layer_does_not_print_demote_the_table():
+    printed = _starred({"1.11": "**", "2.22": "*", "3.33": "***"})
+    rows = [["1.11**", "2.22*", "3.33***"], ["4.44**", "5.55", "6.66"], GRID[2]]
+    check = verify_table(_labelled(rows), printed)
+    assert check.status == "single-route"
+    assert next(f for f in check.findings if f.kind == "stars_unconfirmed").values == ["4.44"]
+    # Too few printed stars to trust their absence: left alone.
+    sparse = _starred({"1.11": "**"})
+    assert verify_table(_labelled([["1.11**", "2.22", "3.33"], ["4.44**", "5.55", "6.66"], GRID[2]]),
+                        sparse).status == "verified"
