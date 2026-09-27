@@ -76,3 +76,11 @@ def test_rerank_with_scores_orders_and_scores(monkeypatch):
     assert len(ranked) == 2
     # rerank() delegates to rerank_with_scores and returns indices only.
     assert rr.rerank("q", ["no", "the match here", "no"], top_k=1) == [1]
+
+
+def test_update_lock_sits_beside_the_config_in_use(tmp_path):
+    search = semantic_search.ZoteroSemanticSearch.__new__(semantic_search.ZoteroSemanticSearch)
+    search.config_path = str(tmp_path / "zotero-mcp-shadow" / "config.json")
+    assert search._update_lock_path() == tmp_path / "zotero-mcp-shadow" / "update.lock"
+    search.config_path = None
+    assert search._update_lock_path().parts[-2:] == ("zotero-mcp", "update.lock")

@@ -982,6 +982,18 @@ class ZoteroSemanticSearch:
         """Load update configuration from file or use defaults."""
         return load_update_config(self.config_path)
 
+    def _update_lock_path(self) -> Path:
+        """The cross-process update lock, beside the config file in use.
+
+        One lock per configuration directory: the live index and a shadow
+        index (``~/.config/zotero-mcp-shadow/config.json``) can then update at
+        the same time, while two updates of one index still exclude each
+        other. Without a config file, the default directory as before.
+        """
+        if self.config_path:
+            return Path(self.config_path).expanduser().parent / "update.lock"
+        return Path.home() / ".config" / "zotero-mcp" / "update.lock"
+
     def _load_include_fulltext_setting(self) -> bool:
         """Whether to fetch fulltext via the Zotero web API during indexing.
 
@@ -2672,7 +2684,7 @@ class ZoteroSemanticSearch:
         # update_database on startup while the user may also run
         # `zotero-mcp update-db` manually. A cross-process flock avoids
         # double work and potential ChromaDB corruption.
-        lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
+        lock_path = self._update_lock_path()
         lock_cm = _acquire_update_lock(lock_path)
         acquired = lock_cm.__enter__()
         if not acquired:
@@ -3830,7 +3842,7 @@ class ZoteroSemanticSearch:
             "errors": [],
         }
 
-        lock_path = Path.home() / ".config" / "zotero-mcp" / "update.lock"
+        lock_path = self._update_lock_path()
         lock_cm = contextlib.nullcontext(True) if _skip_lock else _acquire_update_lock(lock_path)
         acquired = lock_cm.__enter__()
         if not acquired:
