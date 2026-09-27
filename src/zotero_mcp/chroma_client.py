@@ -179,6 +179,13 @@ class ChromaClient:
                 text = text[:max_chars]
         return text
 
+    @staticmethod
+    def _fts_safe(documents: list[str]) -> list[str]:
+        """Drop NUL characters: one NUL in a document leaves Chroma's FTS5
+        (trigram) index malformed ("malformed inverted index"), and OCR text
+        from Surya or MinerU occasionally carries one for an unreadable glyph."""
+        return [d.replace("\x00", "") if isinstance(d, str) and "\x00" in d else d for d in documents]
+
     def add_documents(self,
                      documents: list[str],
                      metadatas: list[dict[str, Any]],
@@ -193,7 +200,7 @@ class ChromaClient:
         """
         try:
             self.collection.add(
-                documents=documents,
+                documents=self._fts_safe(documents),
                 metadatas=metadatas,
                 ids=ids
             )
@@ -224,7 +231,7 @@ class ChromaClient:
                 max_batch = 5000
             for i in range(0, len(ids), max_batch):
                 self.collection.upsert(
-                    documents=documents[i:i + max_batch],
+                    documents=self._fts_safe(documents[i:i + max_batch]),
                     metadatas=metadatas[i:i + max_batch],
                     ids=ids[i:i + max_batch]
                 )
@@ -252,7 +259,7 @@ class ChromaClient:
                 max_batch = 5000
             for i in range(0, len(ids), max_batch):
                 self.collection.upsert(
-                    documents=documents[i:i + max_batch],
+                    documents=self._fts_safe(documents[i:i + max_batch]),
                     metadatas=metadatas[i:i + max_batch],
                     ids=ids[i:i + max_batch],
                     embeddings=embeddings[i:i + max_batch],

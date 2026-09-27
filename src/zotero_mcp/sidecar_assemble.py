@@ -326,7 +326,9 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 "pdf_bbox": [round(x, 2) for x in pdf_bbox],
                 "rotation": pm["rotation"],
                 "scan_like": pm["scan_like"],
-                "html": b.get("html", ""),
+                # Surya can emit NUL for a glyph it cannot read ("Druță" ->
+                # "Drut\x00a"); a NUL breaks Chroma's full-text index.
+                "html": b.get("html", "").replace("\x00", "\ufffd"),
                 "status": "unchecked",
                 "findings": [],
                 "repairs": [],
