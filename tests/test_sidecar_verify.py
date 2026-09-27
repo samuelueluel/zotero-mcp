@@ -484,3 +484,16 @@ def test_headers_printed_over_other_columns_demote_the_table():
     right = html.replace("<th>Variables</th>", "<th>Variables</th><th></th>")
     assert not misplaced_headers(right, native, words)
     assert verify_table(right, native, printed_word_boxes=words).status == "verified"
+
+
+def test_one_line_cells_centred_beside_estimates_are_in_their_row():
+    from zotero_mcp.sidecar_verify import misplaced_cells
+    # Each row: N printed on the standard-error line, beside estimate/SE pairs.
+    rows, native = [], []
+    for r, (n, e1, e2) in enumerate([("6502", "0.074", "0.172"), ("8678", "0.112", "0.310"),
+                                     ("9739", "0.092", "0.405"), ("1234", "0.321", "0.518")]):
+        y = 10 + 40 * r
+        rows.append(f"<tr><td>R{r}</td><td>{n}</td><td>{e1}<br/>(0.00{r + 1})</td><td>{e2}<br/>(0.01{r})</td></tr>")
+        native += [ptok(n, 100, y + 10), ptok(e1, 200, y), ptok(f"(0.00{r + 1})", 200, y + 10),
+                   ptok(e2, 300, y), ptok(f"(0.01{r})", 300, y + 10)]
+    assert misplaced_cells("<table>" + "".join(rows) + "</table>", native) == []

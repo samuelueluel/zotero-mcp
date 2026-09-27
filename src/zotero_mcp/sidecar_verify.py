@@ -481,7 +481,29 @@ def misplaced_cells(html: str, native_tokens: Iterable[NativeToken]) -> list[str
     rows: dict[tuple[int, int], list[int]] = {}
     for i, a in enumerate(anchors):
         rows.setdefault((a[0], a[1]), []).append(i)
+    # A one-line cell may be printed centred beside two-line cells (an N or a
+    # mean next to estimates over standard errors): on the second line or
+    # between the two. It is on its row when inside the span of that row's
+    # two-line cells.
+    two_line = {(r, cl) for _seg, r, line, cl, _cr, _n in _data_grid(html) if line >= 1}
+    span: dict[int, tuple[float, float]] = {}
+    for i, a in enumerate(anchors):
+        if a[1] == 0 and (a[0], a[2][1]) in two_line:
+            b = boxes[i]
+            lo, hi = span.get(a[0], (b[1], b[3] + 1.6 * (b[3] - b[1])))
+            span[a[0]] = (min(lo, b[1]), max(hi, b[3] + 1.6 * (b[3] - b[1])))
+
+    def centred(i: int) -> bool:
+        a = anchors[i]
+        if a[1] != 0 or (a[0], a[2][1]) in two_line or a[0] not in span:
+            return False
+        lo, hi = span[a[0]]
+        return lo - 1 <= boxes[i][1] and boxes[i][3] <= hi + 1
+
     for idx in rows.values():
+        if any(anchors[i][1] == 0 for i in idx):
+            multi = [i for i in idx if not centred(i)]
+            idx = multi if multi else idx
         tally: dict[int, int] = {}
         for i in idx:
             tally[line_of[i]] = tally.get(line_of[i], 0) + 1
