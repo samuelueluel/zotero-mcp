@@ -45,7 +45,7 @@ from .sidecar_native import glyph_profile, upright_rotation
 from .sidecar_assemble import PageText, neighbour_html, owner_keys, table_native, write_outputs
 from .sidecar_verify import readings_agree, verify_table
 
-REPAIR_VERSION = "sidecar-repair/4"
+REPAIR_VERSION = "sidecar-repair/5"
 _STAR_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.S | re.I)
 CROP_ZOOM = 200 / 72
 PROMPT = (

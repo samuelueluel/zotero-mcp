@@ -516,3 +516,86 @@ def test_headers_of_a_sideways_table_are_checked_too():
     words = [(w, turn(b), True) for w, b in
              (("Variables", (10, 10, 60, 18)), ("mean", (200, 10, 220, 18)), ("std", (300, 10, 315, 18)))]
     assert misplaced_headers(html, native, words)
+
+
+def test_fill_works_when_glyph_boxes_of_neighbouring_lines_overlap():
+    # Monospace log output: lines 9 pt apart, glyph boxes 10 pt tall.
+    printed = [ptok(v, 100 + 100 * c, 10 + 9 * r) for r, row in enumerate(GRID) for c, v in enumerate(row)]
+    for t in printed:
+        t.bbox = (t.bbox[0], t.bbox[1], t.bbox[2], t.bbox[1] + 10)
+    rows = [GRID[0], ["4.44", "5.85", "6.66"], GRID[2]]
+    check = verify_table(_labelled(rows), printed, printed_lines=[])
+    assert check.status == "repaired" and _cells(check) == [("5.85", "5.55")]
+
+
+def test_dotted_dates_and_section_numbers_are_one_number():
+    from zotero_mcp.sidecar_verify import cell_numbers, text_numbers
+    assert cell_numbers("1 02.13.2007 08:00") == ["1", "02.13.2007", "08", "00"]
+    assert text_numbers("see 11.4.3 and 1.5.") == ["11.4.3", "1.5"]
+
+
+def test_an_observation_number_in_the_stub_is_a_label():
+    from zotero_mcp.sidecar_verify import numbers_with_roles
+    html = "<table><tr><td>1023.</td><td>140</td></tr><tr><td>7</td><td>3.5</td></tr></table>"
+    assert numbers_with_roles(html) == [("1023", "label"), ("140", "data"), ("7", "data"), ("3.5", "data")]
+
+
+OPTIONS = ("<table><tr><th>Command</th><th>Description</th></tr>"
+           "<tr><td>contrast</td><td>contrasts and joint tests</td></tr>"
+           "<tr><td>lincom</td><td>linear combinations of parameters</td></tr></table>")
+OPTION_LINES = [("Command Description", (10, 10, 300, 18)), ("contrast contrasts and joint tests", (10, 30, 300, 38)),
+                ("lincom linear combinations of parameters", (10, 50, 300, 58))]
+
+
+def test_a_table_without_numbers_verifies_by_its_words():
+    words = [w for text, _b in OPTION_LINES for w in text.split()]
+    check = verify_table(OPTIONS, [], printed_words=words, printed_lines=OPTION_LINES)
+    assert check.status == "verified" and [f.kind for f in check.findings] == ["text_table"]
+
+
+def test_a_table_without_numbers_with_a_lost_or_added_word_is_single_route():
+    words = [w for text, _b in OPTION_LINES for w in text.split()]
+    lost = verify_table(OPTIONS, [], printed_words=words + ["hausman"], printed_lines=OPTION_LINES)
+    assert lost.status == "single-route" and "label_text_lost" in [f.kind for f in lost.findings]
+    added = verify_table(OPTIONS.replace("joint", "jointly nested"), [], printed_words=words,
+                         printed_lines=OPTION_LINES)
+    assert added.status == "single-route" and "text_unmatched" in [f.kind for f in added.findings]
+
+
+def test_a_table_without_numbers_in_the_wrong_row_order_is_single_route():
+    lines = [OPTION_LINES[0], (OPTION_LINES[1][0], (10, 50, 300, 58)), (OPTION_LINES[2][0], (10, 30, 300, 38))]
+    words = [w for text, _b in lines for w in text.split()]
+    check = verify_table(OPTIONS, [], printed_words=words, printed_lines=lines)
+    assert check.status == "single-route" and "text_rows_out_of_order" in [f.kind for f in check.findings]
+
+
+def test_marks_and_scans_without_numbers_are_single_route_with_a_reason():
+    marks = "<table><tr><th>Method</th><th>Trees</th></tr><tr><td>Handles missing values</td><td>▲</td></tr></table>"
+    words = ["Method", "Trees", "Handles", "missing", "values"]
+    check = verify_table(marks, [], printed_words=words)
+    assert check.status == "single-route" and "mark_cells" in [f.kind for f in check.findings]
+    scan = verify_table(OPTIONS, [], native_is_ocr=True)
+    assert scan.status == "single-route" and [f.kind for f in scan.findings] == ["no_numbers"]
+
+
+def test_readings_agree_ignores_label_subscripts():
+    from zotero_mcp.sidecar_verify import readings_agree
+    a = ("<table><tr><td></td><td><math>\\gamma_1</math></td><td><math>\\gamma_2</math></td></tr>"
+         "<tr><td>2</td><td>0.6959</td><td>0.03044</td></tr></table>")
+    b = ("<table><tr><td></td><td>γ₁</td><td>γ₂</td></tr>"
+         "<tr><td>2</td><td>0.6959</td><td>0.03044</td></tr></table>")
+    assert readings_agree(a, b)
+    assert not readings_agree(a, b.replace("0.03044", "0.3044"))
+
+
+def test_prose_dotted_run_broken_across_lines_matches_its_pieces():
+    from types import SimpleNamespace
+
+    from zotero_mcp.sidecar_assemble import _check_text_numbers
+
+    def t(text):
+        return SimpleNamespace(text=text, spaced_group=False)
+
+    doi = "https://doi.org/10.1093/0199245282.001.0001 and section 11.4.3"
+    assert _check_text_numbers(doi, [t("10.1093"), t("0199245282.001"), t("0001"), t("11.4.3")])[0] == "verified"
+    assert _check_text_numbers("see 11.4.3", [t("11.4")])[0] == "single-route"

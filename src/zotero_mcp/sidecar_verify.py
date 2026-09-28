@@ -37,13 +37,15 @@ _MINUS_CHARS = "\u2212\u2afa\u2013\u2014\u2012\u2010\u2011\ufe63\uff0d-"
 # A comma separates digit groups only before exactly three digits and before
 # any decimal point, as in the native tokenizer: "0.33,0.67" and "1,2" are two.
 _NUM_RE = re.compile(
-    rf"(?<![\d.])[{_MINUS_CHARS}]?(?:\d{{1,3}}(?:,\d{{3}})+(?!\d)(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
+    rf"(?<![\d.])[{_MINUS_CHARS}]?(?:\d+(?:\.\d+){{2,}}|\d{{1,3}}(?:,\d{{3}})+(?!\d)(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
 )
+# A run of two or more dots ("02.13.2007", "11.4.3") is one token, a date or
+# a section number, as the native tokenizer keeps it.
 # In table cells one space may follow the comma: TeX math sets "1,000" as
 # "1, 000", and the text layer (and Surya copying it) keeps that space. Not in
 # prose, where "22, 301" is a volume and a page.
 _CELL_NUM_RE = re.compile(
-    rf"(?<![\d.])[{_MINUS_CHARS}]?(?:\d{{1,3}}(?:, ?\d{{3}})+(?!\d)(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
+    rf"(?<![\d.])[{_MINUS_CHARS}]?(?:\d+(?:\.\d+){{2,}}|\d{{1,3}}(?:, ?\d{{3}})+(?!\d)(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)"
 )
 _ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.S | re.I)
 _CELL_RE = re.compile(r"<(t[dh])\b([^>]*)>(.*?)</\1>", re.S | re.I)
@@ -77,6 +79,7 @@ def text_numbers(fragment: str) -> list[str]:
     return _plain_numbers(_fragment_text(fragment))
 
 
+_ENUM_RE = re.compile(r"\d{1,7}\.")
 _LEAD_MINUS_RE = re.compile(rf"\s*[{_MINUS_CHARS}]\s{{1,2}}\.?\d")
 _EXP_MINUS_RE = re.compile(rf"(?<=\d)(\s*[Ee]\s*)[{_MINUS_CHARS}]\s{{0,2}}(?=\d)")
 
@@ -153,7 +156,7 @@ STRUCTURAL = {"empty_body_column", "merged_estimate_se", "label_or_header_mismat
 #: Findings that never change status and are left out of the status line.
 INFORMATIONAL = {"merged_estimate_se", "header_rowspan_clamped", "label_or_header_mismatch", "format_variant", "split_token",
                  "ocr_detached_dash", "native_label_unmatched", "native_outside_table",
-                 "text_layer_fill_failed"}
+                 "text_layer_fill_failed", "text_table"}
 #: A table needs at least this many anchors (values unique on both sides) for
 #: the position check.
 MIN_ANCHORS = 4
@@ -247,7 +250,9 @@ def numbers_with_roles(html: str) -> list[tuple[str, str]]:
     ``(1) (2) (3)``), ``label`` (cells whose text contains words, e.g.
     ``Small (0-50)`` or ``1978 earnings``, superscripts or subscripts such
     as ``R<sup>2</sup>``, and text outside the rows: the notes and titles
-    Surya writes as paragraphs around ``<table>``), otherwise ``data``.
+    Surya writes as paragraphs around ``<table>``; a row's first cell that is
+    only an observation number such as ``1023.``, as in a Stata listing),
+    otherwise ``data``.
     """
     head_spans = [m.span(1) for m in _THEAD_RE.finditer(html)]
     out: list[tuple[str, str]] = []
@@ -256,10 +261,11 @@ def numbers_with_roles(html: str) -> list[tuple[str, str]]:
         cells = [Cell(t.lower(), a, inner) for t, a, inner in _CELL_RE.findall(rm.group(1))]
         numeric = [c for c in cells if c.numbers]
         colnum_row = bool(numeric) and all(_COLNUM_RE.match(_plain(c.inner)) for c in numeric)
-        for c in cells:
+        for i, c in enumerate(cells):
             if in_head or c.tag == "th" or colnum_row:
                 role = "header"
-            elif sum(ch.isalpha() for ch in _label_text(c.inner)) >= 2:
+            elif sum(ch.isalpha() for ch in _label_text(c.inner)) >= 2 or (
+                    i == 0 and _ENUM_RE.fullmatch(_plain(c.inner))):
                 role = "label"
             else:
                 scripts = [n for m in _SCRIPT_RE.finditer(c.inner) for n in text_numbers(m.group(2))]
@@ -451,6 +457,16 @@ def _clusters(spans: list[tuple[float, float]]) -> list[int]:
     return ids
 
 
+def _line_spans(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """The middle half of each vertical extent, for grouping tokens into printed lines.
+
+    Glyph boxes include the font's full ascent and descent, which in tightly
+    set monospace output (Stata logs) overlap the lines above and below and
+    would chain a whole table into one line.
+    """
+    return [((a + b) / 2 - (b - a) / 4, (a + b) / 2 + (b - a) / 4) for a, b in spans]
+
+
 def misplaced_cells(html: str, native_tokens: Iterable[NativeToken]) -> list[str]:
     """Data values the HTML puts in a different row or column than the page prints them.
 
@@ -474,7 +490,7 @@ def misplaced_cells(html: str, native_tokens: Iterable[NativeToken]) -> list[str
     boxes = [a[5].bbox for a in anchors]
     if sum(a[5].vertical for a in anchors) * 2 > len(anchors):
         boxes = [(b[1], b[0], b[3], b[2]) for b in boxes]  # sideways table
-    line_of = _clusters([(b[1], b[3]) for b in boxes])
+    line_of = _clusters(_line_spans([(b[1], b[3]) for b in boxes]))
     band_of = _clusters([(b[0], b[2]) for b in boxes])
     bad: set[int] = set()
 
@@ -574,6 +590,66 @@ def lost_label_words(html: str, printed_words: Iterable[str], context_html: Iter
     return []
 
 
+_LIGATURES = ("ffi", "ffl", "ff", "fi", "fl")
+
+
+def check_text_table(html: str, printed_words: Iterable[str], context_html: Iterable[str] = (),
+                     printed_lines: list[tuple[str, tuple]] | None = None) -> Finding | None:
+    """Check a table that holds no numbers (option lists, key terms) by its words.
+
+    Returns None when the table passes: every printed word of the region
+    (three letters or more) is in the table or a neighbouring block, every
+    table word (four letters or more) is printed there, and rows whose first
+    cell can be found at the start of a printed line come in printed order.
+    Otherwise the finding that caps the table at ``single-route``. Cells of
+    symbols or single letters (``▲``, ``N``, ``X``) and LaTeX cannot be
+    checked this way at all; neither can the pairing of cells within a row.
+    """
+    printed_text = " ".join(printed_words)
+    printed = _words(printed_text)
+    if not printed:
+        return Finding("no_text_layer", "the table has no PDF text layer (an image)")
+    rows = parse_rows(html)
+    cells = [c for r in rows for c in r]
+    if any(_MATH_RE.search(c.inner) for c in cells):
+        return Finding("math_table", "a table without numbers that holds LaTeX; no text-layer check")
+    marks = [p for c in cells if (p := _html.unescape(_plain(c.inner))) and sum(ch.isalnum() for ch in p) < 2]
+    if marks:
+        return Finding("mark_cells", "cells of symbols or single letters that the text layer cannot place", marks[:20])
+    have = " ".join(_letters(_html.unescape(_TAG_RE.sub(" ", h))) for h in (html, *context_html))
+    lost = sorted(w for w in printed if not any(w[a:len(w) - b] in have for a in (0, 1) for b in (0, 1)))
+    if lost:
+        return Finding("label_text_lost", "printed labels or headers missing from the table", lost)
+    page_letters = _letters(printed_text)
+    stripped = page_letters
+    for lig in _LIGATURES:  # "signi cant": the text layer lost the ligature glyph
+        stripped = stripped.replace(lig, "")
+    extra = []
+    for w in _words(_html.unescape(_TAG_RE.sub(" ", html))):
+        if len(w) < 4 or w in page_letters:
+            continue
+        bare = w
+        for lig in _LIGATURES:
+            bare = bare.replace(lig, "")
+        if bare not in stripped and not any(bare.replace(lig, "", 1) in page_letters for lig in _LIGATURES):
+            extra.append(w)
+    if extra:
+        return Finding("text_unmatched", "table words absent from the text layer", sorted(extra))
+    if printed_lines:
+        starts = [(_letters(text), (b[1] + b[3]) / 2) for text, b in printed_lines]
+        ys = []
+        for r in rows:
+            key = _letters(_html.unescape(_plain(r[0].inner)))[:16] if r else ""
+            if len(key) < 5:
+                continue
+            hits = {round(y, 1) for letters, y in starts if letters.startswith(key)}
+            if len(hits) == 1:
+                ys.append(hits.pop())
+        if any(b <= a for a, b in zip(ys, ys[1:])):
+            return Finding("text_rows_out_of_order", "rows in a different order than the page prints them")
+    return None
+
+
 _TAG_SPLIT_RE = re.compile(r"(<[^>]+>)")
 
 
@@ -665,7 +741,7 @@ def fill_from_text_layer(
         box = {k: (b[0], -b[3], b[2], -b[1]) for k, b in box.items()}
         lines_in = [(text, (b[0], -b[3], b[2], -b[1])) for text, b in lines_in]
 
-    line_ids = _clusters([(box[id(t)][1], box[id(t)][3]) for t in data])
+    line_ids = _clusters(_line_spans([(box[id(t)][1], box[id(t)][3]) for t in data]))
     line_of = {id(t): i for t, i in zip(data, line_ids)}
     extent: dict[int, list[float]] = {}
     for t, i in zip(data, line_ids):
@@ -1027,16 +1103,18 @@ def column_streams(html: str) -> list[tuple[str, ...]]:
 
     Independent of row layout: an estimate and its standard error in one
     cell or in two rows give the same stream. Empty cells do not count, but a
-    value shifted into a neighbouring column changes two streams.
+    value shifted into a neighbouring column changes two streams. Only data
+    cells count, and LaTeX is left out: one reader writes ``\gamma_1`` where
+    the other writes a Unicode subscript, and those digits are labels.
     """
     cols: dict[int, list[str]] = {}
     for row in _layout(html):
         if row.header:
             continue
         for _ci, col, c in row.placed:
-            if col == 0:
+            if not _data_cell(col, c):
                 continue
-            for n in cell_numbers(_SCRIPT_RE.sub(" ", c.inner)):
+            for n in cell_numbers(_SCRIPT_RE.sub(" ", _MATH_RE.sub(" ", c.inner))):
                 cols.setdefault(col, []).append(numeric_key(n))
     return [tuple(cols[k]) for k in sorted(cols)]
 
@@ -1136,6 +1214,18 @@ def verify_table(
             # A picture of a table on a born-digital page (pasted software
             # output): nothing to check against, like a scanned page.
             check.findings.append(Finding("no_text_layer", "the table has no PDF text layer (an image)"))
+        elif native_is_ocr or printed_words is None:
+            check.findings.append(Finding("no_numbers", "the table holds no numbers; nothing to compare"))
+        elif (failed := check_text_table(check.html, printed_words, context_html, printed_lines)) is not None:
+            check.findings.append(failed)
+        else:
+            check.findings.append(Finding("text_table", "no numbers; every word matches the text layer"))
+            empty = [f.detail for f in check.findings if f.kind == "empty_body_column"]
+            if empty:
+                check.findings.append(Finding(
+                    "header_structure", "column headers or column numbers do not match the page", empty))
+            else:
+                check.status = "verified"
         return check
 
     # Formula tables: digits are subscripts/exponents inside LaTeX, which the

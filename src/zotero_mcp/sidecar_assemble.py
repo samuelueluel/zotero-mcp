@@ -40,7 +40,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/5"
+ASSEMBLER_VERSION = "sidecar-assemble/6"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -281,6 +281,15 @@ def _check_text_numbers(fragment: str, tokens) -> tuple[str, list[dict]]:
     for n in nums:
         if pool[n] > 0:
             pool[n] -= 1
+            continue
+        # A dotted run broken across lines ("0199245282.001." / "0001" in a DOI).
+        parts = n.split(".")
+        for i in range(1, len(parts) if len(parts) > 2 else 0):
+            head, tail = ".".join(parts[:i]), ".".join(parts[i:])
+            if pool[head] > 0 and pool[tail] > 0:
+                pool[head] -= 1
+                pool[tail] -= 1
+                break
         else:
             missing.append(n)
     if not missing:
