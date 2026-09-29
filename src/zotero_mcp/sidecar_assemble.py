@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pymupdf
 
+from .sidecar_math import check_equation, check_inline_math
 from .sidecar_native import (
     glyph_profile,
     image_bbox_to_pdf,
@@ -40,7 +41,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/6"
+ASSEMBLER_VERSION = "sidecar-assemble/7"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -369,8 +370,20 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 if ocr and not pm["scan_like"]:
                     rec["ocr_layer"] = True
             elif label == "Equation":
-                rec["status"] = "single-route"
-                rec["findings"] = [{"kind": "math_single_route", "detail": "no text-layer check for LaTeX", "values": []}]
+                ocr = pm["scan_like"] or text.ocr_layer(pdf_bbox)
+                math = None if ocr else check_equation(rec["html"], page, pdf_bbox)
+                if math is None or math.status == "no-layer":
+                    rec["status"] = "single-route"
+                    rec["findings"] = [{"kind": "math_single_route",
+                                        "detail": "no PDF text layer to check the LaTeX against", "values": []}]
+                elif math.status == "agree":
+                    # Same symbols, but fractions, sub- and superscripts are unchecked.
+                    rec["status"] = "single-route"
+                    rec["findings"] = [{"kind": "math_symbols_agree",
+                                        "detail": "symbols match the PDF text layer; structure unchecked", "values": []}]
+                else:
+                    rec["status"] = "unresolved"
+                    rec["findings"] = math.findings
             else:
                 ocr = pm["scan_like"] or text.ocr_layer(pdf_bbox)
                 if not ocr:
@@ -378,12 +391,21 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 status, findings = _check_text_numbers(rec["html"], text.tokens(pdf_bbox))
                 if ocr and status == "verified":
                     status = "single-route"
+                if not ocr and "<math" in rec["html"]:
+                    math = check_inline_math(rec["html"], page, pdf_bbox)
+                    if math.status != "no-layer":
+                        rec["_math_checked"] = status
+                    if math.status == "differ":
+                        findings = findings + math.findings
+                        if status in ("verified", "no-numbers"):
+                            status = "single-route"
                 rec["status"], rec["findings"] = status, findings
             if rec["surya_error"]:
                 rec["status"] = "unresolved"
                 rec["findings"].append({"kind": "surya_block_error", "detail": "", "values": []})
             blocks.append(rec)
 
+    gate_math(blocks)
     provenance = {
         "assembler": ASSEMBLER_VERSION,
         "batch_dir": str(batch_dir),
@@ -393,6 +415,43 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
         "assembled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     return write_outputs(item_key, meta, blocks, provenance, Path(out_dir))
+
+
+#: Share of checked math that may disagree with the text layer before the
+#: layer, not Surya, is the likelier culprit (glyphs without Unicode meaning).
+MATH_GATE_SHARE = 0.25
+_MATH_DIFFER = ("math_symbols_differ", "equation_number_differs")
+
+
+def gate_math(blocks: list[dict]) -> None:
+    """Drop math disagreements in a document whose text layer does not encode its math.
+
+    Born-digital TeX books disagree on 2 to 4 percent of equations; papers set
+    with fonts that map Greek to Latin letters or brackets to private code
+    points disagree on nearly all. There a disagreement is not evidence, so
+    those equations go back to unchecked single-route and prose keeps its
+    number-check status.
+    """
+    checked = [b for b in blocks if b["label"] == "Equation"
+               and any(f["kind"] in _MATH_DIFFER + ("math_symbols_agree",) for f in b["findings"])]
+    differ = [b for b in checked if any(f["kind"] in _MATH_DIFFER for f in b["findings"])]
+    if len(checked) >= 8 and len(differ) > MATH_GATE_SHARE * len(checked):
+        detail = (f"PDF text layer does not encode this document's math reliably "
+                  f"({len(differ)} of {len(checked)} equations differ)")
+        for b in differ:
+            b["findings"] = [f for f in b["findings"] if f["kind"] not in _MATH_DIFFER]
+            b["findings"].insert(0, {"kind": "math_single_route", "detail": detail, "values": []})
+            if not b.get("surya_error"):
+                b["status"] = "single-route"
+    prose = [b for b in blocks if "_math_checked" in b]
+    flagged = [b for b in prose if any(f["kind"] == "inline_math_symbols_differ" for f in b["findings"])]
+    if len(prose) >= 10 and len(flagged) > MATH_GATE_SHARE * len(prose):
+        for b in flagged:
+            b["findings"] = [f for f in b["findings"] if f["kind"] != "inline_math_symbols_differ"]
+            if not b.get("surya_error"):
+                b["status"] = b["_math_checked"]
+    for b in prose:
+        del b["_math_checked"]
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -439,9 +498,13 @@ def summarize(item_key: str, meta: dict, blocks: list[dict]) -> dict:
     scan_pages = sorted(p["page"] for p in pages if p["scan_like"])
     rotated = sorted(p["page"] for p in pages if p["rotation"])
     n_pages = len(meta["pages"])
+    equations = [b for b in blocks if b["label"] == "Equation"]
+    eq_unresolved = sum(1 for b in equations if b["status"] == "unresolved")
+    inline_flags = sum(1 for b in blocks if b["label"] != "Equation"
+                       and any(f["kind"] == "inline_math_symbols_differ" for f in b["findings"]))
     if table_counts.get("unresolved"):
         level = "warn"
-    elif scan_pages or table_counts.get("single-route") or table_counts.get("repaired"):
+    elif scan_pages or table_counts.get("single-route") or table_counts.get("repaired") or eq_unresolved:
         level = "caution"
     else:
         level = "ok"
@@ -454,9 +517,13 @@ def summarize(item_key: str, meta: dict, blocks: list[dict]) -> dict:
             parts.append(f"{table_counts['single-route']} tables single-route")
         if table_counts.get("repaired"):
             parts.append(f"{table_counts['repaired']} tables sign-repaired")
+        if eq_unresolved:
+            parts.append(f"{eq_unresolved} of {len(equations)} equations differ from the PDF text layer")
         if scan_pages:
             parts.append(f"{len(scan_pages)} of {n_pages} pages scanned")
         warning = "; ".join(parts) + ". Verify table numbers on the PDF pages listed in problem_tables."
+        if eq_unresolved:
+            warning += " Flagged equations carry their PDF page in an [Equation status] line."
     return {
         "item_key": item_key,
         "level": level,
@@ -465,10 +532,27 @@ def summarize(item_key: str, meta: dict, blocks: list[dict]) -> dict:
         "scan_pages": scan_pages,
         "rotated_pages": rotated,
         "tables": dict(table_counts),
-        "equations": sum(1 for b in blocks if b["label"] == "Equation"),
+        "equations": len(equations),
+        "equation_status": dict(Counter(b["status"] for b in equations)),
+        "inline_math_flags": inline_flags,
         "problem_tables": problems,
         "missing_pages": meta.get("missing_pages", []),
     }
+
+
+def _math_status_line(block: dict) -> str | None:
+    """Visible marker for math the text layer contradicts; retrieval reads it."""
+    page = block["page"]
+    for f in block["findings"]:
+        what = "; ".join(f["values"][:4])
+        if f["kind"] == "math_symbols_differ" or f["kind"] == "equation_number_differs":
+            why = ("equation number differs from the PDF" if f["kind"] == "equation_number_differs"
+                   else "symbols differ from the PDF text layer")
+            return f"[Equation status: UNRESOLVED ({why}: {what}). Check PDF p. {page} before quoting.]"
+        if f["kind"] == "inline_math_symbols_differ":
+            return (f"[Math status: SINGLE-ROUTE (inline math or text differs from the PDF text layer: {what}). "
+                    f"Check PDF p. {page} before quoting.]")
+    return None
 
 
 def render_markdown(blocks: list[dict]) -> str:
@@ -497,6 +581,9 @@ def render_markdown(blocks: list[dict]) -> str:
         text = html_to_markdown(b["html"])
         if not text:
             continue
+        line = _math_status_line(b)
+        if line:
+            out.append(line)
         if label == "SectionHeader":
             out.append("## " + " ".join(text.split()))
         elif label == "Equation" and "$$" not in text:
