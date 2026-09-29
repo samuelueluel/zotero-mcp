@@ -168,6 +168,17 @@ def test_stars_after_a_space_and_after_the_standard_error():
     assert toks["0.0141"].stars == "**"
 
 
+def test_degrees_of_freedom_comma_is_not_a_thousands_separator():
+    from zotero_mcp.sidecar_native import _group_sep
+    digit = lambda c: c[0].isdigit()  # noqa: E731
+    line = _line("F(2,744)=")
+    assert not _group_sep(line, 3, ["2"], digit)
+    line = _line("chi2(1,156)")
+    assert not _group_sep(line, 6, ["1"], digit)
+    line = _line("(1,234)")
+    assert _group_sep(line, 2, ["1"], digit)
+
+
 def test_tex_thin_space_thousands_join_but_word_spaces_do_not():
     from zotero_mcp.sidecar_native import _math_group_sep
 

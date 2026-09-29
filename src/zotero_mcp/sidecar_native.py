@@ -47,6 +47,7 @@ coordinates, so clips from Surya boxes select the right text on rotated pages.
 
 from __future__ import annotations
 
+import re
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
@@ -573,11 +574,28 @@ def _exponent(line, start: int) -> bool:
 def _group_sep(line, j: int, out: list[str], digit) -> bool:
     """A comma at ``line[j]`` separates digit groups: three digits follow, no more,
     and no decimal point came before (``0.33,0.67`` is two numbers)."""
-    if "." in out:
+    if "." in out or _df_pair(line, j, out):
         return False
     ahead = line[j + 1:j + 5]
     return (len(ahead) >= 3 and all(digit(c) for c in ahead[:3])
             and not (len(ahead) == 4 and digit(ahead[3])))
+
+
+def _df_pair(line, j: int, out: list[str]) -> bool:
+    """The comma at ``line[j]`` splits degrees of freedom, ``F(2,744)`` or
+    ``chi2(1,156)``: two numbers, not 2,744."""
+    k = j - len(out) - 1
+    while k >= 0 and line[k][0] == " ":
+        k -= 1
+    if k < 1 or line[k][0] != "(":
+        return False
+    head = "".join(c[0] for c in line[max(0, k - 5):k])
+    if not re.search(r"(?<![A-Za-z])(?:F|t|chi2)$", head):
+        return False
+    m = j + 1
+    while m < len(line) and line[m][0] in " 0123456789":
+        m += 1
+    return m < len(line) and line[m][0] == ")"
 
 
 def _math_group_sep(line, j: int, out: list[str], digit) -> bool:

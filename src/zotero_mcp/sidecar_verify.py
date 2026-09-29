@@ -76,10 +76,12 @@ def _plain_numbers(plain: str, pattern: re.Pattern = _NUM_RE) -> list[str]:
 
 
 def text_numbers(fragment: str) -> list[str]:
-    return _plain_numbers(_fragment_text(fragment))
+    return _plain_numbers(_DF_RE.sub(r"\1 ;", _fragment_text(fragment)))
 
 
 _ENUM_RE = re.compile(r"\d{1,7}\.")
+# Degrees of freedom, "F( 1, 156)" or "chi2(2, 744)": two numbers, not 1,156.
+_DF_RE = re.compile(r"((?<![A-Za-z])(?:F|chi2|t)\(\s*\d+)\s*,(?=\s*\d+\s*\))")
 _LEAD_MINUS_RE = re.compile(rf"\s*[{_MINUS_CHARS}]\s{{1,2}}\.?\d")
 _EXP_MINUS_RE = re.compile(rf"(?<=\d)(\s*[Ee]\s*)[{_MINUS_CHARS}]\s{{0,2}}(?=\d)")
 
@@ -92,7 +94,7 @@ def cell_numbers(fragment: str) -> list[str]:
     Only at the start of a cell: elsewhere a spaced dash is a range or
     punctuation. An exponent keeps its minus: ``9.38 E – 06`` gives ``-06``.
     """
-    plain = _EXP_MINUS_RE.sub(r"\1-", _fragment_text(fragment))
+    plain = _DF_RE.sub(r"\1 ;", _EXP_MINUS_RE.sub(r"\1-", _fragment_text(fragment)))
     nums = _plain_numbers(plain, _CELL_NUM_RE)
     if nums and not nums[0].startswith("-") and _LEAD_MINUS_RE.match(plain):
         nums[0] = "-" + nums[0]

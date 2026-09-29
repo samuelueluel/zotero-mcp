@@ -534,6 +534,15 @@ def test_dotted_dates_and_section_numbers_are_one_number():
     assert text_numbers("see 11.4.3 and 1.5.") == ["11.4.3", "1.5"]
 
 
+def test_degrees_of_freedom_are_two_numbers():
+    from zotero_mcp.sidecar_verify import cell_numbers
+    assert cell_numbers("F( 1, 156) =") == ["1", "156"]
+    assert cell_numbers("F(2,744)= 46.95") == ["2", "744", "46.95"]
+    assert cell_numbers("at (1,234)") == ["1,234"]
+    from zotero_mcp.sidecar_verify import text_numbers
+    assert text_numbers("F(2,178) = 3.1 and 1,234 cases") == ["2", "178", "3.1", "1,234"]
+
+
 def test_an_observation_number_in_the_stub_is_a_label():
     from zotero_mcp.sidecar_verify import numbers_with_roles
     html = "<table><tr><td>1023.</td><td>140</td></tr><tr><td>7</td><td>3.5</td></tr></table>"
