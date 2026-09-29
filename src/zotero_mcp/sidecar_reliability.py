@@ -16,8 +16,6 @@ from pathlib import Path
 
 PAGE_MARKER_RE = re.compile(r"<!-- pdf-page: (\d+) -->")
 STATUS_LINE_RE = re.compile(r"\[(?:Table|Equation|Math) status: (UNRESOLVED|SINGLE-ROUTE|REPAIRED)\b[^\]]*?PDF p\. (\d+)")
-#: Display math: never better than single-route, even when its symbols match the page.
-DISPLAY_MATH_RE = re.compile(r"^\$\$", re.M)
 WITHHELD_RE = re.compile(r"⟦withheld: unverified number, see PDF p\. (\d+)⟧")
 
 #: Severity order; the worst status in a chunk wins.
@@ -55,8 +53,11 @@ def chunk_reliability(chunk_text: str, source: str | None) -> dict:
     """Block-level status for one chunk.
 
     Returns ``{"block_status": ..., "check_pages": [...]}``. Surya chunks
-    without a status line, withheld marker or display math are ``verified``
-    as far as the checks go; legacy sidecars are ``legacy-unverified``.
+    without a status line or withheld marker are ``verified`` as far as the
+    checks go; legacy sidecars are ``legacy-unverified``. Display equations
+    that agree with the text layer carry no status line and do not lower the
+    chunk: their structure is never checked, which the skills handle by
+    requiring the rendered page before any equation is quoted.
     """
     if source != SURYA_SOURCE:
         return {"block_status": "legacy-unverified", "check_pages": []}
@@ -70,12 +71,6 @@ def chunk_reliability(chunk_text: str, source: str | None) -> dict:
     for m in WITHHELD_RE.finditer(chunk_text):
         worst = "unresolved"
         pages.append(int(m.group(1)))
-    m = DISPLAY_MATH_RE.search(chunk_text)
-    if m and STATUS_RANK[worst] < STATUS_RANK["single-route"]:
-        worst = "single-route"
-        page = page_for_offset(chunk_text, m.start())
-        if page is not None:
-            pages.append(page)
     return {"block_status": worst, "check_pages": sorted(set(pages))}
 
 

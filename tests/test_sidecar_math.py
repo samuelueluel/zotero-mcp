@@ -104,10 +104,11 @@ def test_status_lines_for_math():
     assert _math_status_line({"page": 7, "findings": [{"kind": "math_symbols_agree", "values": []}]}) is None
 
 
-def test_display_math_chunk_is_never_verified():
+def test_only_status_lines_lower_a_math_chunk():
     chunk = "<!-- pdf-page: 12 -->\n\nThen\n\n$$\nx = 1\n$$\n"
-    assert chunk_reliability(chunk, SURYA_SOURCE) == {"block_status": "single-route", "check_pages": [12]}
-    assert chunk_reliability("inline $x$ only", SURYA_SOURCE)["block_status"] == "verified"
+    assert chunk_reliability(chunk, SURYA_SOURCE) == {"block_status": "verified", "check_pages": []}
+    flagged = chunk + "[Math status: SINGLE-ROUTE (inline math or text differs). Check PDF p. 12 before quoting.]"
+    assert chunk_reliability(flagged, SURYA_SOURCE) == {"block_status": "single-route", "check_pages": [12]}
 
 
 def test_glyphs_without_unicode_meaning_disable_the_check():
