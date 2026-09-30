@@ -215,3 +215,8 @@ def test_lookalike_repair_refuses_unsafe_swaps():
     b, layer = _differ_eq(r"\frac{3}{k}", "1/k")
     repair_math([b], [_FakePage(layer)])
     assert b["status"] == "unresolved"
+
+
+def test_empty_set_printed_as_a_letter_is_not_compared():
+    assert sm.latex_symbols(r"\mathbb{P}(\emptyset) = 0") == Counter("P0")
+    assert sm._line_symbols(_chars([("CMR10", "P(Ø)=0")])) == Counter("P0")

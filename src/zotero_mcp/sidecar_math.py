@@ -37,7 +37,9 @@ WORD_COMMANDS = frozenset(
     "arctan arg deg dim ker hom gcd Pr".split())
 SYMBOLS = frozenset("∑∏∐∫∞∪∩∂∇")
 #: One glyph, several code points.
-_SAME = {"ϵ": "ε", "ǫ": "ε", "ϑ": "θ", "ϕ": "φ", "ϱ": "ρ", "ς": "σ", "ϖ": "π", "µ": "μ", "ı": "i", "ȷ": "j", "∆": "Δ", "Ω": "Ω"}
+_SAME = {"ϵ": "ε", "ǫ": "ε", "ϑ": "θ", "ϕ": "φ", "ϱ": "ρ", "ς": "σ", "ϖ": "π", "µ": "μ", "ı": "i", "ȷ": "j", "∆": "Δ", "Ω": "Ω",
+         # Empty set: some fonts print it as the letter Ø; \emptyset is not compared.
+         "Ø": "∅", "ø": "∅"}
 #: TeX extension-font glyphs as the text layer reports them. Other characters
 #: in these fonts are delimiter, brace and radical pieces.
 _EXTENSION = {"P": "∑", "X": "∑", "Q": "∏", "Y": "∏", "R": "∫", "Z": "∫", "S": "∪", "[": "∪", "T": "∩", "\\": "∩",
