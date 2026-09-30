@@ -144,6 +144,8 @@ def test_document_gate_drops_disagreements_when_the_layer_is_unreliable():
               "findings": [{"kind": "inline_math_symbols_differ", "detail": "", "values": []}]} for _ in range(10)]
     gate_math(prose)
     assert {b["status"] for b in prose} == {"verified"} and not any(b["findings"] for b in prose)
+    from zotero_mcp.sidecar_assemble import repair_math
+    repair_math(prose, None)  # nothing left to repair, so no page is opened
     assert not any("_math_checked" in b for b in prose)
 
 
@@ -180,3 +182,36 @@ def test_margin_labels_are_not_matrix_entries_and_script_l_is_skipped():
     assert sm.split_labels(r"a & b \\ 0.0000 & 1.0000")[1] == []
     assert sm.split_labels(r"\\ 11.42 & x")[1] == ["11.42"]
     assert sm.latex_symbols(r"\ell_z") == sm.prose_symbols("ℓz") == Counter("z")
+
+
+def _differ_eq(latex, layer):
+    return {"id": "K:p1:b0", "label": "Equation", "page": 1, "pdf_bbox": (30, 44, 370, 62), "status": "unresolved",
+            "surya_error": False, "repairs": [], "html": f'<math display="block">{latex}</math>',
+            "findings": [{"kind": "math_symbols_differ", "detail": "", "values": []}]}, [[(c, 50, 60) for c in layer]]
+
+
+def test_lookalike_symbols_are_restored_from_the_text_layer():
+    from zotero_mcp.sidecar_assemble import repair_math
+    b, layer = _differ_eq(r"v(A) = \int_A f \, dv", "ν(A)=∫Afdν")
+    repair_math([b], [_FakePage(layer)])
+    assert b["status"] == "repaired" and b["html"] == r'<math display="block">\nu (A) = \int_A f \, d\nu </math>'
+    assert b["surya_html"].endswith("dv</math>") and b["repairs"][0]["route"] == "native_symbol"
+    assert _math_status_line(b) == ("[Equation status: REPAIRED (ν where the sidecar read v, from the PDF text "
+                                    "layer). Check PDF p. 1 before quoting.]")
+    assert chunk_reliability(_math_status_line(b), SURYA_SOURCE)["block_status"] == "repaired"
+
+
+def test_lookalike_repair_refuses_unsafe_swaps():
+    from zotero_mcp.sidecar_assemble import repair_math
+    # One v is right and one is wrong: which one is unknown.
+    b, layer = _differ_eq(r"v + v", "v+ν")
+    repair_math([b], [_FakePage(layer)])
+    assert b["status"] == "unresolved"
+    # A Latin letter in the layer never overrides Surya's Greek (Symbol fonts store eta at "n").
+    b, layer = _differ_eq(r"\eta + x", "n+x")
+    repair_math([b], [_FakePage(layer)])
+    assert b["status"] == "unresolved"
+    # Not a look-alike: a digit error stays flagged.
+    b, layer = _differ_eq(r"\frac{3}{k}", "1/k")
+    repair_math([b], [_FakePage(layer)])
+    assert b["status"] == "unresolved"

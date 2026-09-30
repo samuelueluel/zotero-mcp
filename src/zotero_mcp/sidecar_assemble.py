@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pymupdf
 
-from .sidecar_math import check_equation, check_inline_math
+from .sidecar_math import check_equation, check_inline_math, repair_confusables
 from .sidecar_native import (
     glyph_profile,
     image_bbox_to_pdf,
@@ -41,7 +41,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/7"
+ASSEMBLER_VERSION = "sidecar-assemble/8"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -406,6 +406,7 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
             blocks.append(rec)
 
     gate_math(blocks)
+    repair_math(blocks, doc)
     provenance = {
         "assembler": ASSEMBLER_VERSION,
         "batch_dir": str(batch_dir),
@@ -450,8 +451,43 @@ def gate_math(blocks: list[dict]) -> None:
             b["findings"] = [f for f in b["findings"] if f["kind"] != "inline_math_symbols_differ"]
             if not b.get("surya_error"):
                 b["status"] = b["_math_checked"]
-    for b in prose:
-        del b["_math_checked"]
+
+
+def repair_math(blocks: list[dict], doc) -> None:
+    """Swap look-alike symbols (v for nu) back from the text layer, then re-check.
+
+    Runs after ``gate_math``, so a document whose text layer does not encode
+    its math is never repaired from it. A repaired equation or paragraph
+    agrees with the text layer in full; its structure is still unchecked.
+    """
+    for b in blocks:
+        kinds = {f["kind"] for f in b["findings"]}
+        if b.get("surya_error"):
+            pass
+        elif b["label"] == "Equation" and kinds == {"math_symbols_differ"}:
+            page, bbox = doc[b["page"] - 1], b["pdf_bbox"]
+            fixed = repair_confusables(b["html"], check_equation(b["html"], page, bbox),
+                                       lambda h, page=page, bbox=bbox: check_equation(h, page, bbox))
+            if fixed:
+                b["surya_html"] = b["html"]
+                b["html"], repairs = fixed
+                b["repairs"] = b["repairs"] + repairs
+                b["status"] = "repaired"
+                b["findings"] = [{"kind": "math_symbols_agree",
+                                  "detail": "symbols match the PDF text layer after the repair; structure unchecked",
+                                  "values": []}]
+        elif "_math_checked" in b and "inline_math_symbols_differ" in kinds:
+            page, bbox = doc[b["page"] - 1], b["pdf_bbox"]
+            fixed = repair_confusables(b["html"], check_inline_math(b["html"], page, bbox),
+                                       lambda h, page=page, bbox=bbox: check_inline_math(h, page, bbox))
+            if fixed:
+                b["surya_html"] = b["html"]
+                b["html"], repairs = fixed
+                b["repairs"] = b["repairs"] + repairs
+                b["findings"] = [f for f in b["findings"] if f["kind"] != "inline_math_symbols_differ"]
+                b["status"] = "repaired" if b["_math_checked"] in ("verified", "no-numbers") else b["_math_checked"]
+    for b in blocks:
+        b.pop("_math_checked", None)
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -541,8 +577,13 @@ def summarize(item_key: str, meta: dict, blocks: list[dict]) -> dict:
 
 
 def _math_status_line(block: dict) -> str | None:
-    """Visible marker for math the text layer contradicts; retrieval reads it."""
+    """Visible marker for math the text layer contradicts or repaired; retrieval reads it."""
     page = block["page"]
+    swaps = [r for r in block.get("repairs", []) if r.get("route") == "native_symbol"]
+    if swaps:
+        what = "; ".join(f"{r['after']} where the sidecar read {r['before']}" for r in swaps)
+        kind = "Equation" if block["label"] == "Equation" else "Math"
+        return f"[{kind} status: REPAIRED ({what}, from the PDF text layer). Check PDF p. {page} before quoting.]"
     for f in block["findings"]:
         what = "; ".join(f["values"][:4])
         if f["kind"] == "math_symbols_differ" or f["kind"] == "equation_number_differs":

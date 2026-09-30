@@ -296,6 +296,9 @@ def _line_symbols(chars) -> Counter:
 class MathCheck:
     status: str  # "agree", "differ", "no-layer"
     findings: list[dict] = field(default_factory=list)
+    #: Compared symbols (after label, operator and accent handling), for the repair.
+    sidecar: Counter = field(default_factory=Counter)
+    pdf: Counter = field(default_factory=Counter)
 
 
 def _diff_values(sidecar: Counter, pdf: Counter) -> list[str]:
@@ -348,7 +351,7 @@ def check_equation(html: str, page, pdf_bbox) -> MathCheck:
     if layer.labels and set(surya_labels) - set(layer.labels):
         findings.append({"kind": "equation_number_differs", "detail": "",
                          "values": [f"sidecar ({', '.join(surya_labels)})", f"PDF ({', '.join(layer.labels)})"]})
-    return MathCheck("differ" if findings else "agree", findings)
+    return MathCheck("differ" if findings else "agree", findings, ours, layer.symbols)
 
 
 def check_inline_math(html: str, page, pdf_bbox) -> MathCheck:
@@ -363,4 +366,95 @@ def check_inline_math(html: str, page, pdf_bbox) -> MathCheck:
         return MathCheck("agree")
     return MathCheck("differ", [{"kind": "inline_math_symbols_differ",
                                  "detail": "symbols differ from the PDF text layer",
-                                 "values": _diff_values(ours, layer)}])
+                                 "values": _diff_values(ours, layer)}], ours, layer)
+
+
+#: Look-alikes Surya confuses, as (what Surya wrote, what the page has). The
+#: page side is always a Greek code point or a case twin: the text layer may
+#: store a Greek glyph as a Latin letter (Symbol-style fonts put eta at "n"),
+#: never the reverse, so a Latin letter in the layer is not trusted over
+#: Surya's Greek.
+CONFUSABLE = frozenset({
+    ("v", "ν"), ("v", "υ"), ("u", "υ"), ("u", "μ"), ("t", "ι"), ("I", "ι"), ("i", "ι"), ("l", "ι"),
+    ("n", "η"), ("p", "ρ"), ("w", "ω"), ("k", "κ"), ("a", "α"), ("x", "χ"), ("o", "σ"), ("e", "ε"),
+    ("ν", "υ"), ("υ", "ν"), ("ν", "ι"), ("ι", "ν"),
+    *((a, b) for c in "cosuvwxz" for a, b in ((c, c.upper()), (c.upper(), c))),
+})
+_COMMAND_OF = {v: k for k, v in reversed(list(GREEK.items()))}
+#: Groups whose letters are words or environment names, not math symbols.
+_TEXT_GROUP = re.compile(r"\\(?:text\w*|mbox|operatorname|mathrm)\s*\{[^{}]*\}"
+                         r"|\\begin\{array\}\s*\{[^{}]*\}|\\(?:begin|end)\{[A-Za-z*]+\}")
+_TOKEN = re.compile(r"\\[A-Za-z]+|.", re.S)
+
+
+def _math_letters(latex: str, ch: str) -> int:
+    """Occurrences of ``ch`` as a bare math symbol (a letter or Greek command)."""
+    body = _TEXT_GROUP.sub(" ", latex)
+    return sum(1 for t in _TOKEN.findall(body)
+               if t == ch or (t.startswith("\\") and GREEK.get(t[1:]) == ch))
+
+
+def _swap(latex: str, wrong: str, right: str) -> str:
+    """Replace every bare ``wrong`` symbol outside text groups with ``right``."""
+    new = f"\\{_COMMAND_OF[right]} " if right in _COMMAND_OF else right
+    out, pos = [], 0
+    for m in _TEXT_GROUP.finditer(latex):
+        out.append(_swap_plain(latex[pos:m.start()], wrong, new))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_swap_plain(latex[pos:], wrong, new))
+    return "".join(out)
+
+
+def _swap_plain(text: str, wrong: str, new: str) -> str:
+    return "".join(new if t == wrong or (t.startswith("\\") and GREEK.get(t[1:]) == wrong) else t
+                   for t in _TOKEN.findall(text))
+
+
+def confusable_pairs(check: MathCheck) -> list[tuple[str, str, int]] | None:
+    """The look-alike swaps that explain a disagreement completely, or None.
+
+    Every symbol the sidecar has too many of must pair with exactly one
+    symbol the page has too many of, in equal numbers, through ``CONFUSABLE``.
+    """
+    extra, missing = check.sidecar - check.pdf, check.pdf - check.sidecar
+    if not extra or sorted(extra.values()) != sorted(missing.values()):
+        return None
+    pairs = []
+    for wrong, n in extra.items():
+        rights = [r for r in missing if (wrong, r) in CONFUSABLE and missing[r] == n]
+        if len(rights) != 1:
+            return None
+        pairs.append((wrong, rights[0], n))
+    if len({r for _w, r, _n in pairs}) != len(pairs):
+        return None
+    return pairs
+
+
+def repair_confusables(html: str, check: MathCheck, recheck) -> tuple[str, list[dict]] | None:
+    """Swap look-alike symbols in the math of ``html`` to what the text layer holds.
+
+    Applies only when every counted instance of the wrong symbol is a bare
+    math symbol and all of them are wrong (their number equals the excess), and
+    when ``recheck(new_html)`` then agrees. Returns the new HTML and repair
+    records, or None.
+    """
+    pairs = confusable_pairs(check)
+    if not pairs:
+        return None
+    parts = re.split(r"(<math[^>]*>)(.*?)(</math>)", html, flags=re.S)
+    # re.split yields text, open tag, LaTeX, close tag, text, ...
+    maths = range(2, len(parts), 4)
+    latex = {i: html_lib.unescape(parts[i]) for i in maths}
+    for wrong, _right, n in pairs:
+        if sum(_math_letters(t, wrong) for t in latex.values()) != n:
+            return None
+    for i, t in latex.items():
+        for wrong, right, _n in pairs:
+            t = _swap(t, wrong, right)
+        parts[i] = html_lib.escape(t, quote=False)
+    new = "".join(parts)
+    if recheck(new).status != "agree":
+        return None
+    return new, [{"kind": "symbol", "before": w, "after": r, "count": n, "route": "native_symbol"}
+                 for w, r, n in pairs]
