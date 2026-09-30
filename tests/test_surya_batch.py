@@ -187,3 +187,18 @@ def test_appendix_pdfs_are_recognised(tmp_path):
     assert surya_batch._is_appendix(pdf("Notowidigdo_APPENDIX.pdf", "Online Appendix for"))
     assert surya_batch._is_appendix(pdf("paper2.pdf", "Online Appendix A"))
     assert not surya_batch._is_appendix(pdf("Bruhn-2017.pdf", "CRIME AND PUBLIC HOUSING"))
+
+
+def test_render_caps_oversized_pages(tmp_path):
+    import pymupdf
+
+    from zotero_mcp import surya_runner
+    pdf = tmp_path / "big.pdf"
+    doc = pymupdf.open()
+    doc.new_page(width=2149, height=3035)  # a scan at one point per pixel
+    doc.new_page(width=612, height=792)
+    doc.save(pdf)
+    job = surya_runner.ItemJob(item_key="K", pdf_path=pdf)
+    surya_runner.render_item(job, tmp_path / "img", 192)
+    assert job.pages["K__p001"]["image_size"][1] == surya_runner.MAX_SIDE_PX
+    assert job.pages["K__p002"]["image_size"] == [1632, 2112]

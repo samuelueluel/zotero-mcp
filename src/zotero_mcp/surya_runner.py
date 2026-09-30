@@ -92,14 +92,20 @@ class ItemJob:
     pdf_sha256: str = ""
 
 
+#: Longest rendered side. Some scans declare one point per scanned pixel
+#: (Billingsley: 30 by 42 inch pages); at 192 dpi a page became 46 megapixels,
+#: and Surya's client, which holds a chunk's images in memory, ran out of RAM.
+MAX_SIDE_PX = 3000
+
+
 def render_item(job: ItemJob, img_dir: Path, dpi: int) -> None:
     """Render every page upright into ``img_dir`` as ``<KEY>__pNNN.png``."""
     img_dir.mkdir(parents=True, exist_ok=True)
     job.pdf_sha256 = sha256_file(job.pdf_path)
     doc = pymupdf.open(job.pdf_path)
-    zoom = dpi / 72
     for i, page in enumerate(doc):
         rot = page_rotation(page)
+        zoom = min(dpi / 72, MAX_SIDE_PX / max(page.rect.width, page.rect.height))
         # prerotate(90) turns bottom-to-top text upright (clockwise render).
         matrix = pymupdf.Matrix(zoom, zoom).prerotate(rot)
         pix = page.get_pixmap(matrix=matrix)
