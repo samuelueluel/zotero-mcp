@@ -41,7 +41,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/8"
+ASSEMBLER_VERSION = "sidecar-assemble/9"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -313,14 +313,43 @@ def save_figure_crop(page, pdf_bbox, out_dir: Path, item_key: str, name: str) ->
     return f"images/{name}"
 
 
+#: Share of dark pixels below which a scanned page is blank. Measured on a
+#: 1000 px render with pixels darker than 200 of 255: blank scans with dust
+#: specks print 0.0003 to 0.05 percent, real sparse pages (a dedication, an
+#: index) 0.11 percent and up. Li-Racine p. 435 prints 0.0005 percent, and
+#: Surya invented a table on it.
+BLANK_INK = 0.0003
+_DARK = bytes(range(200))
+
+
+def page_ink(page) -> float:
+    """Share of dark pixels on a grayscale render of the page."""
+    zoom = 1000 / max(page.rect.width, page.rect.height)
+    s = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), colorspace=pymupdf.csGRAY).samples
+    return (len(s) - len(s.translate(None, _DARK))) / len(s)
+
+
+def guard_blank_pages(blocks: list[dict], blank: set[int]) -> None:
+    """Withhold what OCR read on a blank scanned page: nothing printed there."""
+    for b in blocks:
+        if b["page"] in blank and b["label"] not in SKIP_LABELS and re.sub(r"<[^>]+>", "", b["html"]).strip():
+            b["surya_html"], b["html"] = b["html"], ""
+            b["status"] = "unresolved"
+            b["findings"] = [{"kind": "blank_page_content",
+                              "detail": "the scanned page is blank, but OCR returned content", "values": []}]
+
+
 def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch_dir: Path) -> dict:
     doc = pymupdf.open(meta["pdf_path"])
     profile = glyph_profile(doc)
     blocks: list[dict] = []
+    blank: set[int] = set()
     for stem in sorted(meta["pages"], key=lambda s: meta["pages"][s]["page"]):
         pm = meta["pages"][stem]
         page_no = pm["page"]
         page = doc[page_no - 1]
+        if pm["scan_like"] and page_ink(page) < BLANK_INK:
+            blank.add(page_no)
         text = PageText(page, page_no, profile)
         pres = (results.get(stem) or [{}])[0]
         page_recs = []
@@ -407,6 +436,7 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
 
     gate_math(blocks)
     repair_math(blocks, doc)
+    guard_blank_pages(blocks, blank)
     provenance = {
         "assembler": ASSEMBLER_VERSION,
         "batch_dir": str(batch_dir),
@@ -605,6 +635,10 @@ def render_markdown(blocks: list[dict]) -> str:
             out.append(f"<!-- pdf-page: {current_page} -->")
         label = b["label"]
         if label in SKIP_LABELS:
+            continue
+        if any(f["kind"] == "blank_page_content" for f in b["findings"]):
+            out.append(f"[Page status: UNRESOLVED (the scanned page is blank, but OCR returned text; "
+                       f"withheld). Verify on PDF p. {b['page']}.]")
             continue
         if label in FIGURE_LABELS:
             if b.get("image"):

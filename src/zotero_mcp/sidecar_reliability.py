@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 PAGE_MARKER_RE = re.compile(r"<!-- pdf-page: (\d+) -->")
-STATUS_LINE_RE = re.compile(r"\[(?:Table|Equation|Math) status: (UNRESOLVED|SINGLE-ROUTE|REPAIRED)\b[^\]]*?PDF p\. (\d+)")
+STATUS_LINE_RE = re.compile(r"\[(?:Table|Equation|Math|Page) status: (UNRESOLVED|SINGLE-ROUTE|REPAIRED)\b[^\]]*?PDF p\. (\d+)")
 WITHHELD_RE = re.compile(r"⟦withheld: unverified number, see PDF p\. (\d+)⟧")
 
 #: Severity order; the worst status in a chunk wins.
