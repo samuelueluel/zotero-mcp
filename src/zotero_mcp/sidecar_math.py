@@ -221,7 +221,7 @@ def _tilde_count(text: str, composed: bool = False) -> int:
 ACCENTS = {"\u0302": "hat", "\u02c6": "hat", "\u0304": "bar", "\u00af": "bar", "\u02c9": "bar",
            "\u0303": "tilde", "\u02dc": "tilde"}
 _ACCENT_MARK = {"hat": "\u0302", "bar": "\u0304", "tilde": "\u0303"}
-_GREEK_NAMES = {unicodedata.name(c).split()[-1].lower().replace("lamda", "lambda"): c
+_GREEK_BY_NAME = {unicodedata.name(c).split()[-1].lower().replace("lamda", "lambda"): c
                 for c in "αβγδεζηθικλμνξοπρστυφχψω"}
 _LATEX_ACCENT = re.compile(  # stacked accents (\hat{\bar{p}}) each count on the letter
     r"(?=\\(hat|widehat|bar|overline|tilde|widetilde)(?![A-Za-z])\s*\{?\s*"
@@ -248,7 +248,7 @@ def _accent_key(accent: str, base: str) -> str | None:
     """``"hat:β"`` for a letter or Greek name; case and style are not compared."""
     if base.startswith("\\"):
         name = base[1:].lower().removeprefix("var")
-        base = _GREEK_NAMES.get(name, "")
+        base = _GREEK_BY_NAME.get(name, "")
     base = unicodedata.normalize("NFKC", base).lower()
     if len(base) != 1 or not base.isalpha():
         return None
