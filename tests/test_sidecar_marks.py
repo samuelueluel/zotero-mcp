@@ -1,4 +1,4 @@
-"""Primes and tildes against the text layer, Stata row-shape fixes, and re-read words."""
+"""Primes, tildes and accents against the text layer, Stata row-shape fixes, and re-read words."""
 
 import re
 from collections import Counter
@@ -29,12 +29,14 @@ def _rows(html):
 
 
 def test_marks_are_counted_on_both_sides():
-    assert sm.latex_marks(r"X'_t \beta + \tilde{x} + y^{\prime\prime} \sim N") == Counter(prime=3, tilde=2)
+    assert sm.latex_marks(r"X'_t \beta + \tilde{x} + y^{\prime\prime} \sim N") == Counter(
+        prime=3, tilde=2, **{"tilde:x": 1})
     assert sm.latex_marks(r"a~b \text{it's}") == Counter()  # ~ is a space in LaTeX
     assert sm.latex_marks(r"A \cong B \simeq C") == Counter(tilde=2)  # the layer may print "∼="
-    assert sm.prose_marks("Muñoz, ln_populat~n, Jensen's") == Counter(tilde=2)
+    assert sm.prose_marks("Muñoz, ln_populat~n, Jensen's") == Counter(tilde=2, **{"tilde:n": 1})
     assert sm._line_marks(_chars([("CMSY10", "0"), ("CMMI10", "X"), ("CMR10", "˜x")])) == Counter(prime=1, tilde=1)
     assert sm._line_marks(_chars([("Helvetica", "Mun˜oz")])) == Counter(tilde=1)
+    assert sm._line_marks(_chars([("Helvetica", "Muñoz")])) == Counter({"tilde:n": 1})
     assert sm.html_marks("<p>Let <math>A(1)^{-1}'</math> be ~</p>") == Counter(prime=1, tilde=1)
 
 
@@ -46,6 +48,35 @@ def test_only_marks_the_page_has_and_the_sidecar_lacks_are_flagged():
     assert sm.marks_findings(sm.prose_marks("Muñoz"), Counter(tilde=1)) == []
 
 
+def test_accents_are_paired_with_the_letter_under_them():
+    def glyph(ch, x0, x1, y0, y1):
+        return ("cmr10", {"c": ch, "bbox": (x0, y0, x1, y1)})
+    # Layers write the hat before or after its letter, even across a space: position decides.
+    line = [glyph("\u0302", 10, 14, 0, 4), glyph(" ", 14, 16, 4, 12), glyph("σ", 9, 15, 4, 12),
+            glyph("x", 20, 26, 4, 12), glyph("¯", 30, 35, 0, 4), glyph("y", 29, 35, 4, 12)]
+    assert sm._line_marks(line) == Counter({"hat:σ": 1, "bar:y": 1})
+    # A zero-width combining hat before a space belongs to the next letter, not the one it touches.
+    stata = [glyph("d", 88, 93.2, 446, 455), glyph("\u0302", 93.2, 93.2, 445, 455), glyph(" ", 93.2, 95.8, 445, 455),
+             glyph("V", 95.8, 101, 445, 455), glyph("D", 103, 109, 444, 451)]
+    assert sm._line_marks(stata) == Counter({"hat:v": 1})
+    # A spacing hat over a letter with a superscript beside it: the taller letter is the base.
+    sup = [glyph("ˆ", 96, 101, 440, 444), glyph("V", 95.8, 101, 445, 455), glyph("D", 100, 106, 444, 450)]
+    assert sm._line_marks(sup) == Counter({"hat:v": 1})
+    assert sm.latex_marks(r"\widehat{\boldsymbol{\sigma}} \overline{\mathbf{Y}}_n \hat{\text{ATE}}") == Counter(
+        {"hat:σ": 1, "bar:y": 1})
+    assert sm.latex_marks(r"\hat{\bar{p}} \overline{\hat{f}(x)}") == Counter(
+        {"hat:p": 1, "bar:p": 1, "hat:f": 1, "bar:f": 1})
+
+
+def test_a_swapped_accent_is_flagged_but_a_missing_one_is_not():
+    page = Counter({"hat:γ": 1, "tilde:x": 1, "tilde": 1})
+    ours = sm.latex_marks(r"\tilde{\mathbf{x}} \tilde{\gamma}'")
+    assert sm.marks_findings(ours, page)[0]["values"] == ["PDF prints γ\u0302, the sidecar γ\u0303"]
+    assert sm.marks_findings(sm.latex_marks(r"\tilde{x} \gamma"), page) == []
+    tilde_to_bar = sm.marks_findings(sm.latex_marks(r"g(\bar{X}_n)"), Counter({"tilde:x": 1, "tilde": 1}))
+    assert tilde_to_bar[0]["values"] == ["PDF has 1 more ~", "PDF prints x\u0303, the sidecar x\u0304"]
+
+
 def test_a_dropped_tilde_makes_an_equation_differ():
     _doc, page = _page((60, "x ~ N(0, 1)"))
     box = (30, 40, 370, 70)
@@ -53,7 +84,7 @@ def test_a_dropped_tilde_makes_an_equation_differ():
     lost = sm.check_equation(r'<math display="block">x \in N(0, 1)</math>', page, box)
     assert lost.status == "differ" and [f["kind"] for f in lost.findings] == ["math_marks_missing"]
     line = _math_status_line({"label": "Equation", "page": 3, "findings": lost.findings, "repairs": []})
-    assert line.startswith("[Equation status: UNRESOLVED (primes or tildes") and "PDF p. 3" in line
+    assert line.startswith("[Equation status: UNRESOLVED (primes, tildes or accents") and "PDF p. 3" in line
     prose = sm.check_inline_math("<p><math>x \\in N(0, 1)</math></p>", page, box)
     assert [f["kind"] for f in prose.findings] == ["math_marks_missing"]
 

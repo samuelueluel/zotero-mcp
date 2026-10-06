@@ -48,7 +48,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/10"
+ASSEMBLER_VERSION = "sidecar-assemble/11"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -197,7 +197,7 @@ def _status_line(block: dict) -> str | None:
     kinds = {f["kind"] for f in block["findings"]}
     if "math_marks_missing" in kinds:
         what = "; ".join(next(f["values"] for f in block["findings"] if f["kind"] == "math_marks_missing"))
-        return (f"[Table status: SINGLE-ROUTE (tildes or primes printed on the page are missing here: {what}); "
+        return (f"[Table status: SINGLE-ROUTE (primes, tildes or accents on the page are missing or read differently here: {what}); "
                 f"check names and labels on PDF p. {page} before quoting.]")
     if "vlm_agreement" in kinds and "vlm_rewrite" not in kinds and "label_text_lost" not in kinds:
         return (f"[Table status: SINGLE-ROUTE (no PDF text layer; Surya and a second model agree on every number, "
@@ -349,11 +349,11 @@ def restore_marks(fragment: str, page, clip) -> tuple[str, list[dict]]:
     return "".join(parts), repairs
 
 
-_MARK_CHARS = re.compile("[\u2032\u2033\u2034~\u223c\u02dc\u0303]")
+_MARK_CHARS = re.compile("[\u2032\u2033\u2034~\u223c\u02dc\u0303\u0302\u02c6\u0304\u00af\u02c9]")
 
 
 def _missing_marks(fragment: str, text: PageText, page, pdf_bbox, pad: float = 0.0) -> list[dict]:
-    """``math_marks_missing`` when the text layer prints primes or tildes the block lacks."""
+    """``math_marks_missing`` when the text layer prints primes, tildes or accents the block lacks."""
     if not _MARK_CHARS.search("".join(text.words(pdf_bbox))):
         return []
     found = layer_math(page, pdf_bbox, pad=pad)
@@ -732,10 +732,10 @@ def _math_status_line(block: dict) -> str | None:
             return f"[Equation status: UNRESOLVED ({why}: {what}). Check PDF p. {page} before quoting.]"
         if f["kind"] == "math_marks_missing":
             if block["label"] == "Equation":
-                return (f"[Equation status: UNRESOLVED (primes or tildes printed on the page are missing here: "
+                return (f"[Equation status: UNRESOLVED (primes, tildes or accents on the page are missing or read differently here: "
                         f"{what}). Check PDF p. {page} before quoting.]")
             if block["label"] != "Table":
-                return (f"[Math status: SINGLE-ROUTE (primes or tildes printed on the page are missing here: "
+                return (f"[Math status: SINGLE-ROUTE (primes, tildes or accents on the page are missing or read differently here: "
                         f"{what}). Check PDF p. {page} before quoting.]")
         if f["kind"] == "inline_math_symbols_differ":
             return (f"[Math status: SINGLE-ROUTE (inline math or text differs from the PDF text layer: {what}). "

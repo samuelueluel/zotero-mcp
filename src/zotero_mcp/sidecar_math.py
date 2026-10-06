@@ -211,19 +211,58 @@ def _tilde_count(text: str, composed: bool = False) -> int:
     return n
 
 
+#: Accents over a letter, keyed "accent:base" (:func:`_accent_key`). Surya trades
+#: one for another (x-tilde read as x-bar, gamma-hat as gamma-tilde) while every
+#: other count still matches.
+ACCENTS = {"\u0302": "hat", "\u02c6": "hat", "\u0304": "bar", "\u00af": "bar", "\u02c9": "bar",
+           "\u0303": "tilde", "\u02dc": "tilde"}
+_ACCENT_MARK = {"hat": "\u0302", "bar": "\u0304", "tilde": "\u0303"}
+_GREEK_NAMES = {unicodedata.name(c).split()[-1].lower().replace("lamda", "lambda"): c
+                for c in "αβγδεζηθικλμνξοπρστυφχψω"}
+_LATEX_ACCENT = re.compile(  # stacked accents (\hat{\bar{p}}) each count on the letter
+    r"(?=\\(hat|widehat|bar|overline|tilde|widetilde)(?![A-Za-z])\s*\{?\s*"
+    r"(?:\\(?:math[a-z]+|boldsymbol|bm|hat|widehat|bar|overline|tilde|widetilde)\s*\{?\s*)*"
+    r"(\\[A-Za-z]+|[A-Za-z]))")
+
+
+def _accent_key(accent: str, base: str) -> str | None:
+    """``"hat:β"`` for a letter or Greek name; case and style are not compared."""
+    if base.startswith("\\"):
+        name = base[1:].lower().removeprefix("var")
+        base = _GREEK_NAMES.get(name, "")
+    base = unicodedata.normalize("NFKC", base).lower()
+    if len(base) != 1 or not base.isalpha():
+        return None
+    base = {"ϵ": "ε", "ϑ": "θ", "ϕ": "φ", "ς": "σ"}.get(base, base)
+    return f"{accent}:{base}"
+
+
+def _composed_accents(text: str) -> Counter:
+    """Accents written composed with or combining onto their letter (ŷ, x̃)."""
+    out: Counter = Counter()
+    for m in re.finditer(r"(\w)([\u0302\u0303\u0304])", unicodedata.normalize("NFD", text)):
+        if key := _accent_key(ACCENTS[m.group(2)], m.group(1)):
+            out[key] += 1
+    return out
+
+
 def latex_marks(latex: str) -> Counter:
-    """Primes and tildes of LaTeX. ASCII ``~`` is a space there, not a tilde."""
+    """Primes, tildes and accented letters of LaTeX. ASCII ``~`` is a space there, not a tilde."""
     s = _TEXT_GROUPS.sub(" ", latex)
     primes = s.count("'") + len(re.findall(r"\\prime(?![A-Za-z])", s)) + sum(PRIMES.get(c, 0) for c in s)
     # \cong and \simeq print a tilde over a bar; text layers often split them ("∼=").
     tildes = len(re.findall(r"\\(?:tilde|widetilde|sim|simeq|cong|approxeq)(?![A-Za-z])", s)) \
         + _tilde_count(s.replace("~", " "), True) + sum(1 for c in s if c in "≅≃")
-    return Counter(prime=primes, tilde=tildes) + Counter()
+    accents = Counter(key for m in _LATEX_ACCENT.finditer(s)
+                      if (key := _accent_key({"widehat": "hat", "overline": "bar", "widetilde": "tilde"}
+                                             .get(m.group(1), m.group(1)), m.group(2))))
+    return Counter(prime=primes, tilde=tildes) + accents + _composed_accents(s)
 
 
 def prose_marks(text: str) -> Counter:
-    """Primes and tildes of prose; apostrophes are not primes."""
-    return Counter(prime=sum(PRIMES.get(c, 0) for c in text), tilde=_tilde_count(text, True)) + Counter()
+    """Primes, tildes and accented letters of prose; apostrophes are not primes."""
+    return Counter(prime=sum(PRIMES.get(c, 0) for c in text), tilde=_tilde_count(text, True)) \
+        + _composed_accents(text)
 
 
 def html_marks(html: str) -> Counter:
@@ -248,25 +287,72 @@ def _line_marks(chars) -> Counter:
         else:
             out["prime"] += PRIMES.get(ch, 0)
             out["tilde"] += _tilde_count(ch)
-    return out + Counter()
+    return out + _line_accents(chars)
+
+
+def _line_accents(chars) -> Counter:
+    """Accents paired with their letter.
+
+    A combining accent with no width (LuaTeX, Stata's manuals) comes before its
+    letter, often with a space between: it belongs to the next letter. An accent
+    glyph with width sits over its letter: the tallest letter under its centre,
+    so a sub- or superscript beside the accented letter is not taken for it.
+    Letters composed with an accent (ŷ) count as they are.
+    """
+    out: Counter = Counter()
+    letters = [c for f, c in chars if "bbox" in c and c["c"].isalpha() and not _extension(f)]
+    for i, (font, c) in enumerate(chars):
+        ch = c["c"]
+        if len(d := unicodedata.normalize("NFD", ch)) > 1 and d[1] in ACCENTS and d[0].isalpha():
+            if key := _accent_key(ACCENTS[d[1]], d[0]):
+                out[key] += 1
+            continue
+        if ch not in ACCENTS or "bbox" not in c or _extension(font):
+            continue
+        x0, y0, x1, y1 = c["bbox"]
+        if x1 - x0 < 0.5:
+            nxt = next((b for _f, b in chars[i + 1:i + 3] if not b["c"].isspace()), None)
+            base = nxt["c"] if nxt and nxt["c"].isalpha() and nxt.get("bbox", (x0,))[0] - x0 < 6 else ""
+        else:
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            under = [(b["bbox"][3] - b["bbox"][1], -abs((b["bbox"][0] + b["bbox"][2]) / 2 - cx), b["c"])
+                     for b in letters
+                     if b["bbox"][0] - 1 <= cx <= b["bbox"][2] + 1 and (b["bbox"][1] + b["bbox"][3]) / 2 > cy]
+            base = max(under)[2] if under else ""
+        if base and (key := _accent_key(ACCENTS[ch], base)):
+            out[key] += 1
+    return out
 
 
 def marks_findings(ours: Counter, page: Counter) -> list[dict]:
-    """A finding when the page prints primes or tildes the sidecar lacks."""
+    """A finding when the page prints primes or tildes the sidecar lacks, or
+    puts a different accent on a letter (x̃ printed, x̄ in the sidecar).
+
+    An accent the layer has and the sidecar lacks is no finding by itself:
+    layers misplace accents too often for that to mean anything.
+    """
     missing = page - ours
-    if not missing:
-        return []
+    extra = ours - page
     glyph = {"prime": "′", "tilde": "~"}
+    values = [f"PDF has {missing[k]} more {glyph[k]}" for k in ("prime", "tilde") if missing[k]]
+    for key in sorted(k for k in missing if ":" in k):
+        accent, base = key.split(":")
+        for other in ("hat", "bar", "tilde"):
+            if other != accent and extra[f"{other}:{base}"]:
+                values.append(f"PDF prints {base}{_ACCENT_MARK[accent]}, the sidecar {base}{_ACCENT_MARK[other]}")
+                break
+    if not values:
+        return []
     return [{"kind": "math_marks_missing",
-             "detail": "the PDF prints primes or tildes the sidecar lacks",
-             "values": [f"PDF has {n} more {glyph[k]}" for k, n in sorted(missing.items())]}]
+             "detail": "the PDF prints primes, tildes or accents the sidecar lacks or reads differently",
+             "values": values}]
 
 
 @dataclass
 class LayerMath:
     symbols: Counter = field(default_factory=Counter)
     labels: list[str] = field(default_factory=list)
-    #: Primes and tildes (:func:`latex_marks`).
+    #: Primes, tildes and accented letters (:func:`latex_marks`).
     marks: Counter = field(default_factory=Counter)
     #: Characters that are not what they print (unmapped glyphs, fake code points).
     untrusted: int = 0
