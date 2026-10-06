@@ -48,7 +48,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/12"
+ASSEMBLER_VERSION = "sidecar-assemble/13"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")

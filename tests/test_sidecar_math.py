@@ -61,15 +61,16 @@ class _FakePage:
     """A text layer of (text, y0, y1) lines, each 5 pt per glyph."""
     rotation = 0
 
-    def __init__(self, lines):
+    def __init__(self, lines, font="CMMI10"):
         self.lines = lines
+        self.font = font
 
     def get_text(self, kind, clip=None):
         out = []
         for glyphs in self.lines:
             chars = [{"c": c, "bbox": (40 + 5 * i, y0, 45 + 5 * i, y1)} for i, (c, y0, y1) in enumerate(glyphs)]
             box = (40, min(c["bbox"][1] for c in chars), 40 + 5 * len(chars), max(c["bbox"][3] for c in chars))
-            out.append({"lines": [{"bbox": box, "spans": [{"font": "CMMI10", "chars": chars}]}]})
+            out.append({"lines": [{"bbox": box, "spans": [{"font": self.font, "chars": chars}]}]})
         return {"blocks": out}
 
 
@@ -112,14 +113,20 @@ def test_only_status_lines_lower_a_math_chunk():
 
 
 def test_glyphs_without_unicode_meaning_disable_the_check():
-    assert not sm._trusted("\x12")  # an unmapped epsilon
+    assert not sm._trusted("\x12")  # an unmapped glyph
     assert not sm._trusted("ð") and not sm._trusted("ǁ")  # fake delimiters
     assert not sm._trusted("൬")  # Word math bracket in Malayalam
     assert sm._trusted("ﬁ") and sm._trusted("µ") and sm._trusted("ˆ")
     assert sm._trusted("é") and sm._trusted("î")
-    page = _FakePage([[(c, 50, 60) for c in "x=\x12+y"]])
+    page = _FakePage([[(c, 50, 60) for c in "x=\x12+y"]], font="Unknown-Math")
     assert sm.check_equation(r'<math display="block">x = \epsilon + y</math>', page, (30, 44, 370, 62)).status \
         == "no-layer"
+    # Knuth's math fonts without a Unicode map: read through TeX's OML and OMS encodings.
+    page = _FakePage([[(c, 50, 60) for c in "x=\x12+y"]])
+    assert sm.check_equation(r'<math display="block">x = \theta + y</math>', page, (30, 44, 370, 62)).status == "agree"
+    assert [sm._decode("cmsy10", c) for c in "\x00jfgp1s"] == list("−|{}√∞∫")
+    assert sm._decode("cmsy10", "{") == "{" and sm._decode("mtmi", "\x05") == "\x05"  # mapped / not Knuth's
+    assert sm._line_symbols(_chars([("TTdccsc10", "yd")])) == Counter({"Y": 1, "D": 1})  # small capitals
     assert sm._line_symbols(_chars([("NimbusRomNo9L-ReguItal", "IBa")])) == Counter({"B": 1, "a": 1})  # unit ball
     assert sm._line_symbols(_chars([("CMR10", "IBM")])) == Counter("IBM")
     assert sm._line_symbols(_chars([("LMMathExtension10-Regular", "X")])) == Counter({"∑": 1})

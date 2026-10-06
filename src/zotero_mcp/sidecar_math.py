@@ -427,8 +427,8 @@ def layer_math(page, pdf_bbox, *, find_labels: bool = False, pad: float = 0.0) -
         for line in block.get("lines", []):
             # A line belongs to the box when most of its glyphs do; otherwise the
             # few inside are subscripts or descenders of a neighbouring line.
-            every = [(sp["font"].lower(), c) for sp in line["spans"] for c in sp["chars"]
-                     if not c["c"].isspace() or unicodedata.category(c["c"]) == "Cc"]
+            every = [(f, {**c, "c": _decode(f, c["c"])}) for sp in line["spans"] for c in sp["chars"]
+                     if (f := sp["font"].lower()) and (not c["c"].isspace() or unicodedata.category(c["c"]) == "Cc")]
             chars = [(f, c) for f, c in every
                      if rect.contains(pymupdf.Point((c["bbox"][0] + c["bbox"][2]) / 2,
                                                     (c["bbox"][1] + c["bbox"][3]) / 2))]
@@ -503,9 +503,35 @@ def _head_len(chars, label: str) -> int:
 
 def _extension(font: str) -> bool:
     """TeX extension fonts: big operators plus delimiter pieces with no Unicode meaning."""
-    # WWDOC fonts build brackets from letter glyphs (Oxford and Elsevier journals).
-    return any(x in font for x in ("cmex", "extension", "symbolext", "esint", "txex", "pxex", "mathex", "wwdoc")) \
-        or font.endswith("-ex")
+    # WWDOC fonts build brackets from letter glyphs (Oxford and Elsevier journals);
+    # MTEX and MT2EX are MathTime's extension fonts.
+    return any(x in font for x in ("cmex", "extension", "symbolext", "esint", "txex", "pxex", "mathex", "wwdoc",
+                                   "mtex", "mt2ex")) or font.endswith("-ex")
+
+
+#: TeX's math encodings, for fonts embedded without a Unicode map: their low
+#: codes arrive as control characters. OML (math italic: Greek) and OMS (math
+#: symbols); codes above these tables stay unreadable.
+_OML = dict(zip(range(0x28), "ΓΔΘΛΞΠΣΥΦΨΩαβγδϵζηθικλμνξπρστυϕχψωεϑϖϱςφ"))
+_OMS = dict(zip(range(0x20), "−·×∗÷⋄±∓⊕⊖⊗⊘⊙◯∘•≍≡⊆⊇≤≥⪯⪰∼≈⊂⊃≪≫≺≻"))
+#: OMS digits and lowercase letters are symbols too (a mapped font never yields
+#: them, so these are unambiguous); OML's "@" and "`" are ∂ and ℓ.
+_OMS.update(zip(map(ord, "0123456789"), "′∞∈∋△▽\u0338↦∀∃"))
+_OMS.update(zip(map(ord, "abcdefghijklmnopqrstuvwxyz"), "⊣⌊⌋⌈⌉{}⟨⟩|‖↕⇕\\≀√⨿∇∫⊔⊓⊑⊒§†‡"))
+_OML.update({ord("@"): "∂", ord("`"): "ℓ"})
+
+
+def _decode(font: str, ch: str) -> str:
+    """A control character of an unmapped TeX math font, read through its encoding."""
+    if len(ch) != 1:
+        return ch
+    control = ord(ch) < 0x28 and unicodedata.category(ch) == "Cc"
+    # Knuth's fonts only: MathTime's MTMI, for one, orders its Greek otherwise.
+    if "cmmi" in font and (control or ch in "@`"):
+        return _OML.get(ord(ch), ch)
+    if "cmsy" in font and (control or ch.isdigit() or "a" <= ch <= "z"):
+        return _OMS.get(ord(ch), ch)
+    return ch
 
 
 def _line_symbols(chars) -> Counter:
@@ -525,6 +551,8 @@ def _line_symbols(chars) -> Counter:
             text = "".join(ch for ch in text if not ch.isdigit())
         else:
             text = _BLACKBOARD.sub("", text)
+        if any(x in font for x in ("csc", "smallcap", "caps")):
+            text = text.upper()  # small capitals: the layer reports the lowercase letter printed as a capital
         for ch in unicodedata.normalize("NFKC", text.translate(_ELL)):
             if _counts(ch):
                 out[_norm(ch)] += 1
@@ -604,6 +632,14 @@ def check_inline_math(html: str, page, pdf_bbox) -> MathCheck:
     if found.untrusted or sum(layer.values()) < max(3, sum(ours.values()) // 2):
         return MathCheck("no-layer")
     marks = marks_findings(html_marks(html), found.marks)
+    # Inline ∑ ∫ ∏ come from an extension font too, often as unmapped glyphs.
+    spare = found.unmapped
+    for op in "∑∏∫∪∩":
+        excess = min(spare, (ours - layer)[op])
+        if excess:
+            ours[op] -= excess
+            spare -= excess
+    ours += Counter()
     if ours == layer:
         return MathCheck("differ", marks, ours, layer) if marks else MathCheck("agree")
     return MathCheck("differ", [{"kind": "inline_math_symbols_differ",
