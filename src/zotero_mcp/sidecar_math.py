@@ -9,6 +9,12 @@ for ``\\nu``, one integral where the page has two).
 
 Equation numbers are compared on their own: Surya often keeps a margin label
 ("4.14", "(50)") that the equation box on the page may or may not include.
+
+Primes and tildes are counted on their own (:func:`latex_marks`): a dropped
+transpose (``X'`` read as ``X``) or a tilde accent read as a bar changes the
+meaning while every symbol above still matches. Only marks the page has and
+the sidecar lacks are flagged; a layer often omits them (a prime set as an
+unmapped glyph), so the reverse is no evidence.
 """
 
 from __future__ import annotations
@@ -187,10 +193,81 @@ def _trusted(ch: str) -> bool:
     return 0xC0 <= o <= 0x24F or 0x1E00 <= o <= 0x1EFF
 
 
+#: Prime glyphs and how many primes each prints.
+PRIMES = {"′": 1, "″": 2, "‴": 3}
+_TEXT_GROUPS = re.compile(r"\\(?:text\w*|mbox|operatorname)\s*\{[^{}]*\}")
+
+
+def _tilde_count(text: str, composed: bool = False) -> int:
+    """Tildes: accents (combining or spacing ˜), the operator ∼ and ASCII ~.
+
+    ``composed`` also counts letters with a tilde (ñ): the sidecar's side,
+    since a layer may print "n˜" for the ñ that Surya writes composed. Such
+    letters on the layer side are not counted, so names never raise a flag.
+    """
+    n = sum(1 for c in text if c in "\u0303∼~˜")
+    if composed:
+        n += sum(1 for c in text if len(d := unicodedata.normalize("NFD", c)) > 1 and "\u0303" in d)
+    return n
+
+
+def latex_marks(latex: str) -> Counter:
+    """Primes and tildes of LaTeX. ASCII ``~`` is a space there, not a tilde."""
+    s = _TEXT_GROUPS.sub(" ", latex)
+    primes = s.count("'") + len(re.findall(r"\\prime(?![A-Za-z])", s)) + sum(PRIMES.get(c, 0) for c in s)
+    # \cong and \simeq print a tilde over a bar; text layers often split them ("∼=").
+    tildes = len(re.findall(r"\\(?:tilde|widetilde|sim|simeq|cong|approxeq)(?![A-Za-z])", s)) \
+        + _tilde_count(s.replace("~", " "), True) + sum(1 for c in s if c in "≅≃")
+    return Counter(prime=primes, tilde=tildes) + Counter()
+
+
+def prose_marks(text: str) -> Counter:
+    """Primes and tildes of prose; apostrophes are not primes."""
+    return Counter(prime=sum(PRIMES.get(c, 0) for c in text), tilde=_tilde_count(text, True)) + Counter()
+
+
+def html_marks(html: str) -> Counter:
+    """Primes and tildes of a block: its prose plus its inline or display math."""
+    out: Counter = Counter()
+    for part in re.split(r"(<math[^>]*>.*?</math>)", html, flags=re.S):
+        if part.startswith("<math"):
+            out += latex_marks(html_lib.unescape(re.sub(r"<[^>]+>", " ", part)))
+        else:
+            out += prose_marks(html_lib.unescape(re.sub(r"<[^>]+>", " ", part)))
+    return out
+
+
+def _line_marks(chars) -> Counter:
+    out: Counter = Counter()
+    for font, c in chars:
+        ch = c["c"]
+        if _extension(font):
+            continue
+        if "cmsy" in font and ch == "0":  # the prime glyph of TeX's symbol font, unmapped
+            out["prime"] += 1
+        else:
+            out["prime"] += PRIMES.get(ch, 0)
+            out["tilde"] += _tilde_count(ch)
+    return out + Counter()
+
+
+def marks_findings(ours: Counter, page: Counter) -> list[dict]:
+    """A finding when the page prints primes or tildes the sidecar lacks."""
+    missing = page - ours
+    if not missing:
+        return []
+    glyph = {"prime": "′", "tilde": "~"}
+    return [{"kind": "math_marks_missing",
+             "detail": "the PDF prints primes or tildes the sidecar lacks",
+             "values": [f"PDF has {n} more {glyph[k]}" for k, n in sorted(missing.items())]}]
+
+
 @dataclass
 class LayerMath:
     symbols: Counter = field(default_factory=Counter)
     labels: list[str] = field(default_factory=list)
+    #: Primes and tildes (:func:`latex_marks`).
+    marks: Counter = field(default_factory=Counter)
     #: Characters that are not what they print (unmapped glyphs, fake code points).
     untrusted: int = 0
     #: Extension-font glyphs with no Unicode meaning: delimiter pieces, or a big
@@ -237,6 +314,7 @@ def layer_math(page, pdf_bbox, *, find_labels: bool = False, pad: float = 0.0) -
                     out.labels.append(m.group(1))
                     chars = chars[_head_len(chars, m.group(0)):]
             out.symbols += _line_symbols(chars)
+            out.marks += _line_marks(chars)
     return out
 
 
@@ -324,6 +402,7 @@ def check_equation(html: str, page, pdf_bbox) -> MathCheck:
             surya_labels += labels
         else:
             ours += html_symbols(part)
+    our_marks = html_marks(html)
     layer = layer_math(page, pdf_bbox, find_labels=True)
     if layer.untrusted or sum(layer.symbols.values()) < max(3, sum(ours.values()) // 4):
         return MathCheck("no-layer")
@@ -353,6 +432,7 @@ def check_equation(html: str, page, pdf_bbox) -> MathCheck:
     if layer.labels and set(surya_labels) - set(layer.labels):
         findings.append({"kind": "equation_number_differs", "detail": "",
                          "values": [f"sidecar ({', '.join(surya_labels)})", f"PDF ({', '.join(layer.labels)})"]})
+    findings += marks_findings(our_marks, layer.marks)
     return MathCheck("differ" if findings else "agree", findings, ours, layer.symbols)
 
 
@@ -364,11 +444,12 @@ def check_inline_math(html: str, page, pdf_bbox) -> MathCheck:
     layer = _fold(found.symbols)
     if found.untrusted or sum(layer.values()) < max(3, sum(ours.values()) // 2):
         return MathCheck("no-layer")
+    marks = marks_findings(html_marks(html), found.marks)
     if ours == layer:
-        return MathCheck("agree")
+        return MathCheck("differ", marks, ours, layer) if marks else MathCheck("agree")
     return MathCheck("differ", [{"kind": "inline_math_symbols_differ",
                                  "detail": "symbols differ from the PDF text layer",
-                                 "values": _diff_values(ours, layer)}], ours, layer)
+                                 "values": _diff_values(ours, layer)}, *marks], ours, layer)
 
 
 #: Look-alikes Surya confuses, as (what Surya wrote, what the page has). The

@@ -156,7 +156,7 @@ class TableCheck:
 
 STRUCTURAL = {"empty_body_column", "merged_estimate_se", "label_or_header_mismatch", "duplicate_rows"}
 #: Findings that never change status and are left out of the status line.
-INFORMATIONAL = {"merged_estimate_se", "header_rowspan_clamped", "label_or_header_mismatch", "format_variant", "split_token",
+INFORMATIONAL = {"merged_estimate_se", "table_structure_fixed", "header_rowspan_clamped", "label_or_header_mismatch", "format_variant", "split_token",
                  "ocr_detached_dash", "native_label_unmatched", "native_outside_table",
                  "text_layer_fill_failed", "text_table"}
 #: A table needs at least this many anchors (values unique on both sides) for
@@ -1139,6 +1139,72 @@ def split_estimate_se(html: str) -> tuple[str, int]:
     return _CELL_RE.sub(fix_cell, html), count
 
 
+_PURE_NUMBER = re.compile(r"[-+\u2212(]?[\d.,]+\)?[%*]*")
+_ROWSPAN_ATTR = re.compile(r'\s*rowspan\s*=\s*"?\d+"?', re.I)
+
+
+def fix_table_structure(html: str) -> tuple[str, list[str]]:
+    """Split equation names off the data rows of multi-equation software output (Stata).
+
+    The equation name (``W``) is merged into the row below it, or set as a
+    cell spanning the equation's rows: the row is one cell wider than the data
+    rows, opens with two labels, and the header has no heading for the extra
+    column. It is split into a label row and the data row, so the values sit
+    under their headings again. Only rows whose other cells do not span are
+    touched, and only when the data rows agree on one width. Returns the HTML
+    and a note per change. (Headers shifted by an extra empty cell are not
+    reshaped: no rule told them apart from aligned headers; the header
+    position check flags them instead.)
+    """
+    rows = list(_ROW_RE.finditer(html))
+    parsed = [_CELL_RE.findall(m.group(1)) for m in rows]
+
+    def text(inner: str) -> str:
+        return _TAG_RE.sub("", inner).strip()
+
+    def spans(cells) -> bool:
+        return any(_SPAN_RE.search(a) or _ROWSPAN_RE.search(a) for _t, a, _i in cells)
+
+    widths = Counter(len(cells) for cells in parsed
+                     if not spans(cells) and sum(bool(cell_numbers(i)) for _t, _a, i in cells) >= 2)
+    if not widths:
+        return html, []
+    width, n = widths.most_common(1)[0]
+    if n < 2:
+        return html, []
+    # The extra label column must be one the header has no heading for.
+    first_data = next((k for k, cells in enumerate(parsed)
+                       if sum(bool(cell_numbers(i)) for _t, _a, i in cells) >= 2), len(parsed))
+    head_width = max((sum(Cell(t, a, i).colspan for t, a, i in cells) for cells in parsed[:first_data]), default=0)
+    notes: list[str] = []
+    out, pos = [], 0
+    for m, cells in zip(rows, parsed):
+        new = None
+        texts = [text(i) for _t, _a, i in cells]
+        numeric = [bool(cell_numbers(i)) for _t, _a, i in cells]
+        # "exp2" can be the equation name: there only a cell that is all number is not
+        # a label. The row's own label must hold no number at all ("0.65(0.06)" is data).
+        number_only = [bool(_PURE_NUMBER.fullmatch(t)) for t in texts]
+        # The equation name may span its rows; nothing else may span.
+        first_spans = bool(cells) and bool(_ROWSPAN_RE.search(cells[0][1])) and not spans(cells[1:]) \
+            and not _SPAN_RE.search(cells[0][1])
+        if cells and (not spans(cells) or first_spans):
+            if (len(cells) == width + 1 and head_width <= width and texts[0] and texts[1]
+                    and not number_only[0] and not numeric[1]
+                    and (sum(numeric[2:]) >= 2 or first_spans)):
+                tag, attrs, inner = cells[0]
+                attrs = _ROWSPAN_ATTR.sub("", attrs)
+                new = (f"<tr><{tag}{attrs}>{inner}</{tag}>" + "<td></td>" * (width - 1) + "</tr><tr>"
+                       + "".join(f"<td>{i}</td>" for _t, _a, i in cells[1:]) + "</tr>")
+                notes.append(f"split equation label {texts[0]!r} from row {texts[1]!r}")
+        if new is not None:
+            out.append(html[pos:m.start()])
+            out.append(new)
+            pos = m.end()
+    out.append(html[pos:])
+    return "".join(out), notes
+
+
 def verify_table(
     html: str,
     native_tokens: Iterable[NativeToken],
@@ -1199,12 +1265,24 @@ def verify_table(
     source_html = html
     html, clamped = clamp_header_rowspans(html)
     html, merged = split_estimate_se(html)
+    reshaped_html, reshaped = fix_table_structure(html)
+    if reshaped:
+        # Keep a reshape only where the page's word positions back it: headers
+        # no more misplaced than before. Without positions, nothing confirms it.
+        if native and not native_is_ocr and printed_word_boxes is not None and len(
+                misplaced_headers(reshaped_html, native, printed_word_boxes)) <= len(
+                misplaced_headers(html, native, printed_word_boxes)):
+            html = reshaped_html
+        else:
+            reshaped = []
     rows = parse_rows(html)
     roled = numbers_with_roles(html)
     surya = [n for n, _role in roled]
     check = TableCheck("verified", html, surya_numbers=len(surya), native_numbers=len(native))
     if merged:
         check.findings.append(Finding("merged_estimate_se", f"split {merged} estimate/uncertainty cells"))
+    if reshaped:
+        check.findings.append(Finding("table_structure_fixed", "row shape repaired before the check", reshaped))
     if clamped:
         check.findings.append(Finding(
             "header_rowspan_clamped", f"{clamped} header rowspan(s) cut back to the header rows"))

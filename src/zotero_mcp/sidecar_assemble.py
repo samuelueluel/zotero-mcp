@@ -24,7 +24,14 @@ from pathlib import Path
 
 import pymupdf
 
-from .sidecar_math import check_equation, check_inline_math, repair_confusables
+from .sidecar_math import (
+    check_equation,
+    check_inline_math,
+    html_marks,
+    layer_math,
+    marks_findings,
+    repair_confusables,
+)
 from .sidecar_native import (
     glyph_profile,
     image_bbox_to_pdf,
@@ -41,7 +48,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/9"
+ASSEMBLER_VERSION = "sidecar-assemble/10"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -188,6 +195,10 @@ def _status_line(block: dict) -> str | None:
                 f"{stars} significance star(s) corrected from the PDF text layer" if stars else "") if x)
         return f"[Table status: REPAIRED ({how}). Check PDF p. {page} before quoting.]"
     kinds = {f["kind"] for f in block["findings"]}
+    if "math_marks_missing" in kinds:
+        what = "; ".join(next(f["values"] for f in block["findings"] if f["kind"] == "math_marks_missing"))
+        return (f"[Table status: SINGLE-ROUTE (tildes or primes printed on the page are missing here: {what}); "
+                f"check names and labels on PDF p. {page} before quoting.]")
     if "vlm_agreement" in kinds and "vlm_rewrite" not in kinds and "label_text_lost" not in kinds:
         return (f"[Table status: SINGLE-ROUTE (no PDF text layer; Surya and a second model agree on every number, "
                 f"nothing else confirms them). Check PDF p. {page} before quoting decisive numbers.]")
@@ -269,6 +280,86 @@ def repair_words(fragment: str, page, clip) -> tuple[str, list[dict]]:
 
         out.append(_WORD.sub(fix, seg))
     return "".join(out), repairs
+
+
+#: A token with inner dashes (``ln_populat-n``) that may stand for a tilde.
+_DASHED = re.compile(r"[\w.#]+(?:[-\u2013][\w.#]+)+")
+_TILDE_RUN = re.compile(r"^~{3,}$")
+_DASH_RUN = re.compile(r"(?<![\w-])-{3,}(?![\w-])")
+
+
+def restore_marks(fragment: str, page, clip) -> tuple[str, list[dict]]:
+    """Put back tildes Surya read as dashes, from a born-digital text layer.
+
+    Stata abbreviates long names with a tilde (``ln_populat~n``) and marks
+    dynamic-document code with ``~~~~`` fences; Surya writes ``-`` and
+    ``-----``. A dashed word is replaced only when it is absent from the
+    native words inside the block and the native words hold exactly that word
+    with tildes for the dashes. Dash runs become the layer's tilde fences only
+    when the layer has as many fence lines and no dash-only line. Math and
+    tags are skipped.
+    """
+    rect = pymupdf.Rect(clip)
+    if page.rotation:
+        rect = rect * page.derotation_matrix
+        rect.normalize()
+    words = page.get_text("words", clip=rect)
+    if not any("~" in w[4] for w in words):
+        return fragment, []
+    native = {w[4].strip(",;:()[]\"'*\u201c\u201d").rstrip(".") for w in words}
+    tilde = {}
+    for w in native:
+        if "~" in w and w.strip("~"):
+            tilde.setdefault(w.replace("~", "-"), set()).add(w)
+    lines = [ln.strip() for ln in page.get_text("text", clip=rect).splitlines()]
+    fences = [ln for ln in lines if _TILDE_RUN.match(ln)]
+    dash_lines = any(re.fullmatch(r"-{3,}", ln) for ln in lines)
+    repairs: list[dict] = []
+    parts = _SEGMENT.split(fragment)
+    in_math = False
+    text_parts = []
+    for i, seg in enumerate(parts):
+        if seg.startswith("<"):
+            low = seg.lower()
+            in_math = True if low.startswith("<math") else False if low.startswith("</math") else in_math
+        elif not in_math:
+            text_parts.append(i)
+
+    def fix(m: re.Match) -> str:
+        word = m.group(0)
+        cands = tilde.get(word.replace("\u2013", "-"), set())
+        if word in native or len(cands) != 1:
+            return word
+        after = next(iter(cands))
+        repairs.append({"kind": "mark", "before": word, "after": after, "route": "native_text_layer"})
+        return after
+
+    for i in text_parts:
+        parts[i] = _DASHED.sub(fix, parts[i])
+    runs = sum(len(_DASH_RUN.findall(parts[i])) for i in text_parts)
+    if fences and not dash_lines and runs == len(fences):
+        queue = iter(fences)
+
+        def fence(m: re.Match) -> str:
+            after = next(queue)
+            repairs.append({"kind": "mark", "before": m.group(0), "after": after, "route": "native_text_layer"})
+            return after
+        for i in text_parts:
+            parts[i] = _DASH_RUN.sub(fence, parts[i])
+    return "".join(parts), repairs
+
+
+_MARK_CHARS = re.compile("[\u2032\u2033\u2034~\u223c\u02dc\u0303]")
+
+
+def _missing_marks(fragment: str, text: PageText, page, pdf_bbox, pad: float = 0.0) -> list[dict]:
+    """``math_marks_missing`` when the text layer prints primes or tildes the block lacks."""
+    if not _MARK_CHARS.search("".join(text.words(pdf_bbox))):
+        return []
+    found = layer_math(page, pdf_bbox, pad=pad)
+    if found.untrusted:
+        return []
+    return marks_findings(html_marks(fragment), found.marks)
 
 
 def _check_text_numbers(fragment: str, tokens) -> tuple[str, list[dict]]:
@@ -381,6 +472,11 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 rec["status"] = "not-text"
             elif label == "Table":
                 tokens, ocr = table_native(text, pdf_bbox, owners, pm["scan_like"])
+                marks: list[dict] = []
+                if not ocr:
+                    restored, marks = restore_marks(rec["html"], page, pdf_bbox)
+                    if marks:
+                        rec["surya_html"], rec["html"] = rec["html"], restored
                 lines = None if ocr else text.text_lines(pdf_bbox)
                 check = verify_table(
                     rec["html"], tokens, native_is_ocr=ocr,
@@ -390,11 +486,15 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                     printed_lines=lines,
                     printed_word_boxes=None if ocr else text.word_boxes(pdf_bbox))
                 if any(r.get("route") in ("native_cell", "native_stars") for r in check.repairs):
-                    rec["surya_html"] = rec["html"]
+                    rec.setdefault("surya_html", rec["html"])
                 rec["status"] = check.status
                 rec["html"] = check.html
                 rec["findings"] = [{"kind": f.kind, "detail": f.detail, "values": f.values[:40]} for f in check.findings]
-                rec["repairs"] = check.repairs
+                rec["repairs"] = marks + check.repairs
+                if not ocr and (missing := _missing_marks(rec["html"], text, page, pdf_bbox)):
+                    rec["findings"] += missing
+                    if rec["status"] == "verified":
+                        rec["status"] = "single-route"
                 rec["counts"] = {"surya": check.surya_numbers, "native": check.native_numbers}
                 if ocr and not pm["scan_like"]:
                     rec["ocr_layer"] = True
@@ -417,6 +517,8 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                 ocr = pm["scan_like"] or text.ocr_layer(pdf_bbox)
                 if not ocr:
                     rec["html"], rec["repairs"] = repair_words(rec["html"], page, pdf_bbox)
+                    rec["html"], marks = restore_marks(rec["html"], page, pdf_bbox)
+                    rec["repairs"] += marks
                 status, findings = _check_text_numbers(rec["html"], text.tokens(pdf_bbox))
                 if ocr and status == "verified":
                     status = "single-route"
@@ -428,6 +530,10 @@ def assemble_item(item_key: str, meta: dict, results: dict, out_dir: Path, batch
                         findings = findings + math.findings
                         if status in ("verified", "no-numbers"):
                             status = "single-route"
+                elif not ocr and (missing := _missing_marks(rec["html"], text, page, pdf_bbox, pad=4.0)):
+                    findings = findings + missing
+                    if status in ("verified", "no-numbers"):
+                        status = "single-route"
                 rec["status"], rec["findings"] = status, findings
             if rec["surya_error"]:
                 rec["status"] = "unresolved"
@@ -472,15 +578,19 @@ def gate_math(blocks: list[dict]) -> None:
         for b in differ:
             b["findings"] = [f for f in b["findings"] if f["kind"] not in _MATH_DIFFER]
             b["findings"].insert(0, {"kind": "math_single_route", "detail": detail, "values": []})
-            if not b.get("surya_error"):
+            if not b.get("surya_error") and not _has_marks(b):
                 b["status"] = "single-route"
     prose = [b for b in blocks if "_math_checked" in b]
     flagged = [b for b in prose if any(f["kind"] == "inline_math_symbols_differ" for f in b["findings"])]
     if len(prose) >= 10 and len(flagged) > MATH_GATE_SHARE * len(prose):
         for b in flagged:
             b["findings"] = [f for f in b["findings"] if f["kind"] != "inline_math_symbols_differ"]
-            if not b.get("surya_error"):
+            if not b.get("surya_error") and not _has_marks(b):
                 b["status"] = b["_math_checked"]
+
+
+def _has_marks(block: dict) -> bool:
+    return any(f["kind"] == "math_marks_missing" for f in block["findings"])
 
 
 def repair_math(blocks: list[dict], doc) -> None:
@@ -566,8 +676,8 @@ def summarize(item_key: str, meta: dict, blocks: list[dict]) -> dict:
     n_pages = len(meta["pages"])
     equations = [b for b in blocks if b["label"] == "Equation"]
     eq_unresolved = sum(1 for b in equations if b["status"] == "unresolved")
-    inline_flags = sum(1 for b in blocks if b["label"] != "Equation"
-                       and any(f["kind"] == "inline_math_symbols_differ" for f in b["findings"]))
+    inline_flags = sum(1 for b in blocks if b["label"] != "Equation" and any(
+        f["kind"] in ("inline_math_symbols_differ", "math_marks_missing") for f in b["findings"]))
     if table_counts.get("unresolved"):
         level = "warn"
     elif scan_pages or table_counts.get("single-route") or table_counts.get("repaired") or eq_unresolved:
@@ -620,6 +730,13 @@ def _math_status_line(block: dict) -> str | None:
             why = ("equation number differs from the PDF" if f["kind"] == "equation_number_differs"
                    else "symbols differ from the PDF text layer")
             return f"[Equation status: UNRESOLVED ({why}: {what}). Check PDF p. {page} before quoting.]"
+        if f["kind"] == "math_marks_missing":
+            if block["label"] == "Equation":
+                return (f"[Equation status: UNRESOLVED (primes or tildes printed on the page are missing here: "
+                        f"{what}). Check PDF p. {page} before quoting.]")
+            if block["label"] != "Table":
+                return (f"[Math status: SINGLE-ROUTE (primes or tildes printed on the page are missing here: "
+                        f"{what}). Check PDF p. {page} before quoting.]")
         if f["kind"] == "inline_math_symbols_differ":
             return (f"[Math status: SINGLE-ROUTE (inline math or text differs from the PDF text layer: {what}). "
                     f"Check PDF p. {page} before quoting.]")

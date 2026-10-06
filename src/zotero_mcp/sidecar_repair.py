@@ -45,7 +45,7 @@ from .sidecar_native import glyph_profile, upright_rotation
 from .sidecar_assemble import PageText, neighbour_html, owner_keys, table_native, write_outputs
 from .sidecar_verify import readings_agree, verify_table
 
-REPAIR_VERSION = "sidecar-repair/5"
+REPAIR_VERSION = "sidecar-repair/6"
 _STAR_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.S | re.I)
 CROP_ZOOM = 200 / 72
 PROMPT = (
@@ -105,6 +105,67 @@ def star_disagreement(surya_html: str, reread_html: str, printed_text: str) -> s
     return f"stars: Surya {before}, re-read {after}, text layer {printed_text.count('*')}"
 
 
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z_~'’.-]*[A-Za-z]")
+_SEG_RE = re.compile(r"(<[^>]+>)")
+#: "0.305" where the page prints ".305" (Stata, many journals).
+_LEADING_ZERO = re.compile(r"(?<![\d.])(-?)0(\.\d+)")
+
+
+def _one_edit(a: str, b: str) -> bool:
+    """``a`` and ``b`` differ by one substitution, insertion or deletion."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    short, long_ = sorted((a, b), key=len)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def reconcile_rewrite(html: str, surya_html: str, printed: list[str]) -> tuple[str, list[dict], list[str]]:
+    """Hold a re-read's words and number spellings to what Surya and the page have.
+
+    The numeric check never sees words: a re-read can write "Spacial" where
+    both Surya and the page have "Spatial". Each re-read word of three or more
+    letters must appear in Surya's reading or the text layer. A word one edit
+    from exactly one text-layer word takes that word's spelling; any other
+    unknown word is returned, and the caller rejects the re-read. Numbers the
+    model padded with a leading zero ("0.305" for ".305") get the page's
+    spelling back. Returns the HTML, repair records and the unknown words.
+    """
+    layer_text = " ".join(printed)
+    layer = set(_WORD_RE.findall(layer_text))
+    known = layer | set(_WORD_RE.findall(_TAG_TEXT.sub(" ", surya_html)))
+    repairs: list[dict] = []
+    unknown: list[str] = []
+
+    def word(m: re.Match) -> str:
+        w = m.group(0)
+        if len(w) < 3 or w in known:
+            return w
+        near = [k for k in layer if _one_edit(w, k)]
+        if len(near) == 1:
+            repairs.append({"kind": "word", "before": w, "after": near[0], "route": "native_text_layer"})
+            return near[0]
+        unknown.append(w)
+        return w
+
+    def zero(m: re.Match) -> str:
+        bare = m.group(1) + m.group(2)
+        if re.search(r"(?<![\d.])" + re.escape(bare) + r"(?!\d)", layer_text) and m.group(0) not in layer_text:
+            repairs.append({"kind": "format", "before": m.group(0), "after": bare, "route": "native_text_layer"})
+            return bare
+        return m.group(0)
+
+    parts = _SEG_RE.split(html)
+    for i, seg in enumerate(parts):
+        if not seg.startswith("<"):
+            parts[i] = _LEADING_ZERO.sub(zero, _WORD_RE.sub(word, seg))
+    return "".join(parts), repairs, unknown
+
+
+_TAG_TEXT = re.compile(r"<[^>]+>")
+
+
 def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
     sidecar_dir = Path(sidecar_dir)
     record = json.loads((sidecar_dir / f"{item_key}.blocks.json").read_text(encoding="utf-8"))
@@ -155,6 +216,7 @@ def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
             tokens, ocr = table_native(text, b["pdf_bbox"], owners, b.get("scan_like", False))
             printed = None if ocr else text.words(b["pdf_bbox"])
             check = verify_table(html, tokens, native_is_ocr=ocr, printed_words=printed, fill=False,
+                                 printed_word_boxes=None if ocr else text.word_boxes(b["pdf_bbox"]),
                                  context_html=neighbour_html(
                                      b["pdf_bbox"], [(x["html"], x["pdf_bbox"], x["label"]) for x in page_blocks if x is not b]))
             if ocr:
@@ -162,6 +224,11 @@ def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
             else:
                 ok = check.status in ("verified", "repaired")
             stars = star_disagreement(b.get("surya_html", b["html"]), check.html, " ".join(printed or ()))
+            words: list[dict] = []
+            if ok and not stars and printed is not None:
+                check.html, words, unknown = reconcile_rewrite(check.html, b.get("surya_html", b["html"]), printed)
+                if unknown:
+                    stars = "words in neither Surya's reading nor the page: " + ", ".join(sorted(set(unknown))[:8])
             if ok and not stars:
                 b.setdefault("surya_html", b["html"])
                 b["html"] = check.html
@@ -170,11 +237,11 @@ def repair_item(item_key: str, sidecar_dir: Path, vlm_url: str) -> dict:
                                  for f in check.findings]
                 b["findings"].append({
                     "kind": "vlm_rewrite",
-                    "detail": "table re-read by a second model; numbers match the text layer, "
-                              "row and column labels unchecked",
+                    "detail": "table re-read by a second model; numbers match the text layer and words match "
+                              "Surya's reading or the page, but which row and column each value sits in is unchecked",
                     "values": []})
                 b["repairs"] = [{"kind": "table", "route": "vlm_table_reread", "model_url": vlm_url,
-                                 "check_status": check.status}, *check.repairs]
+                                 "check_status": check.status}, *check.repairs, *words]
                 b["counts"] = {"surya": check.surya_numbers, "native": check.native_numbers}
                 summary["accepted"] += 1
                 continue
