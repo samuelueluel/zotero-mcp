@@ -97,7 +97,7 @@ def latex_symbols(latex: str, *, markup: bool = True) -> Counter:
     s = re.sub(r"\\begin\{array\}\s*\{[^}]*\}", " ", latex)
     s = re.sub(r"\\(?:begin|end)\{[A-Za-z*]+\}|&amp;|&lt;|&gt;|&nbsp;", " ", s)
     if markup:
-        s = re.sub(r"<[^>]+>", " ", s)
+        s = _TAG.sub(" ", s)
 
     def command(m: re.Match) -> str:
         name = m.group(1)
@@ -166,7 +166,7 @@ def html_symbols(html: str) -> Counter:
         if part.startswith("<math"):
             out += latex_symbols(part)
         else:
-            text = re.sub(r"<[^>]+>", " ", part)
+            text = _TAG.sub(" ", part)
             out += prose_symbols(text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">"))
     return out
 
@@ -192,6 +192,10 @@ def _trusted(ch: str) -> bool:
     # Accented Latin (names in prose, hats composed with their letter in math).
     return 0xC0 <= o <= 0x24F or 0x1E00 <= o <= 0x1EFF
 
+
+#: An HTML tag. A bare "<" in Surya's text or LaTeX ("p < .10", "a<b") is not one:
+#: a looser pattern would delete everything up to the next ">".
+_TAG = re.compile(r"</?[A-Za-z][A-Za-z0-9]*(?:\s[^<>]*)?/?>")
 
 #: Prime glyphs and how many primes each prints.
 PRIMES = {"′": 1, "″": 2, "‴": 3}
@@ -225,6 +229,21 @@ _LATEX_ACCENT = re.compile(  # stacked accents (\hat{\bar{p}}) each count on the
     r"(\\[A-Za-z]+|[A-Za-z]))")
 
 
+#: Order relations and plus-minus: ``<`` read as ``≤`` or ``>`` as ``<`` flips a
+#: claim while every letter and digit still matches. ``=`` is left out: TeX
+#: layers print ``\neq`` and ``\cong`` with an ``=`` of their own.
+RELATIONS = {"<": "<", ">": ">", "≤": "≤", "⩽": "≤", "≦": "≤", "≥": "≥", "⩾": "≥", "≧": "≥", "±": "±", "∓": "∓"}
+_LATEX_RELATION = re.compile(r"\\(leqslant|geqslant|leqq|geqq|leq|geq|le|ge|lt|gt|pm|mp|ll|gg)(?![A-Za-z])")
+_LATEX_RELATION_CHAR = {"leqslant": "≤", "leqq": "≤", "leq": "≤", "le": "≤", "geqslant": "≥", "geqq": "≥",
+                        "geq": "≥", "ge": "≥", "lt": "<", "gt": ">", "pm": "±", "mp": "∓", "ll": "<<", "gg": ">>"}
+
+
+def _relations(text: str) -> Counter:
+    """Relations, plus slashes: some math fonts print "/" with the code of ">"
+    (Pearson's "S>n" for S/n), so a slash the sidecar has excuses a missing ">"."""
+    return Counter("rel:" + RELATIONS[c] for c in text if c in RELATIONS) + Counter(slash=text.count("/"))
+
+
 def _accent_key(accent: str, base: str) -> str | None:
     """``"hat:β"`` for a letter or Greek name; case and style are not compared."""
     if base.startswith("\\"):
@@ -256,13 +275,19 @@ def latex_marks(latex: str) -> Counter:
     accents = Counter(key for m in _LATEX_ACCENT.finditer(s)
                       if (key := _accent_key({"widehat": "hat", "overline": "bar", "widetilde": "tilde"}
                                              .get(m.group(1), m.group(1)), m.group(2))))
-    return Counter(prime=primes, tilde=tildes) + accents + _composed_accents(s)
+    relations = _relations(s) + Counter("rel:" + c for m in _LATEX_RELATION.finditer(s)
+                                        for c in _LATEX_RELATION_CHAR[m.group(1)])
+    relations["slash"] += len(re.findall(r"\\[dt]?frac(?![A-Za-z])", s))
+    relations["notin"] += len(re.findall(r"\\notin(?![A-Za-z])", s)) + s.count("∉")
+    relations["langle"] += len(re.findall(r"\\langle(?![A-Za-z])", s)) + s.count("⟨")
+    relations["rangle"] += len(re.findall(r"\\rangle(?![A-Za-z])", s)) + s.count("⟩")
+    return Counter(prime=primes, tilde=tildes) + accents + _composed_accents(s) + relations
 
 
 def prose_marks(text: str) -> Counter:
     """Primes, tildes and accented letters of prose; apostrophes are not primes."""
     return Counter(prime=sum(PRIMES.get(c, 0) for c in text), tilde=_tilde_count(text, True)) \
-        + _composed_accents(text)
+        + _composed_accents(text) + _relations(text)
 
 
 def html_marks(html: str) -> Counter:
@@ -270,15 +295,17 @@ def html_marks(html: str) -> Counter:
     out: Counter = Counter()
     for part in re.split(r"(<math[^>]*>.*?</math>)", html, flags=re.S):
         if part.startswith("<math"):
-            out += latex_marks(html_lib.unescape(re.sub(r"<[^>]+>", " ", part)))
+            out += latex_marks(html_lib.unescape(_TAG.sub(" ", part)))
         else:
-            out += prose_marks(html_lib.unescape(re.sub(r"<[^>]+>", " ", part)))
+            out += prose_marks(html_lib.unescape(_TAG.sub(" ", part)))
     return out
 
 
 def _line_marks(chars) -> Counter:
     out: Counter = Counter()
-    for font, c in chars:
+    heights = sorted(c["bbox"][3] - c["bbox"][1] for _f, c in chars if "bbox" in c and c["c"].isalnum())
+    tall = 1.8 * heights[len(heights) // 2] if heights else float("inf")
+    for i, (font, c) in enumerate(chars):
         ch = c["c"]
         if _extension(font):
             continue
@@ -287,6 +314,17 @@ def _line_marks(chars) -> Counter:
         else:
             out["prime"] += PRIMES.get(ch, 0)
             out["tilde"] += _tilde_count(ch)
+            if "msam" in font and ch in "><":  # AMS symbols: ⩾ and ⩽ sit at these codes
+                ch = {">": "≥", "<": "≤"}[ch]
+            # Some fonts print the en dash of "295–306" (or "806–" at a line break) with this code.
+            if ch == "±" and 0 < i and chars[i - 1][1]["c"].isdigit() and (
+                    i == len(chars) - 1 or chars[i + 1][1]["c"].isdigit()):
+                continue
+            if ch in RELATIONS and not ("bbox" in c and c["bbox"][3] - c["bbox"][1] > tall):
+                # A relation glyph far taller than the line's letters is a delimiter piece.
+                out["rel:" + RELATIONS[ch]] += 1
+            elif ch == "/":
+                out["slash"] += 1
     return out + _line_accents(chars)
 
 
@@ -325,8 +363,9 @@ def _line_accents(chars) -> Counter:
 
 
 def marks_findings(ours: Counter, page: Counter) -> list[dict]:
-    """A finding when the page prints primes or tildes the sidecar lacks, or
-    puts a different accent on a letter (x̃ printed, x̄ in the sidecar).
+    """A finding when the page prints primes, tildes or order relations the
+    sidecar lacks, or puts a different accent on a letter (x̃ printed, x̄ in
+    the sidecar).
 
     An accent the layer has and the sidecar lacks is no finding by itself:
     layers misplace accents too often for that to mean anything.
@@ -335,6 +374,13 @@ def marks_findings(ours: Counter, page: Counter) -> list[dict]:
     extra = ours - page
     glyph = {"prime": "′", "tilde": "~"}
     values = [f"PDF has {missing[k]} more {glyph[k]}" for k in ("prime", "tilde") if missing[k]]
+    if missing["rel:>"]:
+        missing["rel:>"] -= min(missing["rel:>"], extra["slash"])
+    if missing["rel:<"]:  # txsy fonts print \notin with the code of "<"; lists print ⟨ as "<"
+        missing["rel:<"] -= min(missing["rel:<"], extra["notin"] + extra["langle"])
+    if missing["rel:>"]:
+        missing["rel:>"] -= min(missing["rel:>"], extra["rangle"])
+    values += [f"PDF has {n} more {k[4:]}" for k, n in sorted(missing.items()) if k.startswith("rel:") and n > 0]
     for key in sorted(k for k in missing if ":" in k):
         accent, base = key.split(":")
         for other in ("hat", "bar", "tilde"):
@@ -344,7 +390,7 @@ def marks_findings(ours: Counter, page: Counter) -> list[dict]:
     if not values:
         return []
     return [{"kind": "math_marks_missing",
-             "detail": "the PDF prints primes, tildes or accents the sidecar lacks or reads differently",
+             "detail": "the PDF prints primes, tildes, accents or relations the sidecar lacks or reads differently",
              "values": values}]
 
 
@@ -364,12 +410,20 @@ class LayerMath:
 def layer_math(page, pdf_bbox, *, find_labels: bool = False, pad: float = 0.0) -> LayerMath:
     """Symbols of the text layer whose glyph centres fall inside ``pdf_bbox``."""
     rect = pymupdf.Rect(pdf_bbox) + (-pad, 0, pad, 0)
+    # Marks (primes, tildes, accents, relations) are a few glyphs each, so a
+    # stray one from a neighbouring line flags a block: for them the pad runs
+    # along the line only, and a glyph must lie mostly inside across it.
+    along = {False: pymupdf.Rect(pdf_bbox) + (-pad, 0, pad, 0), True: pymupdf.Rect(pdf_bbox) + (0, -pad, 0, pad)}
     if page.rotation:
         rect = rect * page.derotation_matrix
         rect.normalize()
+        for k, r in along.items():
+            along[k] = r * page.derotation_matrix
+            along[k].normalize()
     out = LayerMath()
     width = max(rect.width, 1.0)
-    for block in page.get_text("rawdict", clip=rect)["blocks"]:
+    blocks = page.get_text("rawdict", clip=rect)["blocks"]
+    for block in blocks:
         for line in block.get("lines", []):
             # A line belongs to the box when most of its glyphs do; otherwise the
             # few inside are subscripts or descenders of a neighbouring line.
@@ -400,7 +454,26 @@ def layer_math(page, pdf_bbox, *, find_labels: bool = False, pad: float = 0.0) -
                     out.labels.append(m.group(1))
                     chars = chars[_head_len(chars, m.group(0)):]
             out.symbols += _line_symbols(chars)
-            out.marks += _line_marks(chars)
+            dx, dy = line.get("dir", (1.0, 0.0))
+            vertical = abs(dy) > abs(dx)
+            out.marks += _line_marks(_squarely_inside(chars, along[vertical], vertical))
+    return out
+
+
+def _squarely_inside(chars, rect, vertical: bool) -> list:
+    """Glyphs centred in ``rect`` along the line and at least 75% inside it across
+    (a neighbouring line of small print overlaps a box by about 60%)."""
+    out = []
+    for f, c in chars:
+        x0, y0, x1, y1 = c["bbox"]
+        if vertical:
+            lo, hi, a, b, mid = rect.x0, rect.x1, x0, x1, (y0 + y1) / 2
+            ok = rect.y0 <= mid <= rect.y1
+        else:
+            lo, hi, a, b, mid = rect.y0, rect.y1, y0, y1, (x0 + x1) / 2
+            ok = rect.x0 <= mid <= rect.x1
+        if ok and (b <= a or min(b, hi) - max(a, lo) >= 0.75 * (b - a)):
+            out.append((f, c))
     return out
 
 
@@ -483,7 +556,7 @@ def check_equation(html: str, page, pdf_bbox) -> MathCheck:
     surya_labels: list[str] = []
     for part in re.split(r"(<math[^>]*>.*?</math>)", html, flags=re.S):
         if part.startswith("<math"):
-            body, labels = split_labels(html_lib.unescape(re.sub(r"<[^>]+>", " ", part)))
+            body, labels = split_labels(html_lib.unescape(_TAG.sub(" ", part)))
             ours += latex_symbols(body, markup=False)
             surya_labels += labels
         else:

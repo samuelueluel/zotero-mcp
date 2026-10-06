@@ -227,6 +227,23 @@ def test_ragged_row_that_keeps_its_columns_passes():
     assert misplaced_cells(html, printed) == []
 
 
+def test_row_widened_by_a_merged_label_is_misplaced():
+    from zotero_mcp.sidecar_verify import misplaced_cells
+    # Row 2 carries an extra leading cell: from the right its values line up, from the left
+    # each sits one column too far, under the wrong header.
+    merged = "<tr><td>eq</td><td>row</td><td>4.44</td><td>5.55</td><td>6.66</td></tr>"
+    html = _html([GRID[0]]).replace("</table>", merged) + _html([GRID[2]]).replace("<table>", "")
+    assert set(misplaced_cells(html, PRINTED)) == {"4.44", "5.55"}  # 6.66 has no column to compare
+
+
+def test_row_that_lost_its_label_is_misplaced():
+    from zotero_mcp.sidecar_verify import misplaced_cells
+    # Row 2 lost its label: its values start in the label column, one column left.
+    lost = "<tr><td>4.44</td><td>5.55</td><td>6.66</td></tr>"
+    html = _html([GRID[0]]).replace("</table>", lost) + _html([GRID[2]]).replace("<table>", "")
+    assert set(misplaced_cells(html, PRINTED)) >= {"5.55", "6.66"}
+
+
 def test_lost_labels():
     from zotero_mcp.sidecar_verify import lost_label_words
     html = "<table><tr><td>Whole city</td><td>1.2</td></tr><tr><td>Signi\ufb01cant</td></tr></table>"
@@ -484,6 +501,22 @@ def test_headers_printed_over_other_columns_demote_the_table():
     right = html.replace("<th>Variables</th>", "<th>Variables</th><th></th>")
     assert not misplaced_headers(right, native, words)
     assert verify_table(right, native, printed_word_boxes=words).status == "verified"
+
+
+def test_a_header_that_runs_over_the_next_column_is_widened():
+    from zotero_mcp.sidecar_verify import misplaced_headers, widen_headers
+    # Page: "[95% conf. interval]" printed across both bound columns; Surya gives it one.
+    html = ("<table><tr><th></th><th>Coef.</th><th>[95% conf. interval]</th></tr>"
+            "<tr><td>x</td><td>0.512</td><td>0.301</td><td>0.723</td></tr>"
+            "<tr><td>z</td><td>1.204</td><td>0.988</td><td>1.420</td></tr></table>")
+    native = [ptok(v, x, y) for y, row in ((30, ("0.512", "0.301", "0.723")), (50, ("1.204", "0.988", "1.420")))
+              for x, v in zip((100, 200, 300), row)]
+    words = [("Coef.", (100, 10, 120, 18)), ("[95%", (190, 10, 210, 18)), ("conf.", (212, 10, 232, 18)),
+             ("interval]", (300, 10, 325, 18))]
+    assert misplaced_headers(html, native, words) == ["column 4 has a printed header the table lacks"]
+    wide, notes = widen_headers(html, native, words)
+    assert 'colspan="2">[95% conf. interval]' in wide and notes and not misplaced_headers(wide, native, words)
+    assert verify_table(html, native, printed_word_boxes=words).status == "verified"
 
 
 def test_one_line_cells_centred_beside_estimates_are_in_their_row():

@@ -77,6 +77,33 @@ def test_a_swapped_accent_is_flagged_but_a_missing_one_is_not():
     assert tilde_to_bar[0]["values"] == ["PDF has 1 more ~", "PDF prints x\u0303, the sidecar x\u0304"]
 
 
+def test_relations_are_compared():
+    assert sm.latex_marks(r"p \leq 0.05, a < b \pm c") == Counter({"rel:≤": 1, "rel:<": 1, "rel:±": 1})
+    assert sm.prose_marks("p < 0.05 and x ≥ 2") == Counter({"rel:<": 1, "rel:≥": 1})
+    # The page's "<" read as "≤": flagged; the sidecar's extra relation alone is not.
+    assert sm.marks_findings(sm.latex_marks(r"p \le 0.05"), Counter({"rel:<": 1}))[0]["values"] == ["PDF has 1 more <"]
+    assert sm.marks_findings(sm.latex_marks(r"p < 0.05"), Counter()) == []
+    assert sm.html_marks("<p>* p < .10, ** p < .05</p>") == Counter({"rel:<": 2})  # a bare "<" is no tag
+    assert sm.marks_findings(sm.latex_marks(r"\nu \ll \mu"), Counter({"rel:<": 2})) == []
+    # Pearson's math font prints S/n as "S>n": the sidecar's slash or fraction excuses the ">".
+    assert sm.marks_findings(sm.prose_marks("p = S/n"), Counter({"rel:>": 1})) == []
+    assert sm.marks_findings(sm.latex_marks(r"\frac{S}{n}"), Counter({"rel:>": 1})) == []
+
+
+def test_relation_glyphs_that_are_something_else():
+    def g(font, ch, x, h=8.0):
+        return (font, {"c": ch, "bbox": (x, 100, x + 4, 100 + h)})
+    # AMS msam prints ⩾ at the code of ">"; a bracket piece far taller than the text is no relation.
+    assert sm._line_marks([g("msam10", ">", 10), g("cmmi10", "x", 20)]) == Counter({"rel:≥": 1})
+    assert sm._line_marks([g("pearson", "≥", 10, h=40), g("pearson", "b", 20)]) == Counter()
+    # A font that prints the en dash of page ranges as "±".
+    assert sm._line_marks([g("advp", "2", 0), g("advp", "±", 5), g("advp", "3", 10)]) == Counter()
+    assert sm._line_marks([g("advp", "6", 0), g("advp", "±", 5)]) == Counter()
+    assert sm._line_marks([g("cmr", "a", 0), g("cmsy", "±", 5), g("cmr", "b", 10)]) == Counter({"rel:±": 1})
+    # List notation "< a, b >" printed with < and >: the sidecar's \langle \rangle excuse them.
+    assert sm.marks_findings(sm.latex_marks(r"\langle a, b \rangle"), Counter({"rel:<": 1, "rel:>": 1})) == []
+
+
 def test_a_dropped_tilde_makes_an_equation_differ():
     _doc, page = _page((60, "x ~ N(0, 1)"))
     box = (30, 40, 370, 70)
@@ -84,7 +111,7 @@ def test_a_dropped_tilde_makes_an_equation_differ():
     lost = sm.check_equation(r'<math display="block">x \in N(0, 1)</math>', page, box)
     assert lost.status == "differ" and [f["kind"] for f in lost.findings] == ["math_marks_missing"]
     line = _math_status_line({"label": "Equation", "page": 3, "findings": lost.findings, "repairs": []})
-    assert line.startswith("[Equation status: UNRESOLVED (primes, tildes or accents") and "PDF p. 3" in line
+    assert line.startswith("[Equation status: UNRESOLVED (primes, tildes, accents or relations") and "PDF p. 3" in line
     prose = sm.check_inline_math("<p><math>x \\in N(0, 1)</math></p>", page, box)
     assert [f["kind"] for f in prose.findings] == ["math_marks_missing"]
 

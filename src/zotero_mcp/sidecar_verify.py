@@ -156,7 +156,7 @@ class TableCheck:
 
 STRUCTURAL = {"empty_body_column", "merged_estimate_se", "label_or_header_mismatch", "duplicate_rows"}
 #: Findings that never change status and are left out of the status line.
-INFORMATIONAL = {"merged_estimate_se", "table_structure_fixed", "header_rowspan_clamped", "label_or_header_mismatch", "format_variant", "split_token",
+INFORMATIONAL = {"merged_estimate_se", "table_structure_fixed", "header_widened", "header_rowspan_clamped", "label_or_header_mismatch", "format_variant", "split_token",
                  "ocr_detached_dash", "native_label_unmatched", "native_outside_table",
                  "text_layer_fill_failed", "text_table"}
 #: A table needs at least this many anchors (values unique on both sides) for
@@ -481,7 +481,8 @@ def misplaced_cells(html: str, native_tokens: Iterable[NativeToken]) -> list[str
       standard error may print side by side) maps to one printed column
       band. A row passes when its cells line up counting columns from the
       left or from the right (ragged rows that drop empty cells are common
-      and harmless when every value keeps its column).
+      and harmless when every value keeps its column). Counting from the
+      right excuses no row with an extra cell or a lost label (see below).
 
     Values are reported, not repaired. Needs ``MIN_ANCHORS`` anchors.
     """
@@ -539,6 +540,29 @@ def misplaced_cells(html: str, native_tokens: Iterable[NativeToken]) -> list[str
                 if max(t.values()) >= 2 and max(t.values()) * 2 > sum(t.values())}
 
     left, right = dominant(2), dominant(3)
+    # Count a row's own cells, spans aside: a label's rowspan or colspan that
+    # runs too far shifts the drawn grid but not what a reader of the row sees.
+    # A row with more cells than a full row carries an extra one (an equation
+    # name merged in); one with fewer that starts with a value lost its label.
+    # Either way it lines up from the right with values under the wrong header.
+    counts: dict[int, tuple[int, int, bool]] = {}
+    full: dict[int, Counter] = {}
+    for row in _layout(html):
+        if row.header or not row.placed:
+            continue
+        n = len(row.placed)
+        starts_with_value = bool(_PURE_NUMBER.fullmatch(_label_text(row.placed[0][2].inner)))
+        counts[row.index] = (row.segment, n, starts_with_value)
+        if not starts_with_value:
+            full.setdefault(row.segment, Counter())[n] += 1
+
+    def odd_row(r: int) -> bool:
+        seg, n, starts_with_value = counts.get(r, (0, 0, False))
+        if seg not in full:
+            return False
+        usual_n = full[seg].most_common(1)[0][0]
+        return n > usual_n or (starts_with_value and n < usual_n)
+
     # Only a value squarely in another column's band is out of place; one
     # centred across two columns (an N under a mean/SD pair) forms a band of
     # its own or merges them.
@@ -553,7 +577,50 @@ def misplaced_cells(html: str, native_tokens: Iterable[NativeToken]) -> list[str
                  and band_of[i] in columns}
         if off_l and off_r:
             bad |= off_l if len(off_l) <= len(off_r) else off_r
+        elif off_l and odd_row(anchors[idx[0]][0]):
+            bad |= off_l
     return [anchors[i][4] for i in sorted(bad)]
+
+
+def wrong_brackets(html: str, native_tokens: Iterable[NativeToken]) -> list[str]:
+    """Values whose brackets differ from the page's: ``(0.06)`` printed, ``[0.06]``
+    or ``0.06`` in the table.
+
+    Round brackets usually hold a standard error or t statistic, square ones a
+    confidence bound or p-value: the same number means something else. Only
+    values that occur once in the table and once among the text layer's data
+    tokens are compared, and only where the page brackets the number.
+    """
+    tokens: dict[str, list[NativeToken]] = {}
+    for t in native_tokens:
+        if t.role == "data" and not t.owned:
+            tokens.setdefault(numeric_key(t.text), []).append(t)
+    seen: dict[str, list[str]] = {}
+    for row in _layout(html):
+        if row.header:
+            continue
+        for _ci, col, c in row.placed:
+            if not _data_cell(col, c):
+                continue
+            plain = _html.unescape(_TAG_RE.sub(" ", _SCRIPT_RE.sub(" ", c.inner)))
+            at = 0
+            for n in cell_numbers(_SCRIPT_RE.sub(" ", c.inner)):
+                m = re.compile(r"(?<![\d.])" + re.escape(n.lstrip("-")) + r"(?!\d)").search(plain, at)
+                if not m:
+                    continue
+                at = m.end()
+                pre = plain[:m.start()].rstrip(" -\u2212\u2013")[-1:]
+                seen.setdefault(numeric_key(n), []).append(pre if pre in ("(", "[") else "")
+    out = []
+    for key, opens in seen.items():
+        if len(opens) != 1 or len(tokens.get(key, ())) != 1:
+            continue
+        page = tokens[key][0].pre[-1:]
+        # Only a bracket the layer attaches to the number counts: some layers
+        # hold "(" as a separate glyph run, so its absence proves nothing.
+        if page in ("(", "[") and page != opens[0]:
+            out.append(f"{key}: page '{page or 'none'}', table '{opens[0] or 'none'}'")
+    return out
 
 
 _WORD_RE = re.compile(r"[A-Za-z]{3,}")
@@ -1012,6 +1079,88 @@ _BR_RE = re.compile(r"<br\s*/?>", re.I)
 
 def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
                       word_boxes: list[tuple[str, tuple]]) -> list[str]:
+    """Column headers the HTML puts over a different column than the page prints them,
+    and data columns with a printed header that no header cell covers (see
+    :func:`_header_check`)."""
+    out, gaps = _header_check(html, native_tokens, word_boxes)
+    return out + [f"column {k + 1} has a printed header the table lacks" for _seg, k, _w, _b in gaps]
+
+
+def widen_headers(html: str, native_tokens: Iterable[NativeToken],
+                  word_boxes: list[tuple[str, tuple]]) -> tuple[str, list[str]]:
+    """Give a header cell the column its own printed words run over.
+
+    Stata prints "[95% conf. interval]" across both bounds; Surya gives it the
+    first only, leaving the upper bound unnamed. When every header word printed
+    over an uncovered data column belongs to the header cell just left of it,
+    and the cell's other words are printed over that cell's own column (a
+    header that runs on, not one that sits wholly over the next column), the
+    cell's colspan grows by one. Only where the column is free in each
+    header row the cell spans (or holds an empty cell there, which goes).
+    """
+    native = list(native_tokens)
+    notes: list[str] = []
+    for _ in range(4):
+        _out, gaps = _header_check(html, native, word_boxes)
+        done = False
+        for _seg, k, words, before in gaps:
+            rows = _layout(html)
+            for row in rows:
+                if not row.header:
+                    continue
+                for ci, col, c in row.placed:
+                    own = {w.lower() for w in _HEADER_WORD_RE.findall(_label_text(_BR_RE.sub(" ", c.inner)))}
+                    if col + c.colspan != k or not words or not set(words) <= own \
+                            or not (own - set(words)) & set(before):
+                        continue
+                    span_rows = [r for r in rows if row.index <= r.index < row.index + c.rowspan]
+                    drop = []
+                    for r in span_rows:
+                        at = [(i, cc) for i, cl, cc in r.placed if cl <= k < cl + cc.colspan]
+                        if r is row:
+                            at = [(i, cc) for i, cc in at if i != ci]
+                        if any(_label_text(_BR_RE.sub(" ", cc.inner)) or cc.colspan > 1 or cc.rowspan > 1
+                               for _i, cc in at):
+                            break
+                        drop += [(r.index, i) for i, _cc in at]
+                    else:
+                        html = _edit_cells(html, {(row.index, ci): c.colspan + 1}, set(drop))
+                        notes.append(f"widened '{_label_text(c.inner)}' over column {k + 1}")
+                        done = True
+                    break
+                if done:
+                    break
+            if done:
+                break
+        if not done:
+            break
+    return html, notes
+
+
+def _edit_cells(html: str, colspans: dict[tuple[int, int], int], drop: set[tuple[int, int]]) -> str:
+    """Set colspans of and remove cells given as (row index, cell index)."""
+    def row_sub(r: int, rm: re.Match) -> str:
+        body = rm.group(0)
+        cells = list(re.finditer(r"<(t[dh])\b([^>]*)>(.*?)</\1>", body, flags=re.S | re.I))
+        for i in reversed(range(len(cells))):
+            m = cells[i]
+            if (r, i) in drop:
+                body = body[:m.start()] + body[m.end():]
+            elif (r, i) in colspans:
+                attrs = re.sub(r"\s*colspan\s*=\s*[\"']?\d+[\"']?", "", m.group(2), flags=re.I)
+                new = f'<{m.group(1)}{attrs} colspan="{colspans[(r, i)]}">{m.group(3)}</{m.group(1)}>'
+                body = body[:m.start()] + new + body[m.end():]
+        return body
+    rows = list(_ROW_RE.finditer(html))
+    for r in reversed(range(len(rows))):
+        if any(k[0] == r for k in colspans) or any(k[0] == r for k in drop):
+            rm = rows[r]
+            html = html[:rm.start()] + row_sub(r, rm) + html[rm.end():]
+    return html
+
+
+def _header_check(html: str, native_tokens: Iterable[NativeToken],
+                  word_boxes: list[tuple[str, tuple]]) -> tuple[list[str], list[tuple[int, int, list[str], list[str]]]]:
     """Column headers the HTML puts over a different column than the page prints them.
 
     Per panel, each data column's printed band comes from its anchored values
@@ -1027,7 +1176,7 @@ def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
     """
     rows = _layout(html)
     if not rows or not word_boxes:
-        return []
+        return [], []
     anchors = _anchor_list(_data_grid(html), list(native_tokens))
     page_words = [(w[0], w[1], len(w) > 2 and w[2]) for w in word_boxes]
     flip = None  # box transform into the table's own frame for a sideways table
@@ -1044,6 +1193,7 @@ def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
         page_words = [(w, flip(b), False) for w, b, v in page_words if v]
     page_words = [(w, b) for w, b, v in page_words if not v]
     out: list[str] = []
+    gaps: list[tuple[int, int, list[str], list[str]]] = []
     body_width = max((r.width for r in rows if not r.header), default=0)
     for row in rows:
         if row.header:
@@ -1058,6 +1208,8 @@ def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
         heads = [r for r in srows if r.header]
         if not body or not heads:
             continue
+        anchored_rows = {r for (sg, r, *_rest), _t in anchors if sg == seg}
+        label_rows = [r for r in body if r.index not in anchored_rows]
         usual = Counter(r.width for r in body).most_common(1)[0][0]
         rows_ok = {r.index for r in body if r.width == usual}
         boxes: dict[int, list[tuple]] = {}
@@ -1069,13 +1221,31 @@ def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
         bands = {c: (min(b[0] for b in v), max(b[2] for b in v)) for c, v in boxes.items()}
         top = min(b[1] for v in boxes.values() for b in v)
         cells = []
-        for row in heads:
+        for row in heads + label_rows:
             for _ci, col, c in row.placed:
                 if col == 0 or not any(k in bands for k in range(col, col + c.colspan)):
                     continue
                 words = [w.lower() for w in _HEADER_WORD_RE.findall(_label_text(_BR_RE.sub(" ", c.inner)))]
                 if words:
                     cells.append(((col, col + c.colspan - 1), words))
+        # A data column with header words printed squarely above it that no
+        # header cell covers: the table lost or narrowed that header ("[95% conf.
+        # interval]" over two columns given to one), so its values go unnamed.
+        # Any text covers a column ("<5 k", "N_{tr}"), and so do body rows of
+        # labels without anchored values (headers Surya did not mark as such).
+        covered = {k for row in heads + label_rows for _ci, col, c in row.placed
+                   if _label_text(_BR_RE.sub(" ", c.inner))
+                   for k in range(col, col + c.colspan)}
+        above = [(w, b) for w, b in page_words if b[3] <= top + 2 and _HEADER_WORD_RE.search(w)]
+        for k in sorted(bands):
+            lo, hi = bands[k]
+            over = [x.lower() for w, b in above if lo <= (b[0] + b[2]) / 2 <= hi
+                    for x in _HEADER_WORD_RE.findall(w)]
+            if k > 0 and k not in covered and over:
+                # Header words printed from the previous column's band up to this one.
+                before = [x.lower() for w, b in above if k - 1 in bands
+                          and bands[k - 1][0] <= (b[0] + b[2]) / 2 < lo for x in _HEADER_WORD_RE.findall(w)]
+                gaps.append((seg, k, over, before))
         freq = Counter(w for _span, words in cells for w in set(words))
         by_key: dict[str, list[tuple[int, int]]] = {}
         for span, words in cells:
@@ -1097,7 +1267,7 @@ def misplaced_headers(html: str, native_tokens: Iterable[NativeToken],
                 if not c0 <= best <= c1 and gap(own_band) > 0 and gap(bands[best]) == 0:
                     out.append(f"'{key}' printed over column {best + 1}, not {c0 + 1}"
                                + (f"-{c1 + 1}" if c1 > c0 else ""))
-    return out
+    return out, gaps
 
 
 def column_streams(html: str) -> list[tuple[str, ...]]:
@@ -1275,10 +1445,15 @@ def verify_table(
             html = reshaped_html
         else:
             reshaped = []
+    widened: list[str] = []
+    if native and not native_is_ocr and printed_word_boxes:
+        html, widened = widen_headers(html, native, printed_word_boxes)
     rows = parse_rows(html)
     roled = numbers_with_roles(html)
     surya = [n for n, _role in roled]
     check = TableCheck("verified", html, surya_numbers=len(surya), native_numbers=len(native))
+    if widened:
+        check.findings.append(Finding("header_widened", "a header given the column its printed words cover", widened))
     if merged:
         check.findings.append(Finding("merged_estimate_se", f"split {merged} estimate/uncertainty cells"))
     if reshaped:
@@ -1548,6 +1723,10 @@ def verify_table(
             check.status = "unresolved"
             check.findings.append(Finding(
                 "misplaced_cells", "values in a different row or column than the page prints them", moved))
+        elif not native_is_ocr and (brackets := wrong_brackets(check.html, native)):
+            check.status = "single-route"
+            check.findings.append(Finding(
+                "bracket_mismatch", "brackets around values differ from the page", brackets[:40]))
         elif printed_words is not None and (lost := lost_label_words(check.html, printed_words, context_html)):
             check.status = "single-route"
             check.findings.append(Finding(
