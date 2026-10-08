@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from typing import Iterable
 
 _HEADING_RE = re.compile(r"^(?P<marks>#{1,6})[ \t]+(?P<title>[^\n]+?)\s*$", re.MULTILINE)
+_CITED_BY_RE = re.compile(
+    r"(?im)^[ \t]*(?:<table><tr><td>)?(?:#{1,6}[ \t]+)?[*_]*"
+    r"(?:this article has been cited by|articles citing this article|citing articles)\b"
+)
 _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}[a-z]?\b", re.IGNORECASE)
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 _BRACKET_MARKER_RE = re.compile(r"(?m)^[ \t]*\[(?P<number>\d{1,4})\][ \t]+")
@@ -98,8 +102,14 @@ def _section_body(text: str, headings: list[re.Match[str]], position: int) -> tu
         if len(next_heading.group("marks")) <= level:
             end = next_heading.start()
             break
-    body = text[heading.end() : end].strip("\n\r \t")
-    return body, end
+    body = text[heading.end() : end]
+    # Publisher download pages append a "cited by" list after the references;
+    # without a heading of its own it would read as this paper's references.
+    cited_by = _CITED_BY_RE.search(body)
+    if cited_by:
+        end = heading.end() + cited_by.start()
+        body = body[: cited_by.start()]
+    return body.strip("\n\r \t"), end
 
 
 def _section_score(kind: str, body: str, position: int, total: int) -> float:
@@ -456,9 +466,63 @@ def _split_year_boundaries(
     return entries if len(entries) >= 2 else None
 
 
+_PAGE_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_IMAGE_LINE_RE = re.compile(r"(?m)^[ \t]*!\[[^\]\n]*\]\([^)\n]*\)[ \t]*$")
+_LIST_MARKER_RE = re.compile(r"(?m)^[ \t]*(?:[-*+][ \t]+)?[►▶▸•◆■●▪][ \t]*|^[ \t]*[-*+][ \t]+")
+
+
+def _strip_sidecar_markup(body: str) -> str:
+    """Remove Surya sidecar markup that hides entry starts from the splitters.
+
+    Surya writes each reference as a list item (``- ► Author, ...``), sometimes
+    with bold author names, and interleaves ``<!-- pdf-page: N -->`` anchors
+    and figure links. Line offsets are not preserved; entries are re-normalised.
+    """
+    body = _PAGE_COMMENT_RE.sub("\n", body)
+    body = _IMAGE_LINE_RE.sub("", body)
+    body = _LIST_MARKER_RE.sub("", body)
+    body = body.replace("**", "")
+    return _GLUED_ENTRY_RE.sub(".\n", body)
+
+
+# Surya can join consecutive entries of one page block with no separator
+# ("... 47: 1–17.Akers J (2015) ..."). A period directly followed by an
+# author-like name and, shortly after, a year marks a new entry.
+_GLUED_ENTRY_RE = re.compile(
+    r"(?<=[a-z0-9)\]*])\.(?=[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’-]{1,40}"
+    r"(?:,| [A-Z]{1,3}\b| (?:and|&) )[^\n]{0,120}?\b(?:19|20)\d{2}[a-z]?\b)"
+)
+_LIST_ITEM_RE = re.compile(r"(?m)^[ \t]*[-*+][ \t]+")
+# VLM figure enrichment: a "[Figure Schema]" line and its "- Field: ..." list.
+_FIGURE_SCHEMA_RE = re.compile(r"(?m)^[ \t]*\[Figure Schema\][^\n]*\n(?:[ \t]*[-*+][ \t][^\n]*(?:\n|$))*")
+
+
+def _split_list_items(body: str) -> list[ReferenceEntry] | None:
+    """One entry per Markdown list item, as Surya writes bibliographies."""
+    starts = [match.start() for match in _LIST_ITEM_RE.finditer(body)]
+    if len(starts) < 2:
+        return None
+    entries: list[ReferenceEntry] = []
+    for start, end in zip(starts, starts[1:] + [len(body)]):
+        # Join the item's wrapped lines first; split only at glued boundaries.
+        item = re.sub(r"\s+", " ", _PAGE_COMMENT_RE.sub(" ", body[start:end]))
+        for part in _strip_sidecar_markup(item).splitlines():
+            raw = _normalise_entry(part)
+            if raw:
+                entries.append(ReferenceEntry(len(entries) + 1, raw, "list-item", 0.85))
+    return entries if len(entries) >= 2 else None
+
+
 def parse_reference_entries(body: str) -> list[ReferenceEntry]:
     """Split one bibliography body into bounded, ordered entries."""
-    body = _clean_text(body).strip()
+    body = _FIGURE_SCHEMA_RE.sub("", _clean_text(body)).strip()
+    if not body:
+        return []
+    if len(_LIST_ITEM_RE.findall(body)) >= max(2, len(_YEAR_RE.findall(body)) // 2):
+        entries = _split_list_items(body)
+        if entries:
+            return _split_compound_years(entries)
+    body = _strip_sidecar_markup(body).strip()
     if not body:
         return []
 

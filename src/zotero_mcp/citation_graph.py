@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GRAPH_DB_PATH = Path.home() / ".config" / "zotero-mcp" / "citation_graph.sqlite"
 DEFAULT_SIDECAR_DIR = Path.home() / ".config" / "zotero-mcp" / "mineru-sidecars"
+
+
+def _configured_sidecar_dir() -> Path:
+    """The live config's ``semantic_search.mineru.sidecar_dir`` (Surya sidecars since 2026-10-08)."""
+    from .mineru import load_mineru_config
+
+    return Path(load_mineru_config()["sidecar_dir"]).expanduser()
 DEFAULT_ZOTERO_DB = Path.home() / "Zotero" / "zotero.sqlite"
 
 _STOPWORDS = {
@@ -259,7 +266,7 @@ class CitationGraph:
     ) -> dict[str, Any]:
         """Build the citation graph from Zotero SQLite + MinerU sidecars."""
         z_path = Path(zotero_db_path) if zotero_db_path else DEFAULT_ZOTERO_DB
-        sc_dir = Path(sidecar_dir) if sidecar_dir else DEFAULT_SIDECAR_DIR
+        sc_dir = Path(sidecar_dir) if sidecar_dir else _configured_sidecar_dir()
 
         if not z_path.exists():
             raise FileNotFoundError(f"Zotero database not found at {z_path}")

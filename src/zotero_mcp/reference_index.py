@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "zotero-mcp" / "config.json"
 DEFAULT_SIDECAR_DIR = Path.home() / ".config" / "zotero-mcp" / "mineru-sidecars"
+
+
+def _configured_sidecar_dir() -> Path:
+    """The live config's ``semantic_search.mineru.sidecar_dir`` (Surya sidecars since 2026-10-08)."""
+    from .mineru import load_mineru_config
+
+    return Path(load_mineru_config()["sidecar_dir"]).expanduser()
 DEFAULT_GRAPH_DB_PATH = Path.home() / ".config" / "zotero-mcp" / "citation_graph.sqlite"
 DEFAULT_ZOTERO_DB = Path.home() / "Zotero" / "zotero.sqlite"
 DEFAULT_REFERENCE_INDEX_PATH = (
@@ -362,7 +369,7 @@ class ReferenceIndex:
         zotero_db_path: str | Path | None = None,
     ) -> dict[str, Any]:
         """Parse local sidecars and build one BM25 record per reference entry."""
-        sc_dir = Path(sidecar_dir) if sidecar_dir else DEFAULT_SIDECAR_DIR
+        sc_dir = Path(sidecar_dir) if sidecar_dir else _configured_sidecar_dir()
         graph_path = Path(graph_db_path) if graph_db_path else DEFAULT_GRAPH_DB_PATH
         zotero_path = Path(zotero_db_path) if zotero_db_path else DEFAULT_ZOTERO_DB
         source_metadata = _load_source_metadata(zotero_path)
@@ -534,7 +541,7 @@ def get_cached_reference_index(
 ) -> ReferenceIndex | None:
     path = _resolve_index_path(config_path)
     cache_key = str(path)
-    expected_fingerprint = _input_fingerprint(DEFAULT_SIDECAR_DIR, DEFAULT_GRAPH_DB_PATH)
+    expected_fingerprint = _input_fingerprint(_configured_sidecar_dir(), DEFAULT_GRAPH_DB_PATH)
     cached = _REFERENCE_CACHE.get(cache_key)
     if cached is not None and cached.input_fingerprint == expected_fingerprint:
         return cached

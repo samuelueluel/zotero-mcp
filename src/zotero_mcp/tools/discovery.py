@@ -407,7 +407,7 @@ def _scope_label(scope: str, collection_key: str = "") -> str:
 
 @mcp.tool()
 def rebuild_citation_graph(ctx: Context = None) -> str:
-    """Rebuild the local citation graph from Zotero metadata and MinerU sidecars.
+    """Rebuild the local citation graph from Zotero metadata and Surya sidecars.
 
     This is graph-only and does not re-embed ChromaDB or rebuild the semantic
     search database. It also refreshes the process-local graph used by the
@@ -649,7 +649,7 @@ def _reference_marker(result: dict) -> str:
 def rebuild_reference_index(ctx: Context = None) -> str:
     """Build the separate BM25 index over individual local bibliography entries.
 
-    This parses MinerU sidecars and joins the graph's per-entry audit data. It
+    This parses Surya sidecars and joins the graph's per-entry audit data. It
     performs no embedding and does not modify ChromaDB content.
     """
     try:
@@ -721,7 +721,7 @@ def search_bibliography_entries(
 ) -> str:
     """Search individual bibliography entries separately from content RAG.
 
-    Uses BM25 over parsed local MinerU sidecar entries. Results include
+    Uses BM25 over parsed local Surya sidecar entries. Results include
     bibliographic metadata and graph-resolution status, not evidence of the
     cited paper's substantive findings.
 
