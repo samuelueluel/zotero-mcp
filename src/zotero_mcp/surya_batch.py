@@ -100,14 +100,20 @@ def _healthy(url: str) -> bool:
         return False
 
 
+def model_snapshot(cfg: dict) -> Path:
+    """The pinned model snapshot directory; never fall back to another one."""
+    revision = str(cfg.get("model_revision") or "")
+    snap = SURYA_GGUF_REPO / "snapshots" / revision
+    if not revision or not (snap / "surya-2.gguf").exists() or not (snap / "surya-2-mmproj.gguf").exists():
+        raise RuntimeError(f"pinned Surya model revision {revision or '(none)'} not found under {SURYA_GGUF_REPO}")
+    return snap
+
+
 def start_surya(cfg: dict) -> None:
     models = cfg["inference_url"].rstrip("/") + "/models"
     if _healthy(models):
         return
-    snaps = sorted((SURYA_GGUF_REPO / "snapshots").glob("*/surya-2.gguf"))
-    if not snaps:
-        raise RuntimeError(f"Surya GGUF not found under {SURYA_GGUF_REPO}")
-    snap = snaps[-1].parent
+    snap = model_snapshot(cfg)
     port = cfg["inference_url"].rsplit(":", 1)[1].split("/")[0]
     parallel = int(cfg["parallel"])
     subprocess.run(["podman", "rm", "-f", SURYA_CONTAINER], capture_output=True)

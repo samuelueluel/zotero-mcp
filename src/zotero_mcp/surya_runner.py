@@ -13,6 +13,8 @@ Config (``~/.config/zotero-mcp/config.json`` -> ``semantic_search.surya``):
 - dpi: render resolution, default 192
 - work_dir: raw artifacts, default ``~/.cache/zotero-mcp/surya-work``
 - sidecar_dir: sidecar output, default ``~/.config/zotero-mcp/surya-sidecars``
+- model_revision: Hugging Face snapshot of ``datalab-to/surya-ocr-2-gguf`` the
+  server loads; pinned so a later download cannot change the model unnoticed
 """
 
 from __future__ import annotations
@@ -32,6 +34,10 @@ from .sidecar_native import upright_rotation
 
 RUNNER_VERSION = "surya-runner/2"
 
+#: Model snapshot every live sidecar was produced with (surya-ocr 0.22.1).
+#: Change it only after a shadow comparison against the current sidecars.
+SURYA_MODEL_REVISION = "6a3a4c30e5e74446d4f8b6afd05b2f2da970f470"
+
 DEFAULTS = {
     "surya_ocr": str(Path.home() / "surya-spike-venv/bin/surya_ocr"),
     "inference_url": "http://127.0.0.1:18090/v1",
@@ -39,6 +45,7 @@ DEFAULTS = {
     "dpi": 192,
     "work_dir": str(Path.home() / ".cache/zotero-mcp/surya-work"),
     "sidecar_dir": str(Path.home() / ".config/zotero-mcp/surya-sidecars"),
+    "model_revision": SURYA_MODEL_REVISION,
 }
 
 
@@ -176,6 +183,7 @@ def run_batch(jobs: Iterable[ItemJob], cfg: dict | None = None, batch_name: str 
     manifest = {
         "runner": RUNNER_VERSION,
         "surya_ocr_version": surya_version(cfg),
+        "surya_model_revision": cfg.get("model_revision"),
         "inference_url": cfg["inference_url"],
         "dpi": int(cfg["dpi"]),
         "ocr_seconds": ocr["seconds"],

@@ -202,3 +202,27 @@ def test_render_caps_oversized_pages(tmp_path):
     surya_runner.render_item(job, tmp_path / "img", 192)
     assert job.pages["K__p001"]["image_size"][1] == surya_runner.MAX_SIDE_PX
     assert job.pages["K__p002"]["image_size"] == [1632, 2112]
+
+
+def _snapshot(repo: Path, revision: str) -> Path:
+    snap = repo / "snapshots" / revision
+    snap.mkdir(parents=True)
+    (snap / "surya-2.gguf").write_bytes(b"")
+    (snap / "surya-2-mmproj.gguf").write_bytes(b"")
+    return snap
+
+
+def test_model_snapshot_uses_pinned_revision(monkeypatch, tmp_path):
+    monkeypatch.setattr(surya_batch, "SURYA_GGUF_REPO", tmp_path)
+    pinned = _snapshot(tmp_path, "aaaa")
+    _snapshot(tmp_path, "ffff")  # sorts last; must not be chosen
+    assert surya_batch.model_snapshot({"model_revision": "aaaa"}) == pinned
+
+
+def test_model_snapshot_refuses_missing_revision(monkeypatch, tmp_path):
+    monkeypatch.setattr(surya_batch, "SURYA_GGUF_REPO", tmp_path)
+    _snapshot(tmp_path, "ffff")
+    with pytest.raises(RuntimeError, match="pinned Surya model revision"):
+        surya_batch.model_snapshot({"model_revision": "aaaa"})
+    with pytest.raises(RuntimeError, match=r"\(none\)"):
+        surya_batch.model_snapshot({})
