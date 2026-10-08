@@ -84,7 +84,47 @@ def _cleanup_path(file_path: str) -> None:
         pass
 
 
+def _sidecar_attachment(item_key: str) -> str | None:
+    """The attachment the item's Surya sidecar was built from, if any."""
+    try:
+        from zotero_mcp import mineru as _mineru
+        from zotero_mcp import sidecar_reliability as _reliability
+
+        config_path = os.environ.get(
+            "ZOTERO_MCP_CONFIG", os.path.expanduser("~/.config/zotero-mcp/config.json")
+        )
+        sidecar_dir = _mineru.load_mineru_config(config_path)["sidecar_dir"]
+        return _reliability.sidecar_attachment_key(sidecar_dir, str(item_key).strip().upper())
+    except Exception:  # noqa: BLE001 - no sidecar record means the ordinary default
+        return None
+
+
 def _get_pdf_path(
+    item_key: str,
+    ctx: Context,
+    attachment_key: str | None = None,
+) -> tuple[str, str, bool, str | None] | None:
+    """Resolve a PDF like :func:`_resolve_pdf_path`, defaulting to the sidecar's PDF.
+
+    Without an explicit ``attachment_key``, an item whose Surya sidecar records
+    its source attachment resolves to that attachment, so sidecar page numbers
+    and ``problem_tables`` pages point at the same file. Items with a paper and
+    an appendix otherwise defaulted to whichever PDF Zotero listed first. If the
+    recorded attachment no longer resolves, the ordinary default applies.
+    """
+    if not (attachment_key or "").strip():
+        recorded = _sidecar_attachment(item_key)
+        if recorded and recorded != str(item_key).strip().upper():
+            try:
+                result = _resolve_pdf_path(item_key, ctx, recorded)
+            except PdfEvidenceInputError:
+                result = None
+            if result:
+                return result
+    return _resolve_pdf_path(item_key, ctx, attachment_key)
+
+
+def _resolve_pdf_path(
     item_key: str,
     ctx: Context,
     attachment_key: str | None = None,
@@ -335,7 +375,7 @@ def _parse_region_argument(region: list[float] | str | None) -> list[float] | No
         "Whitespace in the query spans source whitespace; special characters are literal — no regex, "
         "fuzzy, semantic, OCR, sidecar, or neighboring-page search. Pages are one-based PDF pages, "
         "not printed labels or indexed offsets. attachment_key optionally pins one specific PDF "
-        "attachment of the item (multi-PDF items otherwise use the default PDF, and the response "
+        "attachment of the item (multi-PDF items otherwise use the PDF the sidecar was built from, else the first PDF, and the response "
         "always echoes the resolved attachment_key). Searches the complete requested range and reports exact "
         "match accounting plus complete/partial/no-usable-text coverage. offset paginates matching "
         "windows; match_pages and omitted_match_pages expose later matching pages even when excerpts "
@@ -448,8 +488,10 @@ def find_in_pdf(
             "source_route": _pdf_source_route(source_is_temp),
             "extraction_route": "direct_pdf_text",
             "extraction_engine": "pdf-inspector",
+            # Pages read with PyMuPDF because pdf-inspector lost math or ligature glyphs.
+            "pymupdf_text_pages": [p + 1 for p in doc.fallback_pages],
             "page_basis": (
-                "one-based PDF pages; distinct from printed labels, MinerU sidecar lines, "
+                "one-based PDF pages; distinct from printed labels, sidecar lines, "
                 "and indexed offsets"
             ),
             "page_range": {"start": start, "end": end},
@@ -568,7 +610,7 @@ def render_pdf_page(
             "route": "pdf_rendering",
             "source_route": _pdf_source_route(source_is_temp),
             "page_basis": (
-                "one-based PDF pages; distinct from printed labels, MinerU sidecar lines, "
+                "one-based PDF pages; distinct from printed labels, sidecar lines, "
                 "and indexed offsets"
             ),
             "page": rendered.page,
@@ -641,7 +683,7 @@ def read_pdf_pages(
         start_page: First page to read (1-indexed).
         end_page: Last page to read (1-indexed). If omitted, reads only start_page.
         attachment_key: Optional key pinning one specific PDF attachment of the
-            item; multi-PDF items otherwise use the default PDF.
+            item; multi-PDF items otherwise use the PDF the sidecar was built from, else the first PDF.
         ctx: MCP context.
 
     Returns:
@@ -704,6 +746,12 @@ def read_pdf_pages(
             output.append(
                 f"**Attachment:** {resolved_attachment_key} "
                 f"([Open in Zotero Reader](zotero://open-pdf/library/items/{resolved_attachment_key}?page={start_page}))"
+            )
+        if doc.fallback_pages:
+            pages = ", ".join(str(p + 1) for p in doc.fallback_pages)
+            output.append(
+                f"**Plain text (PyMuPDF) on pages:** {pages}; the Markdown extractor lost math "
+                "or ligature glyphs there, so those pages have no heading or table structure."
             )
         output.append("")
 

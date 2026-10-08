@@ -38,7 +38,7 @@ def _item_reliability(item_key: str, source: str | None) -> dict:
         cfg = _mineru.load_mineru_config(_config_path())
         item_rel = _reliability.load_item_reliability(cfg["sidecar_dir"], item_key)
     out = _reliability.result_reliability({"block_status": "verified"}, item_rel)
-    summary = {k: out[k] for k in ("item_level", "item_warning") if k in out}
+    summary = {k: out[k] for k in ("item_level", "item_warning", "attachment_key") if k in out}
     if item_rel:
         summary["problem_tables"] = item_rel.get("problem_tables", [])
         summary["scan_pages"] = item_rel.get("scan_pages", [])
@@ -205,7 +205,7 @@ def read_passage(
 @mcp.tool(
     name="find_in_item",
     description=(
-        "Find a literal phrase in an exact parent item's existing MinerU sidecar and return bounded "
+        "Find a literal phrase in an exact parent item's existing sidecar (Surya OCR 2) and return bounded "
         "source windows with line/character locators. Case-insensitive; no regex, semantic search, OCR, "
         "download, or index needed. Personal library only (legacy sidecars are not library-namespaced). "
         "Use query=null to read lines (default 40 lines), or start_char to continue a long truncated line. "
@@ -240,7 +240,7 @@ def find_in_item(
         path = _mineru.sidecar_path(cfg, item_key)
         # Bound source I/O as well as output; do not process arbitrary paths.
         if not path.is_file():
-            return _error("SIDECAR_NOT_FOUND", "No existing MinerU sidecar for this item; nothing was created.")
+            return _error("SIDECAR_NOT_FOUND", "No existing sidecar for this item; nothing was created.")
         with path.open("rb") as stream:
             raw = stream.read(MAX_SIDECAR_BYTES + 1)
         if len(raw) > MAX_SIDECAR_BYTES:

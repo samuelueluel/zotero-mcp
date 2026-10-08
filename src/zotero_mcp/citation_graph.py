@@ -1141,7 +1141,12 @@ class CitationGraph:
             # Expanded hub discovery should return works actually cited by the
             # selected source set, not unrelated zero-degree library nodes.
             in_degrees = [pair for pair in in_degrees if pair[1] > 0]
-        ranked_works = sorted(in_degrees, key=lambda pair: (-pair[1], pair[0]))[:top_n]
+        ordered = sorted(in_degrees, key=lambda pair: (-pair[1], pair[0]))
+        ranked_works = ordered[:top_n]
+        # Works past the cutoff with the same count as the last shown one: an
+        # arbitrary key order would otherwise decide which tied works appear.
+        boundary = ranked_works[-1][1] if ranked_works else 0
+        tied_beyond = sum(1 for _, degree in ordered[top_n:] if degree == boundary) if boundary > 0 else 0
 
         results = []
         for key, degree in ranked_works:
@@ -1152,6 +1157,7 @@ class CitationGraph:
                 "scope": scope,
                 "source_node_count": len(source_keys),
                 "resolution_coverage": coverage,
+                "tied_beyond_top_n": tied_beyond,
             })
         return results
 

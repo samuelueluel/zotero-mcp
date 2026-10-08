@@ -21,6 +21,7 @@ assemble page-joined text anywhere else.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -88,6 +89,10 @@ class ExtractedDoc:
     needs_ocr: tuple[int, ...] = ()
     #: True when a ``max_pages`` limit dropped pages from the tail.
     truncated: bool = False
+    #: 0-indexed pages whose text came from PyMuPDF instead of pdf-inspector
+    #: because pdf-inspector damaged TeX math or ligature glyphs there (see
+    #: :func:`_math_font_damage`).
+    fallback_pages: tuple[int, ...] = ()
 
     def __bool__(self) -> bool:
         """An extraction that produced no text is falsy."""
@@ -102,6 +107,7 @@ def _doc_from_pages(
     page_numbers: tuple[int, ...] = (),
     needs_ocr: tuple[int, ...] = (),
     truncated: bool = False,
+    fallback_pages: tuple[int, ...] = (),
 ) -> ExtractedDoc:
     return ExtractedDoc(
         text=PAGE_SEPARATOR.join(pages),
@@ -111,7 +117,66 @@ def _doc_from_pages(
         source=source,
         needs_ocr=needs_ocr,
         truncated=truncated,
+        fallback_pages=fallback_pages,
     )
+
+
+# pdf-inspector 0.2.6 mis-decodes TeX math and ligature fonts that lack a
+# usable ToUnicode map: the math-italic period comes out as ``*:*``
+# ("0*:* 001"), the minus sign and Greek letters vanish, and fi/ff ligatures
+# are dropped ("signicant"). PyMuPDF decodes the same glyphs correctly, so a
+# page showing any of these losses is read with PyMuPDF instead.
+_MATH_DECIMAL = re.compile(r"\d\*:\* ?\d")
+_UNICODE_MINUS_NUMBER = re.compile(r"−\s?\d")
+_ASCII_MINUS_NUMBER = re.compile(r"(?<![\w.])-\s?\d")
+_GREEK = re.compile(r"[Α-ω]")
+_LIGATURE_WORD = re.compile(r"\w*[ﬀ-ﬄ]\w*")
+_LIGATURES = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl"}
+
+
+def _unligature(text: str) -> str:
+    for lig, plain in _LIGATURES.items():
+        text = text.replace(lig, plain)
+    return text
+
+
+def _math_font_damage(inspector_text: str, reference_text: str) -> bool:
+    """True when pdf-inspector lost math or ligature glyphs PyMuPDF kept."""
+    if _MATH_DECIMAL.search(inspector_text):
+        return True
+    minus = len(_UNICODE_MINUS_NUMBER.findall(reference_text))
+    if minus and len(_ASCII_MINUS_NUMBER.findall(inspector_text)) + len(
+        _UNICODE_MINUS_NUMBER.findall(inspector_text)
+    ) < minus:
+        return True
+    if len(_GREEK.findall(reference_text)) - len(_GREEK.findall(inspector_text)) >= 2:
+        return True
+    return any(
+        _unligature(w) not in inspector_text for w in set(_LIGATURE_WORD.findall(reference_text))
+    )
+
+
+def _pymupdf_fallback(path: str, page_indices: list[int], texts: list[str]) -> tuple[list[str], tuple[int, ...]]:
+    """Swap in PyMuPDF text for pages pdf-inspector damaged."""
+    try:
+        import pymupdf
+    except ImportError:  # pragma: no cover - the pdf extra is not installed
+        return texts, ()
+    out = list(texts)
+    used: list[int] = []
+    try:
+        with pymupdf.open(path) as doc:
+            for slot, index in enumerate(page_indices):
+                if not 0 <= index < len(doc):
+                    continue
+                reference = doc[index].get_text()
+                if reference.strip() and _math_font_damage(texts[slot], reference):
+                    out[slot] = _unligature(reference)
+                    used.append(index)
+    except Exception as exc:  # noqa: BLE001 - keep pdf-inspector text on any PyMuPDF failure
+        logger.warning("PyMuPDF fallback failed for %s: %s", path, exc)
+        return texts, ()
+    return out, tuple(used)
 
 
 def pdf_page_count(file_path: str | Path) -> int:
@@ -174,10 +239,14 @@ def extract_pdf(
     result = pdf_inspector.extract_pages_markdown(path, pages=wanted)
     if total is None:
         total = len(result.pages)
+    texts, fallback = _pymupdf_fallback(
+        path, [page.page for page in result.pages], [page.markdown or "" for page in result.pages]
+    )
 
     return _doc_from_pages(
-        [page.markdown or "" for page in result.pages],
+        texts,
         page_count=total,
+        fallback_pages=fallback,
         source="pdf",
         # Read page indices off the page objects rather than
         # ``pages_needing_ocr``: these stay absolute when a subset was

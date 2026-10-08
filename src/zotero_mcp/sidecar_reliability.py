@@ -85,6 +85,17 @@ def load_item_reliability(sidecar_dir: str | Path, item_key: str) -> dict | None
         return None
 
 
+def sidecar_attachment_key(sidecar_dir: str | Path, item_key: str) -> str | None:
+    """The PDF attachment a Surya sidecar was built from, if recorded.
+
+    Sidecar page numbers refer to this attachment; on items with several PDFs
+    (a paper plus its appendix) another attachment has different pages.
+    """
+    rel = load_item_reliability(sidecar_dir, item_key)
+    key = str((rel or {}).get("attachment_key") or "").strip().upper()
+    return key or None
+
+
 def sidecar_source(sidecar_dir: str | Path, item_key: str) -> str:
     return SURYA_SOURCE if reliability_path(sidecar_dir, item_key).is_file() else LEGACY_SOURCE
 
@@ -106,6 +117,8 @@ def result_reliability(meta: dict, item_rel: dict | None) -> dict:
         out["item_level"] = item_rel.get("level")
         if item_rel.get("warning"):
             out["item_warning"] = item_rel["warning"]
+        if item_rel.get("attachment_key"):
+            out["attachment_key"] = item_rel["attachment_key"]
     else:
         out["item_level"] = "legacy-unverified"
         out["item_warning"] = (

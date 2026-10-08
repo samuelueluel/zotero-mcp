@@ -48,7 +48,7 @@ from .sidecar_verify import (
     withhold_numbers,
 )
 
-ASSEMBLER_VERSION = "sidecar-assemble/13"
+ASSEMBLER_VERSION = "sidecar-assemble/14"
 SKIP_LABELS = {"PageHeader", "PageFooter"}
 FIGURE_LABELS = {"Picture", "Figure", "Diagram", "ChemicalBlock"}
 NUMERIC_STATUSES = ("verified", "repaired", "single-route", "unresolved")
@@ -162,14 +162,24 @@ _TAG = re.compile(r"<[^>]+>")
 
 
 def html_to_markdown(fragment: str) -> str:
-    text = _MATH_BLOCK.sub(lambda m: "\n$$\n" + _html.unescape(m.group(1)).strip() + "\n$$\n", fragment)
-    text = _MATH_INLINE.sub(lambda m: "$" + _html.unescape(m.group(1)).strip() + "$", text)
+    # Math is unescaped only after the tag strip: an unescaped ``p &lt; 0.001``
+    # leaves a bare ``<`` that _TAG would read as a tag opening and delete
+    # everything up to the next ``>``, often the rest of the paragraph.
+    math: list[str] = []
+
+    def hold(latex: str) -> str:
+        math.append(latex)
+        return f"\x00{len(math) - 1}\x00"
+
+    text = _MATH_BLOCK.sub(lambda m: "\n" + hold("$$\n" + _html.unescape(m.group(1)).strip() + "\n$$") + "\n", fragment)
+    text = _MATH_INLINE.sub(lambda m: hold("$" + _html.unescape(m.group(1)).strip() + "$"), text)
     text = re.sub(r"<sup>(.*?)</sup>", r"^\1", text, flags=re.S | re.I)
     text = re.sub(r"<(b|strong)>(.*?)</\1>", r"**\2**", text, flags=re.S | re.I)
     text = re.sub(r"<(i|em)>(.*?)</\1>", r"*\2*", text, flags=re.S | re.I)
     text = re.sub(r"<li\b[^>]*>", "\n- ", text, flags=re.I)
     text = _BR.sub("\n", text)
     text = _html.unescape(_TAG.sub("", text))
+    text = re.sub(r"\x00(\d+)\x00", lambda m: math[int(m.group(1))], text)
     # Leading spaces would turn lines into Markdown code blocks.
     text = "\n".join(line.strip() for line in text.splitlines())
     return re.sub(r"\n{3,}", "\n\n", text).strip()

@@ -979,22 +979,22 @@ class AuditService:
     ) -> tuple[EvidenceRecord | None, list[GateFailure], bool]:
         reader = self.dependencies.sidecar_reader
         if reader is None:
-            return None, [GateFailure("SIDECAR_READER_UNAVAILABLE", "MinerU sidecar reader is not configured")], False
+            return None, [GateFailure("SIDECAR_READER_UNAVAILABLE", "Sidecar reader is not configured")], False
         item_key = ref.item_key.upper()
         try:
             payload = reader(item_key, ref)
         except Exception:
-            return None, [GateFailure("SIDECAR_READ_FAILED", "MinerU sidecar read failed")], False
+            return None, [GateFailure("SIDECAR_READ_FAILED", "Sidecar read failed")], False
         text, details = _coerce_reader_payload(payload)
         if (error_code := _mapping_value(details, "error_code", default=None)):
             messages = {
-                "SIDECAR_NOT_FOUND": "MinerU sidecar was not found",
+                "SIDECAR_NOT_FOUND": "Sidecar was not found",
                 "SIDECAR_LOCATOR_NOT_FOUND": "sidecar locator was not found",
                 "SIDECAR_LOCATOR_REQUIRED": "sidecar locator is required",
             }
             return None, [GateFailure(str(error_code), messages.get(str(error_code), "sidecar evidence route failed"))], False
         if not text.strip():
-            return None, [GateFailure("SIDECAR_TEXT_UNAVAILABLE", "MinerU sidecar window was empty")], False
+            return None, [GateFailure("SIDECAR_TEXT_UNAVAILABLE", "Sidecar window was empty")], False
         current_hash = str(_mapping_value(details, "content_hash", default="") or _sha256_text(text))
         if ref.content_hash and ref.content_hash.casefold() != current_hash.casefold():
             return None, [GateFailure("STALE_EVIDENCE", "sidecar content hash does not match")], False

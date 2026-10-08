@@ -434,7 +434,7 @@ def rebuild_citation_graph(ctx: Context = None) -> str:
             f"- Parsed reference entries: **{stats.get('reference_entries', 0)}**\n"
             f"- DOI-bearing entries: **{stats.get('reference_entries_with_doi', 0)}**\n"
             f"- Resolved entries: **{stats.get('resolved_reference_entries', 0)}**\n"
-            f"- External DOI entries: **{stats.get('external_reference_entries', 0)}**\n"
+            f"- External-reference entries (outside the library): **{stats.get('external_reference_entries', 0)}**\n"
             f"- Metadata-derived external entries: **{stats.get('metadata_external_reference_entries', 0)}**\n"
             f"- Ambiguous entries: **{stats.get('ambiguous_reference_entries', 0)}**\n"
             f"- Unresolved entries: **{stats.get('unresolved_reference_entries', 0)}**\n"
@@ -498,6 +498,12 @@ def rank_works_by_inbound_citations(
             lines.append(f"{i}. **{work['title']}**{yr}{au}{marker}")
             lines.append(
                 f"   - Key: `{work['item_key']}` | Inward citations: **{work['inward_citations']}** (graph edges only)"
+            )
+        tied = ranked[-1].get("tied_beyond_top_n", 0)
+        if tied:
+            lines.append(
+                f"\n*{tied} more work(s) tied at {ranked[-1]['inward_citations']} inbound edges are not shown; "
+                f"raise top_n to at least {len(ranked) + tied} to list them all.*"
             )
         return "\n".join(lines)
     except Exception as e:
@@ -666,7 +672,7 @@ def rebuild_reference_index(ctx: Context = None) -> str:
             f"(orphan: **{stats.get('orphan_source_sidecars', 0)}**)\n"
             f"- Entries with DOI: **{stats.get('doi_entries', 0)}**\n"
             f"- Resolved to Zotero: **{stats.get('resolved_entries', 0)}**\n"
-            f"- External DOI entries: **{stats.get('external_doi_entries', 0)}**\n"
+            f"- External-reference entries (outside the library): **{stats.get('external_doi_entries', 0)}**\n"
             f"- Ambiguous: **{stats.get('ambiguous_entries', 0)}**\n"
             f"- Unresolved: **{stats.get('unresolved_entries', 0)}**\n"
             f"- Orphan-source entries: **{stats.get('orphan_source_entries', 0)}**\n"
@@ -697,7 +703,7 @@ def get_reference_index_status(ctx: Context = None) -> str:
             f"(orphan: **{stats.get('orphan_source_sidecars', 0)}**)\n"
             f"- Entries with DOI: **{stats.get('doi_entries', 0)}**\n"
             f"- Resolved to Zotero: **{stats.get('resolved_entries', 0)}**\n"
-            f"- External DOI entries: **{stats.get('external_doi_entries', 0)}**\n"
+            f"- External-reference entries (outside the library): **{stats.get('external_doi_entries', 0)}**\n"
             f"- Mixed entries: **{stats.get('mixed_entries', 0)}**\n"
             f"- Ambiguous: **{stats.get('ambiguous_entries', 0)}**\n"
             f"- Unresolved: **{stats.get('unresolved_entries', 0)}**\n"

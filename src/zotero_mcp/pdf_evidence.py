@@ -101,7 +101,16 @@ def _literal_whitespace_pattern(query: str) -> str:
     # character.  No source text is changed.
     query = query.strip()
     parts = re.split(r"(\s+)", query)
-    return "".join(r"\s+" if part.isspace() else re.escape(part) for part in parts if part)
+    return "".join(r"\s+" if part.isspace() else _escape_dashes(part) for part in parts if part)
+
+
+#: Hyphen-minus, minus sign and en dash match each other: a typed ``-0.152``
+#: must find a PDF's ``−0.152``. Nothing else is folded.
+_DASH_CLASS = "[-\u2212\u2013]"
+
+
+def _escape_dashes(part: str) -> str:
+    return "".join(_DASH_CLASS if ch in "-\u2212\u2013" else re.escape(ch) for ch in part)
 
 
 def compile_literal_pattern(query: str) -> re.Pattern[str]:

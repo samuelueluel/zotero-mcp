@@ -203,7 +203,7 @@ def get_item_fulltext(
                         # [mineru patch] prefer the MinerU sidecar (clean equations/tables) when present
                         _mineru_text = _mineru.read_sidecar(_mineru.load_mineru_config(), item_key)
                         if _mineru_text:
-                            ctx.info("Retrieved full text from MinerU sidecar")
+                            ctx.info("Retrieved full text from sidecar")
                             return _helpers._prepend_size_warning(
                                 f"{metadata}\n\n---\n\n## Full Text\n\n{_mineru_text}",
                                 "Consider using semantic_search to find specific content instead of reading full papers."
