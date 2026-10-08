@@ -1567,6 +1567,15 @@ def semantic_search(
                 context_fields["Evidence ID"] = result["evidence_id"]
             else:
                 context_fields["Expand"] = "No scoped evidence ID available; use find_in_item with this item key."
+            # [surya sidecars] show the reliability signal, not only in JSON reads.
+            if rel := result.get("reliability"):
+                status = rel.get("block_status", "")
+                if rel.get("requires_pdf_check"):
+                    pages = rel.get("check_pages") or rel.get("pdf_pages") or "?"
+                    status += f"; check PDF p. {pages}"
+                context_fields["Reliability"] = f"{status} (item {rel.get('item_level', '?')})"
+                if rel.get("item_warning"):
+                    context_fields["Item warning"] = rel["item_warning"]
 
             # Provenance for citing: page (when the index carries page breaks),
             # else which passage of how many, else an approximate char offset.

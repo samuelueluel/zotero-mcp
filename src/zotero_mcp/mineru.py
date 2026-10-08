@@ -78,6 +78,9 @@ def load_mineru_config(config_path: str | None = None) -> dict:
     }
     merged = dict(defaults)
     merged.update({k: v for k, v in cfg.items() if v is not None})
+    # MinerU is retired (2026-10-08): Surya sidecars are the only parser output.
+    # This module still locates and reads sidecars; it never parses.
+    merged["enabled"] = False
     return merged
 
 
@@ -185,6 +188,8 @@ def run_mineru(cfg: dict, pdf_path: Path, item_key: str) -> bool:
     without producing output, so success requires both a zero exit code and a
     generated Markdown file.
     """
+    logger.error("mineru: retired; refusing to parse %s (use zotero_mcp.surya_batch)", item_key)
+    return False
     bin_ = Path(cfg["bin"])
     if not bin_.exists():
         logger.warning("mineru: binary not found: %s", bin_)
