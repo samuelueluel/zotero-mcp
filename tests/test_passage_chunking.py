@@ -125,6 +125,7 @@ class ChunkingFakeChroma:
         self.upserted_docs = []
         self.upserted_metas = []
         self.deleted_parents = []
+        self.trimmed = []
         self.embedding_max_tokens = 8000
         self._existing = set(existing or [])
 
@@ -133,6 +134,10 @@ class ChunkingFakeChroma:
 
     def delete_item_chunks(self, item_key):
         self.deleted_parents.append(item_key)
+
+    def trim_item_chunks(self, item_key, keep_ids):
+        self.trimmed.append((item_key, set(keep_ids)))
+        return 0
 
     def upsert_documents(self, documents, metadatas, ids):
         self.upserted_docs.extend(documents)
@@ -193,8 +198,10 @@ def test_chunking_added_vs_updated_is_item_granular(monkeypatch):
     stats = s._process_item_batch([_long_item("ITEM0001")], force_rebuild=False)
     assert stats["updated"] == 1
     assert stats["added"] == 0
-    # Stale chunks for the re-indexed item were cleared first.
-    assert "ITEM0001" in s.chroma_client.deleted_parents
+    # Old chunks are never cleared up front; the stale tail is trimmed after
+    # the new chunks are written, keeping exactly the new ids.
+    assert s.chroma_client.deleted_parents == []
+    assert s.chroma_client.trimmed == [("ITEM0001", set(s.chroma_client.upserted_ids))]
 
 
 def test_default_path_still_item_level(monkeypatch):

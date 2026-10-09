@@ -280,6 +280,22 @@ def test_sequential_path_when_max_parallel_requests_is_one():
     assert {call["thread"] for call in ef.calls} == {calling_thread}
 
 
+def test_embed_serially_ignores_max_parallel_requests():
+    """The streaming indexer's workers are already parallel; embed_serially keeps each
+    worker to one request at a time instead of fanning out again (4 workers x 4)."""
+    calling_thread = threading.current_thread().name
+    ef = _make_ef(
+        request_batch_size=2,
+        max_parallel_requests=4,
+        embed_batch_impl=lambda texts, is_query: [[float(v)] for v in texts],
+    )
+    out = ef.embed_serially([0, 1, 2, 3, 4, 5])
+
+    assert out == [[0.0], [1.0], [2.0], [3.0], [4.0], [5.0]]
+    assert len(ef.calls) == 3
+    assert {call["thread"] for call in ef.calls} == {calling_thread}
+
+
 def test_single_subbatch_stays_sequential_even_with_parallelism_enabled():
     """A single sub-batch is not routed through the thread pool even when
     max_parallel_requests > 1."""

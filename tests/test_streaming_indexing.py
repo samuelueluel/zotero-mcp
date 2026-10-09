@@ -75,6 +75,7 @@ class FakeStreamingChromaClient:
         self.embedding_batches = []  # (documents, metadatas, ids, embeddings)
         self.document_batches = []  # (documents, metadatas, ids)
         self.deleted_item_keys = []
+        self.trimmed = []
         self._lock = threading.Lock()
 
     def truncate_text(self, text, max_tokens=None):
@@ -85,6 +86,11 @@ class FakeStreamingChromaClient:
 
     def delete_item_chunks(self, item_key, group_id=None):
         self.deleted_item_keys.append(item_key)
+
+    def trim_item_chunks(self, item_key, keep_ids):
+        with self._lock:
+            self.trimmed.append((item_key, set(keep_ids)))
+        return 0
 
     def upsert_documents(self, documents, metadatas, ids):
         self.document_batches.append((list(documents), list(metadatas), list(ids)))
@@ -447,7 +453,9 @@ def test_chunked_streaming_keeps_accounting_per_item(monkeypatch):
     assert chroma.embedding_batches, "streaming path did not run"
     assert stats["updated_items"] == 1
     assert stats["added_items"] == 5
-    assert "ITEM0000" in chroma.deleted_item_keys
+    assert chroma.deleted_item_keys == []
+    trimmed = dict(chroma.trimmed)
+    assert trimmed["ITEM0000"] == {i for i in committed_ids(chroma) if i.startswith("ITEM0000#")}
 
     committed = committed_ids(chroma)
     assert len(committed) > len(items), "chunking should emit more ids than items"
@@ -458,8 +466,8 @@ def test_an_items_chunks_are_never_split_across_requests(monkeypatch):
     """One item's passages always travel in a single embedding request.
 
     Splitting them would let an item be committed half-indexed when one of the
-    two requests failed, while `delete_item_chunks` had already cleared the
-    old passages.
+    two requests failed, and the stale-tail trim after a commit assumes it
+    saw every new id of the item.
     """
     items = _items(4)
     for item in items:
@@ -576,3 +584,30 @@ def test_realtime_slice_size_floors_at_the_sequential_batch(degenerate):
     variant is the one worth guarding against.
     """
     assert semantic_search._realtime_slice_size(degenerate) == 25
+
+
+def test_workers_embed_serially_when_the_function_supports_it(monkeypatch):
+    """Workers are the parallelism; they must not let the embedding function fan
+    out again (max_parallel workers x max_parallel requests on one local server)."""
+
+    class SerialAwareEmbedder(FakeEmbeddingFunction):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.serial_calls = 0
+
+        def embed_serially(self, documents):
+            with self._lock:
+                self.serial_calls += 1
+            return FakeEmbeddingFunction.__call__(self, documents)
+
+        def __call__(self, documents):
+            raise AssertionError("worker used the fanning-out __call__")
+
+    embedder = SerialAwareEmbedder(max_parallel_requests=3, request_batch_size=2, delay=0)
+    chroma = FakeStreamingChromaClient(embedder)
+    search = _make_search(monkeypatch, chroma)
+
+    stats = _run_update(monkeypatch, search, _items(6))
+
+    assert embedder.serial_calls > 0
+    assert stats["added_items"] == 6

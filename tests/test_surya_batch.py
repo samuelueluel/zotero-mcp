@@ -67,6 +67,42 @@ def test_index_waits_for_enrich(tmp_path, monkeypatch):
     assert calls == []
 
 
+def _ready_state(tmp_path, *keys):
+    s = surya_batch.State(tmp_path / "state.json")
+    for k in keys:
+        for stage in ("ocr", "repair", "enrich"):
+            s.mark(k, stage)
+    return s
+
+
+def test_index_runs_one_update_per_item_with_a_timeout(tmp_path, monkeypatch):
+    s = _ready_state(tmp_path, "A", "B")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd[cmd.index("--item-key") + 1:], kw.get("timeout")))
+        return _completed(cmd)
+
+    monkeypatch.setattr(surya_batch.subprocess, "run", fake_run)
+    surya_batch.stage_index(_jobs("A", "B"), s, tmp_path, tmp_path / "c.json")
+    assert calls == [(["A"], surya_batch.INDEX_ITEM_TIMEOUT_S), (["B"], surya_batch.INDEX_ITEM_TIMEOUT_S)]
+    assert s.done("A", "index") and s.done("B", "index")
+
+
+def test_index_timeout_fails_only_that_item(tmp_path, monkeypatch):
+    s = _ready_state(tmp_path, "A", "B")
+
+    def fake_run(cmd, **kw):
+        if "A" in cmd:
+            raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+        return _completed(cmd)
+
+    monkeypatch.setattr(surya_batch.subprocess, "run", fake_run)
+    surya_batch.stage_index(_jobs("A", "B"), s, tmp_path, tmp_path / "c.json", timeout=7)
+    assert not s.done("A", "index") and s.done("B", "index")
+    assert "timed out after 7s" in s.item("A")["errors"][0]["msg"]
+
+
 def test_start_vlm_reuses_a_healthy_server(monkeypatch):
     calls = []
     monkeypatch.setattr(surya_batch, "_healthy", lambda url: True)

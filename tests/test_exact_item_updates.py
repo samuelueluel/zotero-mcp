@@ -52,6 +52,16 @@ class _FakeChroma:
             self.docs.pop(key, None)
             self.texts.pop(key, None)
 
+    def trim_item_chunks(self, item_key, keep_ids):
+        stale = [
+            key for key, metadata in self.docs.items()
+            if metadata.get("parent_item_key") == item_key and key not in keep_ids
+        ]
+        for key in stale:
+            self.docs.pop(key, None)
+            self.texts.pop(key, None)
+        return len(stale)
+
     def iter_documents(self):
         keys = list(self.docs)
         yield keys, [self.texts.get(key, "") for key in keys], [self.docs[key] for key in keys]
@@ -221,10 +231,10 @@ def test_update_exact_scope_does_not_advance_watermark(monkeypatch, tmp_path):
     assert saved["semantic_search"]["last_sync_versions"] == {"0": 12345}
 
 
-def test_exact_update_replaces_only_requested_chunks_and_rebuilds_bm25(monkeypatch, tmp_path):
+def _old_chunks_chroma(chroma_cls=None):
     requested = "6WTDX4R3"
     duplicate = "F7EGNIBT"
-    chroma = _FakeChroma(
+    return (chroma_cls or _FakeChroma)(
         docs={
             f"{requested}#0": {"parent_item_key": requested},
             f"{requested}#1": {"parent_item_key": requested},
@@ -238,6 +248,9 @@ def test_exact_update_replaces_only_requested_chunks_and_rebuilds_bm25(monkeypat
             f"{duplicate}#0": "duplicatefjord",
         },
     )
+
+
+def _run_exact_chunked_update(monkeypatch, tmp_path, chroma, requested="6WTDX4R3"):
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
@@ -286,6 +299,16 @@ def test_exact_update_replaces_only_requested_chunks_and_rebuilds_bm25(monkeypat
     )
 
     stats = search.update_database(item_keys=[requested], use_batch=False)
+    return stats, search
+
+
+def test_exact_update_replaces_only_requested_chunks_and_rebuilds_bm25(monkeypatch, tmp_path):
+    requested = "6WTDX4R3"
+    duplicate = "F7EGNIBT"
+    chroma = _old_chunks_chroma()
+    stats, search = _run_exact_chunked_update(monkeypatch, tmp_path, chroma)
+    config_path = tmp_path / "config.json"
+    bm25_path = tmp_path / "bm25.json"
 
     assert "error" not in stats
     assert stats["updated_items"] == 1
@@ -303,3 +326,24 @@ def test_exact_update_replaces_only_requested_chunks_and_rebuilds_bm25(monkeypat
     }
     saved = json.loads(config_path.read_text())
     assert saved["semantic_search"]["last_sync_versions"] == {"0": 555}
+
+
+class _FailingUpsertChroma(_FakeChroma):
+    def upsert_documents(self, documents, metadatas, ids):
+        raise RuntimeError("embedding endpoint went away")
+
+
+def test_failed_reindex_keeps_the_items_old_chunks(monkeypatch, tmp_path):
+    """A re-index that cannot write new chunks must not leave the item empty.
+
+    Regression for 2026-10-08: old chunks were deleted at preparation time,
+    so a run that hung before committing left 76 items with no chunks.
+    """
+    requested = "6WTDX4R3"
+    chroma = _old_chunks_chroma(_FailingUpsertChroma)
+    _run_exact_chunked_update(monkeypatch, tmp_path, chroma)
+
+    assert {k for k in chroma.docs if k.startswith(requested)} == {
+        f"{requested}#0", f"{requested}#1", f"{requested}#2"
+    }
+    assert chroma.texts[f"{requested}#0"] == "obsoletefjord"

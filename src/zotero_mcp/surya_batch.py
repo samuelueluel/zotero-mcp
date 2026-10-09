@@ -386,7 +386,19 @@ def stage_vlm(jobs, state, run_dir, sidecar_dir, stages) -> None:
         log(run_dir, "VLM server stopped")
 
 
-def stage_index(jobs, state, run_dir, config_path, group: int = 10) -> None:
+#: Per-item ceiling for one ``update-db`` call. The largest item (2,155 chunks)
+#: embeds in about 30 minutes; an embedding request that never returns
+#: otherwise stalls the run indefinitely.
+INDEX_ITEM_TIMEOUT_S = 5400
+
+
+def stage_index(jobs, state, run_dir, config_path, timeout: int = INDEX_ITEM_TIMEOUT_S) -> None:
+    """Index ready items one ``update-db`` call each, under a timeout.
+
+    One item per call means a hang or failure costs that item only; the
+    indexer keeps an item's old chunks until its new ones are committed, so a
+    killed call leaves the previous index entry in place.
+    """
     ready = [j.item_key for j in jobs
              if not state.done(j.item_key, "index")
              and all(state.done(j.item_key, s) for s in ("ocr", "repair", "enrich"))]
@@ -394,22 +406,23 @@ def stage_index(jobs, state, run_dir, config_path, group: int = 10) -> None:
         return
     exe = Path(sys.executable).parent / "zotero-mcp-server"
     env = dict(os.environ, ZOTERO_LOCAL="true", ZOTERO_MCP_CONFIG=str(config_path))
-    for i in range(0, len(ready), group):
-        keys = ready[i:i + group]
-        cmd = [str(exe), "update-db", "--fulltext", "--no-batch", "--config-path", str(config_path)]
-        for k in keys:
-            cmd += ["--item-key", k]
+    for k in ready:
+        cmd = [str(exe), "update-db", "--fulltext", "--no-batch", "--config-path", str(config_path),
+               "--item-key", k]
         t = time.time()
         with (run_dir / "index.log").open("a", encoding="utf-8") as lf:
-            proc = subprocess.run(cmd, env=env, stdout=lf, stderr=subprocess.STDOUT)
-        if proc.returncode == 0:
-            for k in keys:
-                state.mark(k, "index")
-            log(run_dir, f"indexed {len(keys)} items in {time.time() - t:.0f}s")
+            try:
+                proc = subprocess.run(cmd, env=env, stdout=lf, stderr=subprocess.STDOUT, timeout=timeout)
+                rc = proc.returncode
+            except subprocess.TimeoutExpired:
+                rc = None
+        if rc == 0:
+            state.mark(k, "index")
+            log(run_dir, f"indexed {k} in {time.time() - t:.0f}s")
         else:
-            for k in keys:
-                state.error(k, "index", f"update-db rc={proc.returncode}; see index.log")
-            log(run_dir, f"index group FAILED rc={proc.returncode}: {keys}")
+            why = f"timed out after {timeout}s" if rc is None else f"rc={rc}"
+            state.error(k, "index", f"update-db {why}; see index.log")
+            log(run_dir, f"index FAILED {k}: {why}")
 
 
 # ---------------------------------------------------------------- main

@@ -358,6 +358,23 @@ class ChromaClient:
         except Exception as e:
             logger.warning(f"delete_item_chunks({item_key}) failed: {e}")
 
+    def trim_item_chunks(self, item_key: str, keep_ids: set[str]) -> int:
+        """Delete an item's chunks whose ids are not in ``keep_ids``.
+
+        Runs after the item's new chunks are upserted. Upserting ``<key>#<n>``
+        overwrites the old chunk in place, so only the tail of a document that
+        shrank is left to remove. Until this runs the old passages stay
+        searchable, which means an interrupted re-index never leaves an item
+        with no chunks at all.
+
+        Returns the number of chunks deleted.
+        """
+        got = self.collection.get(where={"parent_item_key": item_key}, include=[])
+        stale = [doc_id for doc_id in got.get("ids") or [] if doc_id not in keep_ids]
+        if stale:
+            self.collection.delete(ids=stale)
+        return len(stale)
+
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
         try:

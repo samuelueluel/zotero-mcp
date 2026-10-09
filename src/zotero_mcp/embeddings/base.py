@@ -248,6 +248,21 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
         vector order always matches ``input`` order no matter which request
         finishes first.
         """
+        return self._embed_documents(
+            input, getattr(self, "max_parallel_requests", 1) or 1
+        )
+
+    def embed_serially(self, input: Documents) -> Embeddings:
+        """Embed documents one sub-batch at a time, ignoring ``max_parallel_requests``.
+
+        For callers that already run their own parallel workers (the streaming
+        indexer). Fanning out again inside each worker multiplies concurrent
+        requests, and a local single-slot server queues them past the client's
+        read timeout.
+        """
+        return self._embed_documents(input, 1)
+
+    def _embed_documents(self, input: Documents, max_parallel: int) -> Embeddings:
         prepared = [self._prepare_document(text) for text in input]
         batch_size = (
             getattr(self, "request_batch_size", None) or self.default_request_batch_size
@@ -266,7 +281,6 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
         if not sub_batches:
             return []
 
-        max_parallel = getattr(self, "max_parallel_requests", 1) or 1
         if max_parallel <= 1 or len(sub_batches) == 1:
             embeddings: Embeddings = []
             for sub_batch in sub_batches:

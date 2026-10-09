@@ -395,3 +395,36 @@ def test_fakes_conform_to_real_chroma_client_api(fake_cls):
                 f"real ChromaClient.{name} signature rejects the fake's call shape "
                 f"({fake_cls.__module__}.{fake_cls.__qualname__}): {e}"
             )
+
+
+# ---------------------------------------------------------------------------
+# trim_item_chunks
+# ---------------------------------------------------------------------------
+
+
+def _seed_chunks(client, item_key, n):
+    ids = [f"{item_key}#{i}" for i in range(n)]
+    client.upsert_embeddings(
+        documents=[f"{item_key} passage {i}" for i in range(n)],
+        metadatas=[{"item_key": item_key, "parent_item_key": item_key, "chunk_index": i}
+                   for i in range(n)],
+        ids=ids,
+        embeddings=[[float(i), 1.0, 2.0, 3.0] for i in range(n)],
+    )
+    return ids
+
+
+def test_trim_item_chunks_removes_only_the_stale_tail(client):
+    _seed_chunks(client, "AAAA1111", 5)
+    other = _seed_chunks(client, "BBBB2222", 2)
+    # The item was re-indexed into three chunks, which overwrote #0..#2.
+    removed = client.trim_item_chunks("AAAA1111", {"AAAA1111#0", "AAAA1111#1", "AAAA1111#2"})
+    assert removed == 2
+    left = set(client.collection.get(include=[])["ids"])
+    assert left == {"AAAA1111#0", "AAAA1111#1", "AAAA1111#2", *other}
+
+
+def test_trim_item_chunks_is_a_noop_when_nothing_is_stale(client):
+    ids = _seed_chunks(client, "AAAA1111", 3)
+    assert client.trim_item_chunks("AAAA1111", set(ids)) == 0
+    assert set(client.collection.get(include=[])["ids"]) == set(ids)

@@ -3203,9 +3203,12 @@ class ZoteroSemanticSearch:
 
                 retry_ok = 0
                 retry_fail = 0
+                recovered_ids: list[str] = []
+                unrecovered_items: set[str] = set()
                 for doc, meta, doc_id in _failed_docs:
                     try:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
+                        recovered_ids.append(doc_id)
                         retry_ok += 1
                         stats["errors"] -= 1  # Remove from error count
                         # Don't classify as added vs updated — when the
@@ -3215,7 +3218,16 @@ class ZoteroSemanticSearch:
                         stats["recovered_items"] += 1
                     except Exception as e2:
                         retry_fail += 1
+                        unrecovered_items.add(doc_id.split("#", 1)[0])
                         logger.error(f"Retry failed for {doc_id}: {e2}")
+
+                # Trim only items whose every failed chunk came back; a
+                # partly recovered item keeps its old tail rather than lose it.
+                if not force_full_rebuild:
+                    self._trim_stale_chunks([
+                        doc_id for doc_id in recovered_ids
+                        if doc_id.split("#", 1)[0] not in unrecovered_items
+                    ])
 
                 try:
                     sys.stderr.write(f"  Retry: {retry_ok} recovered, {retry_fail} still failed\n")
@@ -3286,6 +3298,28 @@ class ZoteroSemanticSearch:
             # separately before its early return, so this finally only runs
             # for the path where we actually hold the lock.
             lock_cm.__exit__(None, None, None)
+
+    def _trim_stale_chunks(self, committed_ids: list[str]) -> None:
+        """Remove old passages beyond each item's newly committed chunks.
+
+        Called only after ``committed_ids`` were upserted. Every committed id
+        overwrote its old chunk in place; what remains is the tail of an item
+        that now has fewer passages. An item's chunks always commit together
+        (see ``_split_prepared_into_requests``), so ``committed_ids`` holds
+        every new id of each item it mentions.
+        """
+        if not self._chunking_enabled or not hasattr(self.chroma_client, "trim_item_chunks"):
+            return
+        by_item: dict[str, set[str]] = {}
+        for doc_id in committed_ids:
+            if "#" in doc_id:
+                by_item.setdefault(doc_id.split("#", 1)[0], set()).add(doc_id)
+        for item_key, keep_ids in by_item.items():
+            try:
+                with self._chroma_call_lock:
+                    self.chroma_client.trim_item_chunks(item_key, keep_ids)
+            except Exception as e:
+                logger.warning(f"trim_item_chunks({item_key}) failed: {e}")
 
     def _prepare_and_classify_slice(
         self,
@@ -3402,9 +3436,11 @@ class ZoteroSemanticSearch:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
                 stats["errors"] += 1
 
-        # Which items already existed (drives added-vs-updated). When chunking,
-        # also clear an item's stale passages before re-adding so a shrinking
-        # document never leaves orphaned chunks behind.
+        # Which items already existed (drives added-vs-updated). Old passages
+        # are not deleted here: an item's stale tail is trimmed only after its
+        # new chunks are committed (_trim_stale_chunks), so a run that dies
+        # between preparation and commit leaves the old chunks searchable
+        # instead of leaving the item with none.
         existing_item_keys: set[str] = set()
         if documents and not force_rebuild:
             with self._chroma_call_lock:
@@ -3412,12 +3448,6 @@ class ZoteroSemanticSearch:
                     probe_ids = [f"{k}#0" for k in item_keys_order]
                     existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
                     existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
-                    if hasattr(self.chroma_client, "delete_item_chunks"):
-                        for k in dict.fromkeys(item_keys_order):
-                            try:
-                                self.chroma_client.delete_item_chunks(k)
-                            except Exception as e:
-                                logger.debug(f"delete_item_chunks({k}) failed: {e}")
                 else:
                     existing_item_keys = self.chroma_client.get_existing_ids(ids)
 
@@ -3520,6 +3550,10 @@ class ZoteroSemanticSearch:
                 for _ in range(max_parallel):
                     chunk_queue.put(_STREAM_SENTINEL)
 
+        # These workers are the parallelism; each embeds its payload serially
+        # so max_parallel workers never become max_parallel² requests.
+        embed = getattr(embedding_function, "embed_serially", None) or embedding_function
+
         def worker() -> None:
             try:
                 while True:
@@ -3528,7 +3562,7 @@ class ZoteroSemanticSearch:
                         break
                     documents, metadatas, ids, item_keys = payload
                     try:
-                        vectors = embedding_function(documents)
+                        vectors = embed(documents)
                     except Exception as exc:
                         # One sub-batch failing is not fatal: hand it to the
                         # end-of-run retry pass and keep the worker alive, so a
@@ -3568,6 +3602,8 @@ class ZoteroSemanticSearch:
                 record_failures(write_docs, write_metas, write_ids)
                 bump("errors", len(write_docs))
             else:
+                if not force_rebuild:
+                    self._trim_stale_chunks(write_ids)
                 for item_key, already_existed in write_keys.items():
                     if item_key in accounted_keys:
                         continue
@@ -3706,6 +3742,8 @@ class ZoteroSemanticSearch:
             try:
                 with self._chroma_call_lock:
                     self.chroma_client.upsert_documents(documents, metadatas, ids)
+                if not force_rebuild:
+                    self._trim_stale_chunks(ids)
                 for k in item_keys_order:
                     if k in existing_item_keys:
                         stats["updated"] += 1
